@@ -361,12 +361,99 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .notification-item small { color: #9a8e91; font-size: 10px; }
 .notification-item .text-button { align-self: center; white-space: nowrap; }
 
+/* Portal de Administración */
+.admin-sidebar .student-role { color: #7d3150; }
+.admin-main { max-width: 1240px; }
+.admin-title { margin-bottom: 24px; }
+.admin-stats { display: grid; gap: 14px; grid-template-columns: repeat(5, 1fr); margin-bottom: 24px; }
+.admin-stats > div { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); display: grid; gap: 5px; min-height: 116px; padding: 18px; }
+.admin-stats small { color: #8e8084; font-size: 10px; }
+.admin-stats strong { color: var(--univalle-wine); font-family: 'Playfair Display', Georgia, serif; font-size: 31px; line-height: 1; }
+.admin-stats span { color: #918387; font-size: 10px; line-height: 1.35; }
+.admin-stats .requires-attention { background: #fff8f1; border-color: #f0d8b7; }
+.admin-stats .requires-attention strong { color: #a95a18; }
+.admin-intro { align-items: center; background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; display: flex; gap: 15px; margin-bottom: 26px; padding: 19px 21px; }
+.admin-intro > svg { background: #f9eaf0; border-radius: 8px; color: var(--univalle-wine); flex: 0 0 auto; height: 39px; padding: 10px; width: 39px; }
+.admin-intro h2 { color: #4b3e42; font-size: 14px; margin: 0 0 5px; }
+.admin-intro p { color: #7e7074; font-size: 11px; line-height: 1.5; margin: 0; }
+.admin-section { margin-top: 0; }
+.admin-project-list { display: grid; gap: 13px; }
+.admin-project-card { background: #fff; border: 1px solid #e8e1e2; border-left: 4px solid #9a3159; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); overflow: hidden; padding: 20px 22px 0; }
+.admin-project-card.is-overdue { border-left-color: #c4701f; }
+.admin-project-top { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.admin-status { background: #f4e6ec; border-radius: 99px; color: #8d1745; font-size: 10px; font-weight: 700; padding: 6px 9px; text-align: center; }
+.admin-status.status-en_revision { background: #fff2e7; color: #9a4b14; }
+.admin-status.status-observado { background: #fff0f1; color: #ad333a; }
+.admin-status.status-finalizado, .admin-status.status-aprobado_institucional, .admin-status.status-aprobado_tecnico { background: #e9f5ec; color: #28663b; }
+.admin-status.status-anulado { background: #f0eff0; color: #675d60; }
+.admin-project-card h2 { color: #44373b; font-size: 16px; line-height: 1.35; margin: 12px 0; }
+.admin-project-meta { display: flex; flex-wrap: wrap; gap: 7px 16px; }
+.admin-project-meta span { align-items: center; color: #7d6f73; display: inline-flex; font-size: 11px; gap: 5px; }
+.admin-project-meta svg { color: var(--univalle-wine); height: 15px; width: 15px; }
+.admin-project-details { border-top: 1px solid #eee8e9; display: grid; gap: 18px; grid-template-columns: 1fr 1fr; margin-top: 17px; padding: 14px 0; }
+.admin-project-details > div { display: grid; gap: 4px; min-width: 0; }
+.admin-project-details small { color: #96898d; font-size: 10px; }
+.admin-project-details strong { color: #57494d; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-project-details span { color: #8d7f83; font-size: 10px; line-height: 1.35; }
+.admin-project-card footer { border-top: 1px solid #eee8e9; color: #978a8d; display: flex; font-size: 10px; gap: 14px; justify-content: space-between; margin: 0 -22px; padding: 11px 22px; }
+.admin-filters { align-items: end; background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) 220px; margin-bottom: 15px; padding: 16px; }
+.admin-filters label { display: grid; gap: 6px; }
+.admin-filters label > span { color: #817276; font-size: 10px; font-weight: 700; }
+.admin-filters input, .admin-filters select { background: #fbfaf9; border: 1px solid #dcd5d7; border-radius: 7px; color: #55474b; font: inherit; font-size: 12px; height: 39px; outline: none; padding: 0 11px; }
+.admin-filters input:focus, .admin-filters select:focus { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(173, 0, 71, .08); }
+.admin-list-heading { align-items: center; color: #817276; display: flex; font-size: 11px; justify-content: space-between; margin: 0 3px 12px; }
+.admin-project-card footer .text-button { margin-left: auto; }
+.admin-workspace { padding-bottom: 54px; }
+.admin-back { margin-bottom: 18px; }
+.admin-workspace .student-title-row { align-items: flex-start; }
+.admin-workspace .student-title-row > .admin-status { margin-top: 5px; }
+.admin-project-context { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; display: grid; gap: 22px; grid-template-columns: minmax(180px, .65fr) 1.35fr; margin-bottom: 18px; padding: 19px 21px; }
+.admin-project-context > div { display: grid; gap: 5px; min-width: 0; }
+.admin-project-context small { color: #96898d; font-size: 10px; }
+.admin-project-context strong { color: #4d3f43; font-size: 12px; }
+.admin-project-context span, .admin-project-context p { color: #786a6e; font-size: 11px; line-height: 1.5; margin: 0; }
+.admin-operation-grid { align-items: start; display: grid; gap: 17px; grid-template-columns: 1fr 1fr; margin-bottom: 17px; }
+.admin-operation-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: 21px; }
+.admin-operation-heading { align-items: flex-start; display: flex; gap: 11px; }
+.admin-operation-heading > svg { background: #f9eaf0; border-radius: 8px; color: var(--univalle-wine); flex: 0 0 auto; height: 36px; padding: 9px; width: 36px; }
+.admin-operation-heading p { color: var(--univalle-wine); font-size: 9px; font-weight: 700; letter-spacing: .08em; margin: 1px 0 5px; }
+.admin-operation-heading h2 { color: #4b3e42; font-size: 14px; margin: 0; }
+.admin-operation-card > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
+.admin-operation-card .form-field { margin-bottom: 13px; }
+.admin-operation-card .form-field > span { color: #685a5e; font-size: 11px; }
+.admin-operation-card .form-field select, .admin-operation-card .form-field input, .admin-operation-card .form-field textarea { font-size: 12px; }
+.admin-operation-card .primary-button, .admin-operation-card .secondary-button, .danger-button { margin-top: 4px; }
+.admin-document-link { margin: -2px 0 15px; }
+.admin-round-history { margin-bottom: 17px; }
+.admin-empty-copy { color: #897c80; font-size: 11px; margin: 17px 0 0; }
+.admin-round-list { display: grid; gap: 9px; margin-top: 17px; }
+.admin-round { align-items: flex-start; background: #fcfafb; border: 1px solid #eee5e8; border-radius: 8px; display: grid; gap: 11px; grid-template-columns: minmax(210px, .8fr) 1.2fr; padding: 13px; }
+.admin-round.is-closed { background: #f7faf7; border-color: #dceadf; }
+.admin-round > div:first-child { display: grid; gap: 4px; }
+.admin-round strong { color: #55474b; font-size: 11px; }
+.admin-round > div:first-child span { color: #918487; font-size: 10px; line-height: 1.4; }
+.admin-reviewers { display: grid; gap: 5px; }
+.admin-reviewers span { color: #706267; font-size: 10px; line-height: 1.4; }
+.admin-reviewers b { background: #f3e6eb; border-radius: 4px; color: var(--univalle-wine); font-size: 9px; margin-right: 5px; padding: 2px 4px; }
+.admin-secondary-grid { margin-bottom: 0; }
+.admin-cancel-card { border-color: #f0d8d9; }
+.admin-cancel-card .admin-operation-heading > svg { background: #fff0f1; color: #a53d43; }
+.danger-button { align-items: center; background: #a53d43; border: 1px solid #a53d43; border-radius: 7px; color: #fff; display: inline-flex; font-size: 12px; font-weight: 700; min-height: 40px; padding: 0 14px; }
+.danger-button:hover { background: #852a30; }
+.admin-cancellation { align-items: flex-start; background: #fcf1f2; border: 1px solid #f0d7d9; border-radius: 10px; color: #6e5458; display: flex; gap: 12px; padding: 19px; }
+.admin-cancellation > svg { color: #a53d43; flex: 0 0 auto; height: 22px; width: 22px; }
+.admin-cancellation h2 { color: #77343a; font-size: 14px; margin: 0 0 6px; }
+.admin-cancellation p { font-size: 11px; line-height: 1.5; margin: 0 0 5px; }
+.admin-cancellation small { color: #937478; font-size: 10px; }
+
 @media (max-width: 860px) {
   .student-sidebar { display: none; }
   .student-header { height: 66px; justify-content: space-between; padding: 0 24px; }
   .mobile-student-brand { display: inline-flex; }
   .student-main { padding: 30px 24px 50px; }
   .tutor-stats { grid-template-columns: repeat(3, 1fr); }
+  .admin-stats { grid-template-columns: repeat(3, 1fr); }
+  .admin-operation-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 650px) {
@@ -391,7 +478,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .overview-two-columns { grid-template-columns: 1fr; }
   .notification-summary { width: 100%; }
   .tutor-stats { grid-template-columns: 1fr; }
+  .admin-stats { grid-template-columns: 1fr 1fr; }
   .tutor-project-footer { align-items: flex-start; flex-direction: column; }
   .notification-item { display: flex; flex-direction: column; }
   .notification-item .text-button { align-self: flex-start; }
+  .admin-filters { grid-template-columns: 1fr; }
+  .admin-project-details { grid-template-columns: 1fr; }
+  .admin-project-card footer { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .admin-project-card footer .text-button { margin-left: 0; }
+  .admin-project-context, .admin-round { grid-template-columns: 1fr; }
+  .admin-workspace .student-title-row > .admin-status { margin-top: 0; }
 }

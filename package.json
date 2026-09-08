@@ -10,6 +10,8 @@
     "build": "tsc -b && vite build",
     "qa": "node server/qa.mjs",
     "qa:flow": "node server/qa-fullflow.mjs",
+    "qa:admin": "node server/qa-admin-dashboard.mjs",
+    "qa:admin-operations": "node server/qa-admin-operations.mjs",
     "qa:tutor": "node server/qa-tutor-flow.mjs",
     "preview": "vite preview",
     "start": "node server/index.js"

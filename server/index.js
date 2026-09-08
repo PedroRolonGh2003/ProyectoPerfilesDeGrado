@@ -144,6 +144,20 @@ async function requireTutor(request, response, next) {
   }
 }
 
+async function requireAdministrator(request, response, next) {
+  try {
+    const session = await sessionFromRequest(request)
+    if (!session) return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
+    if (session.rol_codigo !== 'ADMINISTRADOR') {
+      return response.status(403).json({ message: 'Esta vista está disponible únicamente para Administración.' })
+    }
+    request.session = session
+    return next()
+  } catch (error) {
+    return next(error)
+  }
+}
+
 function text(value) {
   return typeof value === 'string' ? value.trim() : ''
 }
@@ -221,6 +235,125 @@ async function createNotification(databaseClient, { userId, recipientEmail, proj
   return notification.rows[0].id
 }
 
+function deadlineAtEndOfDay(value) {
+  const date = text(value)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
+  const parsed = new Date(`${date}T23:59:59-04:00`)
+  return Number.isNaN(parsed.getTime()) || parsed <= new Date() ? null : parsed
+}
+
+async function recordAudit(databaseClient, session, { projectId = null, action, entity, entityId = null, detail = {} }) {
+  await databaseClient.query(
+    `INSERT INTO titulacion.auditoria
+      (usuario_id, rol_activo_id, sesion_id, proyecto_id, accion, entidad, entidad_id, detalle)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
+    [session.usuario_id, session.rol_id, session.sesion_id, projectId, action, entity, entityId, JSON.stringify(detail)],
+  )
+}
+
+async function recordProjectStatus(databaseClient, { projectId, previousStateId, nextStateId, previousPhaseId, nextPhaseId, userId, reason }) {
+  if (previousStateId === nextStateId && previousPhaseId === nextPhaseId) return
+  await databaseClient.query(
+    `INSERT INTO titulacion.historial_estados
+      (proyecto_id, estado_anterior_id, estado_nuevo_id, fase_anterior_id, fase_nueva_id, cambiado_por_usuario_id, motivo)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [projectId, previousStateId, nextStateId, previousPhaseId, nextPhaseId, userId, reason],
+  )
+}
+
+async function lockedProject(databaseClient, projectId) {
+  const project = await databaseClient.query(
+    `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.estado_actual_id, p.fase_actual_id,
+            ep.codigo AS estado_codigo, g.carrera_id
+     FROM titulacion.proyectos p
+     JOIN titulacion.gestiones g ON g.id = p.gestion_id
+     JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+     WHERE p.id = $1
+     FOR UPDATE`,
+    [projectId],
+  )
+  return project.rows[0] ?? null
+}
+
+async function staffWithRole(databaseClient, { teacherId, careerId, roleCode }) {
+  const staff = await databaseClient.query(
+    `SELECT d.id, d.usuario_id, trim(concat(u.nombres, ' ', u.apellidos)) AS name, u.correo
+     FROM titulacion.docentes d
+     JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
+     JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+     JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = $3
+     WHERE d.id = $1 AND d.carrera_id = $2 AND d.activo`,
+    [teacherId, careerId, roleCode],
+  )
+  return staff.rows[0] ?? null
+}
+
+async function replaceProjectAssignment(databaseClient, { project, type, staff, assignedByUserId }) {
+  const current = await databaseClient.query(
+    `SELECT id, docente_id, activo
+     FROM titulacion.asignaciones_proyecto
+     WHERE proyecto_id = $1 AND tipo = $2
+       AND (activo OR ($2 = 'TUTOR' AND NOT activo AND fecha_fin IS NULL))
+     FOR UPDATE`,
+    [project.id, type],
+  )
+  if (current.rows.length === 1 && current.rows[0].docente_id === staff.id) return { changed: false, assignmentId: current.rows[0].id }
+
+  if (current.rows.length > 0) {
+    await databaseClient.query(
+      `UPDATE titulacion.asignaciones_proyecto
+       SET activo = false,
+           fecha_fin = now(),
+           motivo_cambio = $2
+       WHERE id = ANY($1::uuid[])`,
+      [
+        current.rows.map((item) => item.id),
+        `${type === 'TUTOR' ? 'Tutoría' : 'Revisión'} reasignada por Administración.`,
+      ],
+    )
+  }
+
+  const assignment = await databaseClient.query(
+    `INSERT INTO titulacion.asignaciones_proyecto
+      (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id`,
+    [
+      project.id,
+      staff.id,
+      type,
+      assignedByUserId,
+      type !== 'TUTOR',
+      type === 'TUTOR'
+        ? 'Tutor asignado por Administración; pendiente de aceptación.'
+        : 'Revisor asignado por Administración.',
+    ],
+  )
+
+  if (type === 'TUTOR') {
+    await createNotification(databaseClient, {
+      userId: staff.usuario_id,
+      recipientEmail: staff.correo,
+      projectId: project.id,
+      type: 'SOLICITUD_TUTORIA',
+      title: 'Nueva invitación de tutoría',
+      message: `Administración te invita a acompañar el proyecto ${project.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
+      link: '/tutor/invitaciones',
+      queueEmail: true,
+    })
+  } else {
+    await createNotification(databaseClient, {
+      userId: staff.usuario_id,
+      projectId: project.id,
+      type: 'ASIGNACION_REVISION',
+      title: 'Nueva asignación de revisión',
+      message: `Administración te asignó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}.`,
+      link: '/revisor',
+    })
+  }
+  return { changed: true, assignmentId: assignment.rows[0].id }
+}
+
 app.get('/api/health', async (_request, response, next) => {
   try {
     await pool.query('SELECT 1')
@@ -264,8 +397,9 @@ app.post('/api/auth/login', async (request, response, next) => {
          AND (
            (r.codigo = 'ESTUDIANTE' AND e.id IS NOT NULL)
            OR (r.codigo = 'TUTOR' AND d.id IS NOT NULL)
+           OR r.codigo = 'ADMINISTRADOR'
          )
-       ORDER BY CASE r.codigo WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 ELSE 3 END
+       ORDER BY CASE r.codigo WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'ADMINISTRADOR' THEN 3 ELSE 4 END
        LIMIT 1`,
       [identifier],
     )
@@ -371,6 +505,680 @@ app.post('/api/notifications/:notificationId/read', requireSession, async (reque
     if (!result.rows[0]) return response.status(404).json({ message: 'La notificación no está disponible.' })
     return response.json({ id: result.rows[0].id, readAt: result.rows[0].leida_en })
   } catch (error) {
+    return next(error)
+  }
+})
+
+app.get('/api/admin/dashboard', requireAdministrator, async (request, response, next) => {
+  try {
+    const search = text(request.query?.search).slice(0, 100)
+    const status = text(request.query?.status).toUpperCase().slice(0, 80)
+    const filters = []
+    const values = []
+
+    if (search) {
+      values.push(`%${search}%`)
+      filters.push(`(
+        vp.codigo_seguimiento ILIKE $${values.length}
+        OR vp.titulo_tentativo ILIKE $${values.length}
+        OR vp.estudiantes ILIKE $${values.length}
+        OR vp.tutor ILIKE $${values.length}
+      )`)
+    }
+    if (status) {
+      values.push(status)
+      filters.push(`vp.estado_codigo = $${values.length}`)
+    }
+
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+    const [projects, statuses] = await Promise.all([
+      pool.query(
+        `WITH vista_proyectos AS (
+           SELECT p.id,
+                  p.codigo_seguimiento,
+                  p.titulo_tentativo,
+                  p.registrado_en,
+                  g.nombre AS gestion_nombre,
+                  m.nombre AS modalidad_nombre,
+                  f.codigo AS fase_codigo,
+                  f.nombre AS fase_nombre,
+                  ep.codigo AS estado_codigo,
+                  ep.nombre AS estado_nombre,
+                  ep.es_final,
+                  students.estudiantes,
+                  tutor.nombre AS tutor,
+                  tutor.pendiente AS tutoria_pendiente,
+                  tutor.confirmada AS tutoria_confirmada,
+                  reviews.fecha_limite_revision,
+                  reviews.revisiones_pendientes,
+                  reviews.revision_vencida
+           FROM titulacion.proyectos p
+           JOIN titulacion.gestiones g ON g.id = p.gestion_id
+           JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
+           JOIN titulacion.fases f ON f.id = p.fase_actual_id
+           JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+           LEFT JOIN LATERAL (
+             SELECT string_agg(trim(concat(u.nombres, ' ', u.apellidos)), ', ' ORDER BY u.apellidos, u.nombres) AS estudiantes
+             FROM titulacion.proyecto_estudiantes pe
+             JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+             JOIN titulacion.usuarios u ON u.id = e.usuario_id
+             WHERE pe.proyecto_id = p.id AND pe.activo
+           ) students ON true
+           LEFT JOIN LATERAL (
+             SELECT string_agg(trim(concat(u.nombres, ' ', u.apellidos)), ', ' ORDER BY a.fecha_asignacion DESC) FILTER (
+                      WHERE a.tipo = 'TUTOR' AND a.fecha_fin IS NULL
+                    ) AS nombre,
+                    COALESCE(bool_or(a.tipo = 'TUTOR' AND NOT a.activo AND a.fecha_fin IS NULL), false) AS pendiente,
+                    COALESCE(bool_or(a.tipo = 'TUTOR' AND a.activo), false) AS confirmada
+             FROM titulacion.asignaciones_proyecto a
+             JOIN titulacion.docentes d ON d.id = a.docente_id
+             JOIN titulacion.usuarios u ON u.id = d.usuario_id
+             WHERE a.proyecto_id = p.id
+           ) tutor ON true
+           LEFT JOIN LATERAL (
+             SELECT min(rr.fecha_limite) FILTER (WHERE rr.cerrada_en IS NULL) AS fecha_limite_revision,
+                    count(r.id) FILTER (WHERE r.decidida_en IS NULL)::int AS revisiones_pendientes,
+                    COALESCE(bool_or(rr.fecha_limite < now() AND rr.cerrada_en IS NULL), false) AS revision_vencida
+             FROM titulacion.rondas_revision rr
+             JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+             JOIN titulacion.documentos d ON d.id = vd.documento_id
+             LEFT JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id
+             WHERE d.proyecto_id = p.id
+           ) reviews ON true
+         )
+         SELECT *
+         FROM vista_proyectos vp
+         ${where}
+         ORDER BY vp.revision_vencida DESC, vp.registrado_en DESC
+         LIMIT 100`,
+        values,
+      ),
+      pool.query(
+        `SELECT codigo, nombre
+         FROM titulacion.estados_proyecto
+         ORDER BY nombre`,
+      ),
+    ])
+
+    const projectRows = projects.rows.map((project) => ({
+      id: project.id,
+      code: project.codigo_seguimiento,
+      title: project.titulo_tentativo,
+      students: project.estudiantes ?? 'Sin estudiante asignado',
+      tutor: project.tutor ?? 'Sin tutor asignado',
+      tutorStatus: project.tutoria_confirmada ? 'CONFIRMADA' : project.tutoria_pendiente ? 'PENDIENTE' : 'SIN_ASIGNAR',
+      management: project.gestion_nombre,
+      modality: project.modalidad_nombre,
+      phaseCode: project.fase_codigo,
+      phase: project.fase_nombre,
+      statusCode: project.estado_codigo,
+      status: project.estado_nombre,
+      isFinal: project.es_final,
+      registeredAt: project.registrado_en,
+      reviewDeadline: project.fecha_limite_revision,
+      pendingReviews: Number(project.revisiones_pendientes ?? 0),
+      isOverdue: project.revision_vencida,
+    }))
+
+    const summary = projectRows.reduce((total, project) => ({
+      total: total.total + 1,
+      registered: total.registered + (project.statusCode === 'REGISTRADO' ? 1 : 0),
+      inReview: total.inReview + (project.statusCode === 'EN_REVISION' ? 1 : 0),
+      observed: total.observed + (project.statusCode === 'OBSERVADO' ? 1 : 0),
+      overdue: total.overdue + (project.isOverdue ? 1 : 0),
+    }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0 })
+
+    return response.json({
+      user: sanitizeUser(request.session),
+      summary,
+      statuses: statuses.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
+      projects: projectRows,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, response, next) => {
+  try {
+    const { projectId } = request.params
+    if (!isUuid(projectId)) return response.status(400).json({ message: 'El proyecto no es válido.' })
+
+    const projectResult = await pool.query(
+      `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion, p.objetivo_general,
+              p.fase_actual_id, p.estado_actual_id, p.registrado_en,
+              g.nombre AS gestion_nombre, g.carrera_id,
+              m.nombre AS modalidad_nombre,
+              f.codigo AS fase_codigo, f.nombre AS fase_nombre,
+              ep.codigo AS estado_codigo, ep.nombre AS estado_nombre
+       FROM titulacion.proyectos p
+       JOIN titulacion.gestiones g ON g.id = p.gestion_id
+       JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
+       JOIN titulacion.fases f ON f.id = p.fase_actual_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       WHERE p.id = $1`,
+      [projectId],
+    )
+    const project = projectResult.rows[0]
+    if (!project) return response.status(404).json({ message: 'El proyecto no existe.' })
+
+    const [students, staff, assignments, profiles, rounds, statuses, phases, cancellation] = await Promise.all([
+      pool.query(
+        `SELECT trim(concat(u.nombres, ' ', u.apellidos)) AS name, e.registro_universitario AS registration
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id
+         WHERE pe.proyecto_id = $1 AND pe.activo
+         ORDER BY pe.es_responsable_principal DESC, u.apellidos, u.nombres`,
+        [projectId],
+      ),
+      pool.query(
+        `SELECT d.id, trim(concat(u.nombres, ' ', u.apellidos)) AS name, u.correo,
+                array_agg(r.codigo ORDER BY r.codigo) AS roles
+         FROM titulacion.docentes d
+         JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
+         JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+         JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo
+         WHERE d.carrera_id = $1 AND d.activo AND r.codigo IN ('TUTOR', 'REVISOR')
+         GROUP BY d.id, u.id
+         ORDER BY u.apellidos, u.nombres`,
+        [project.carrera_id],
+      ),
+      pool.query(
+        `SELECT a.id, a.tipo, a.activo, a.fecha_asignacion, a.fecha_limite, a.fecha_fin, a.respondida_en, a.motivo_cambio,
+                d.id AS docente_id, trim(concat(u.nombres, ' ', u.apellidos)) AS docente_nombre, u.correo
+         FROM titulacion.asignaciones_proyecto a
+         JOIN titulacion.docentes d ON d.id = a.docente_id
+         JOIN titulacion.usuarios u ON u.id = d.usuario_id
+         WHERE a.proyecto_id = $1
+           AND (a.activo OR (a.tipo = 'TUTOR' AND NOT a.activo AND a.fecha_fin IS NULL))
+         ORDER BY CASE a.tipo WHEN 'TUTOR' THEN 1 WHEN 'REVISOR_1' THEN 2 ELSE 3 END`,
+        [projectId],
+      ),
+      pool.query(
+        `SELECT d.id AS document_id, d.nombre, vd.id AS version_id, vd.numero_version, vd.nombre_archivo,
+                vd.subida_en, vd.tamano_bytes
+         FROM titulacion.documentos d
+         JOIN titulacion.versiones_documento vd ON vd.documento_id = d.id
+         WHERE d.proyecto_id = $1 AND d.activo AND d.tipo_documento = 'PERFIL_PROYECTO'
+         ORDER BY vd.numero_version DESC`,
+        [projectId],
+      ),
+      pool.query(
+        `SELECT rr.id, rr.numero_ronda, rr.fecha_solicitud, rr.fecha_limite, rr.cerrada_en,
+                vd.numero_version,
+                COALESCE(json_agg(json_build_object(
+                  'id', r.id,
+                  'decision', r.decision,
+                  'decidedAt', r.decidida_en,
+                  'comment', r.comentario_general,
+                  'assignmentType', a.tipo,
+                  'reviewer', trim(concat(u.nombres, ' ', u.apellidos)),
+                  'openObservations', (SELECT count(*)::int FROM titulacion.observaciones o WHERE o.revision_id = r.id AND o.estado = 'ABIERTA')
+                ) ORDER BY a.tipo) FILTER (WHERE r.id IS NOT NULL), '[]'::json) AS revisiones
+         FROM titulacion.rondas_revision rr
+         JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+         JOIN titulacion.documentos d ON d.id = vd.documento_id
+         LEFT JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id
+         LEFT JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+         LEFT JOIN titulacion.docentes reviewer_docente ON reviewer_docente.id = a.docente_id
+         LEFT JOIN titulacion.usuarios u ON u.id = reviewer_docente.usuario_id
+         WHERE d.proyecto_id = $1
+         GROUP BY rr.id, vd.numero_version
+         ORDER BY rr.fecha_solicitud DESC`,
+        [projectId],
+      ),
+      pool.query(`SELECT codigo, nombre FROM titulacion.estados_proyecto ORDER BY nombre`),
+      pool.query(`SELECT codigo, nombre FROM titulacion.fases WHERE activa ORDER BY orden`),
+      pool.query(
+        `SELECT motivo, detalle, anulado_en
+         FROM titulacion.anulaciones_proyecto
+         WHERE proyecto_id = $1`,
+        [projectId],
+      ),
+    ])
+
+    return response.json({
+      project: {
+        id: project.id,
+        code: project.codigo_seguimiento,
+        title: project.titulo_tentativo,
+        description: project.descripcion,
+        generalObjective: project.objetivo_general,
+        management: project.gestion_nombre,
+        modality: project.modalidad_nombre,
+        phaseCode: project.fase_codigo,
+        phase: project.fase_nombre,
+        statusCode: project.estado_codigo,
+        status: project.estado_nombre,
+        registeredAt: project.registrado_en,
+      },
+      students: students.rows.map((item) => ({ name: item.name, registration: item.registration })),
+      staff: staff.rows.map((item) => ({ id: item.id, name: item.name, email: item.correo, roles: item.roles })),
+      assignments: assignments.rows.map((item) => ({
+        id: item.id,
+        type: item.tipo,
+        active: item.activo,
+        teacherId: item.docente_id,
+        teacher: item.docente_nombre,
+        email: item.correo,
+        assignedAt: item.fecha_asignacion,
+        deadline: item.fecha_limite,
+        finishedAt: item.fecha_fin,
+        respondedAt: item.respondida_en,
+        reason: item.motivo_cambio,
+      })),
+      profiles: profiles.rows.map((item) => ({
+        documentId: item.document_id,
+        versionId: item.version_id,
+        version: item.numero_version,
+        filename: item.nombre_archivo,
+        uploadedAt: item.subida_en,
+        size: Number(item.tamano_bytes),
+      })),
+      rounds: rounds.rows.map((item) => ({
+        id: item.id,
+        number: item.numero_ronda,
+        version: item.numero_version,
+        requestedAt: item.fecha_solicitud,
+        deadline: item.fecha_limite,
+        closedAt: item.cerrada_en,
+        reviews: item.revisiones ?? [],
+      })),
+      statuses: statuses.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
+      phases: phases.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
+      cancellation: cancellation.rows[0] ? {
+        reason: cancellation.rows[0].motivo,
+        detail: cancellation.rows[0].detalle,
+        cancelledAt: cancellation.rows[0].anulado_en,
+      } : null,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.patch('/api/admin/projects/:projectId', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const title = text(request.body?.title)
+    const description = text(request.body?.description)
+    const generalObjective = text(request.body?.generalObjective)
+    if (!isUuid(projectId) || title.length < 10 || description.length < 20 || generalObjective.length < 10) {
+      return response.status(422).json({ message: 'Completa el título, la descripción y el objetivo general con la información mínima requerida.' })
+    }
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes modificar los datos de un proyecto cerrado.' })
+    }
+    await databaseClient.query(
+      `UPDATE titulacion.proyectos
+       SET titulo_tentativo = $2, descripcion = $3, objetivo_general = $4, actualizado_en = now()
+       WHERE id = $1`,
+      [projectId, title, description, generalObjective],
+    )
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'ACTUALIZAR_DATOS_PROYECTO',
+      entity: 'proyectos',
+      entityId: projectId,
+      detail: { title },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'Los datos del proyecto fueron actualizados.' })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const tutorId = text(request.body?.tutorId)
+    const reviewer1Id = text(request.body?.reviewer1Id)
+    const reviewer2Id = text(request.body?.reviewer2Id)
+    if (!isUuid(projectId) || !isUuid(tutorId) || !isUuid(reviewer1Id) || !isUuid(reviewer2Id)) {
+      return response.status(422).json({ message: 'Selecciona un tutor y los dos revisores del proyecto.' })
+    }
+    if (reviewer1Id === reviewer2Id) return response.status(422).json({ message: 'Revisor 1 y Revisor 2 deben ser docentes diferentes.' })
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes cambiar responsables en un proyecto cerrado.' })
+    }
+
+    const [tutor, reviewer1, reviewer2] = await Promise.all([
+      staffWithRole(databaseClient, { teacherId: tutorId, careerId: project.carrera_id, roleCode: 'TUTOR' }),
+      staffWithRole(databaseClient, { teacherId: reviewer1Id, careerId: project.carrera_id, roleCode: 'REVISOR' }),
+      staffWithRole(databaseClient, { teacherId: reviewer2Id, careerId: project.carrera_id, roleCode: 'REVISOR' }),
+    ])
+    if (!tutor || !reviewer1 || !reviewer2) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'Los responsables seleccionados deben estar activos y habilitados en la carrera del proyecto.' })
+    }
+
+    const changes = await Promise.all([
+      replaceProjectAssignment(databaseClient, { project, type: 'TUTOR', staff: tutor, assignedByUserId: request.session.usuario_id }),
+      replaceProjectAssignment(databaseClient, { project, type: 'REVISOR_1', staff: reviewer1, assignedByUserId: request.session.usuario_id }),
+      replaceProjectAssignment(databaseClient, { project, type: 'REVISOR_2', staff: reviewer2, assignedByUserId: request.session.usuario_id }),
+    ])
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'ASIGNAR_RESPONSABLES',
+      entity: 'asignaciones_proyecto',
+      detail: { tutorId, reviewer1Id, reviewer2Id, changed: changes.filter((item) => item.changed).length },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'Los responsables del proyecto fueron actualizados.', changed: changes.filter((item) => item.changed).length })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const versionId = text(request.body?.versionId)
+    const deadline = deadlineAtEndOfDay(request.body?.deadline)
+    if (!isUuid(projectId) || !isUuid(versionId) || !deadline) {
+      return response.status(422).json({ message: 'Selecciona una versión del perfil y una fecha límite futura.' })
+    }
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes iniciar una revisión en un proyecto cerrado.' })
+    }
+
+    const profile = await databaseClient.query(
+      `SELECT vd.id, vd.numero_version
+       FROM titulacion.versiones_documento vd
+       JOIN titulacion.documentos d ON d.id = vd.documento_id
+       WHERE vd.id = $1 AND d.proyecto_id = $2 AND d.activo AND d.tipo_documento = 'PERFIL_PROYECTO'`,
+      [versionId, projectId],
+    )
+    if (!profile.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'La versión seleccionada no pertenece al perfil de este proyecto.' })
+    }
+
+    const reviewers = await databaseClient.query(
+      `SELECT a.id, a.tipo, d.usuario_id, u.correo
+       FROM titulacion.asignaciones_proyecto a
+       JOIN titulacion.docentes d ON d.id = a.docente_id
+       JOIN titulacion.usuarios u ON u.id = d.usuario_id
+       WHERE a.proyecto_id = $1 AND a.activo AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+       ORDER BY a.tipo
+       FOR UPDATE`,
+      [projectId],
+    )
+    if (reviewers.rows.length !== 2 || new Set(reviewers.rows.map((item) => item.tipo)).size !== 2) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'Asigna a Revisor 1 y Revisor 2 antes de enviar el perfil a revisión.' })
+    }
+
+    const openRound = await databaseClient.query(
+      `SELECT rr.id
+       FROM titulacion.rondas_revision rr
+       JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+       JOIN titulacion.documentos d ON d.id = vd.documento_id
+       WHERE d.proyecto_id = $1 AND rr.cerrada_en IS NULL
+       FOR UPDATE`,
+      [projectId],
+    )
+    if (openRound.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'El proyecto ya tiene una ronda de revisión abierta.' })
+    }
+
+    const roundNumber = await databaseClient.query(
+      `SELECT COALESCE(max(rr.numero_ronda), 0)::int + 1 AS next_number
+       FROM titulacion.rondas_revision rr
+       JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+       JOIN titulacion.documentos d ON d.id = vd.documento_id
+       WHERE d.proyecto_id = $1`,
+      [projectId],
+    )
+    const phase = await databaseClient.query(`SELECT id FROM titulacion.fases WHERE codigo = 'REVISION_PERFIL' AND activa`)
+    const reviewState = await databaseClient.query(`SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'EN_REVISION'`)
+    if (!phase.rows[0] || !reviewState.rows[0]) throw new Error('Faltan catálogos para iniciar la revisión.')
+
+    const round = await databaseClient.query(
+      `INSERT INTO titulacion.rondas_revision
+        (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [versionId, phase.rows[0].id, roundNumber.rows[0].next_number, request.session.usuario_id, deadline],
+    )
+    await databaseClient.query(
+      `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
+       SELECT $1, unnest($2::uuid[])`,
+      [round.rows[0].id, reviewers.rows.map((item) => item.id)],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.asignaciones_proyecto
+       SET fecha_limite = $2
+       WHERE id = ANY($1::uuid[])`,
+      [reviewers.rows.map((item) => item.id), deadline],
+    )
+    for (const reviewer of reviewers.rows) {
+      await createNotification(databaseClient, {
+        userId: reviewer.usuario_id,
+        projectId,
+        type: 'REVISION_ASIGNADA',
+        title: 'Perfil pendiente de revisión',
+        message: `El perfil ${project.codigo_seguimiento} fue enviado a revisión. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+        link: '/revisor',
+      })
+    }
+    await recordProjectStatus(databaseClient, {
+      projectId,
+      previousStateId: project.estado_actual_id,
+      nextStateId: reviewState.rows[0].id,
+      previousPhaseId: project.fase_actual_id,
+      nextPhaseId: phase.rows[0].id,
+      userId: request.session.usuario_id,
+      reason: `Ronda ${roundNumber.rows[0].next_number} de revisión del perfil programada por Administración.`,
+    })
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'INICIAR_RONDA_REVISION',
+      entity: 'rondas_revision',
+      entityId: round.rows[0].id,
+      detail: { versionId, deadline: deadline.toISOString(), reviewers: reviewers.rows.map((item) => item.id) },
+    })
+    await databaseClient.query('COMMIT')
+    return response.status(201).json({ message: 'La ronda de revisión fue creada y notificada a los revisores.', roundId: round.rows[0].id })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.patch('/api/admin/projects/:projectId/status', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const statusCode = text(request.body?.statusCode).toUpperCase()
+    const phaseCode = text(request.body?.phaseCode).toUpperCase()
+    const reason = text(request.body?.reason)
+    if (!isUuid(projectId) || !statusCode || !phaseCode || reason.length < 8) {
+      return response.status(422).json({ message: 'Selecciona fase, estado y registra un motivo de al menos 8 caracteres.' })
+    }
+    if (statusCode === 'ANULADO') return response.status(422).json({ message: 'Para anular un proyecto utiliza la acción de anulación para conservar el motivo y el detalle.' })
+    if (statusCode === 'FINALIZADO') return response.status(422).json({ message: 'El cierre final se habilitará únicamente mediante el flujo de formularios y aprobaciones.' })
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes modificar el estado de un proyecto cerrado.' })
+    }
+    const catalog = await databaseClient.query(
+      `SELECT
+         (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id,
+         (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`,
+      [statusCode, phaseCode],
+    )
+    if (!catalog.rows[0].state_id || !catalog.rows[0].phase_id) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'La fase o el estado seleccionado no existe.' })
+    }
+    await recordProjectStatus(databaseClient, {
+      projectId,
+      previousStateId: project.estado_actual_id,
+      nextStateId: catalog.rows[0].state_id,
+      previousPhaseId: project.fase_actual_id,
+      nextPhaseId: catalog.rows[0].phase_id,
+      userId: request.session.usuario_id,
+      reason,
+    })
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'CAMBIAR_ESTADO_PROYECTO',
+      entity: 'proyectos',
+      entityId: projectId,
+      detail: { previousStatus: project.estado_codigo, statusCode, phaseCode, reason },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'La fase y el estado del proyecto fueron actualizados.' })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.post('/api/admin/projects/:projectId/cancel', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const reason = text(request.body?.reason)
+    const detail = text(request.body?.detail)
+    if (!isUuid(projectId) || reason.length < 5 || detail.length < 10) {
+      return response.status(422).json({ message: 'Indica el motivo y un detalle de al menos 10 caracteres para anular el proyecto.' })
+    }
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'El proyecto ya fue anulado.' })
+    }
+    if (project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes anular un proyecto finalizado.' })
+    }
+    const cancelledState = await databaseClient.query(`SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'ANULADO'`)
+    if (!cancelledState.rows[0]) throw new Error('No existe el estado ANULADO.')
+    const cancellation = await databaseClient.query(
+      `INSERT INTO titulacion.anulaciones_proyecto
+        (proyecto_id, solicitado_por_usuario_id, autorizado_por_usuario_id, motivo, detalle)
+       VALUES ($1, $2, $2, $3, $4)
+       RETURNING id`,
+      [projectId, request.session.usuario_id, reason, detail],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.asignaciones_proyecto
+       SET activo = false,
+           fecha_fin = COALESCE(fecha_fin, now()),
+           motivo_cambio = COALESCE(motivo_cambio, 'Asignación finalizada por anulación del proyecto.')
+       WHERE proyecto_id = $1 AND (activo OR fecha_fin IS NULL)`,
+      [projectId],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.rondas_revision rr
+       SET cerrada_en = COALESCE(rr.cerrada_en, now())
+       FROM titulacion.versiones_documento vd
+       JOIN titulacion.documentos d ON d.id = vd.documento_id
+       WHERE rr.version_documento_id = vd.id AND d.proyecto_id = $1 AND rr.cerrada_en IS NULL`,
+      [projectId],
+    )
+    await recordProjectStatus(databaseClient, {
+      projectId,
+      previousStateId: project.estado_actual_id,
+      nextStateId: cancelledState.rows[0].id,
+      previousPhaseId: project.fase_actual_id,
+      nextPhaseId: project.fase_actual_id,
+      userId: request.session.usuario_id,
+      reason: `Proyecto anulado. ${reason}: ${detail}`,
+    })
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'ANULAR_PROYECTO',
+      entity: 'anulaciones_proyecto',
+      entityId: cancellation.rows[0].id,
+      detail: { reason, detail },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'El proyecto fue anulado y sus asignaciones y revisiones abiertas fueron cerradas.' })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.get('/api/admin/documents/:documentId/download', requireAdministrator, async (request, response, next) => {
+  try {
+    const { documentId } = request.params
+    const versionId = text(request.query?.versionId)
+    if (!isUuid(documentId) || (versionId && !isUuid(versionId))) return response.status(400).json({ message: 'El documento no es válido.' })
+    const result = await pool.query(
+      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo
+       FROM titulacion.documentos d
+       JOIN titulacion.versiones_documento vd ON vd.documento_id = d.id
+       WHERE d.id = $1 AND d.activo AND ($2::uuid IS NULL OR vd.id = $2)
+       ORDER BY vd.numero_version DESC
+       LIMIT 1`,
+      [documentId, versionId || null],
+    )
+    const version = result.rows[0]
+    if (!version) return response.status(404).json({ message: 'El archivo no está disponible.' })
+    const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
+    if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
+    await access(filePath)
+    return response.download(filePath, version.nombre_archivo)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return response.status(404).json({ message: 'El archivo no fue encontrado.' })
     return next(error)
   }
 })

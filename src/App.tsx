@@ -37,7 +37,13 @@ type TutorUser = UserBase & {
   teacherId: string
   registration: null
 }
-type User = StudentUser | TutorUser
+type AdministratorUser = UserBase & {
+  role: 'ADMINISTRADOR'
+  studentId: null
+  teacherId: null
+  registration: null
+}
+type User = StudentUser | TutorUser | AdministratorUser
 type TutorAssignment = {
   id: string
   projectId: string
@@ -72,6 +78,56 @@ type TutorDashboard = {
   projects: TutorAssignment[]
   notifications: AppNotification[]
   unreadCount: number
+}
+type AdminProject = {
+  id: string
+  code: string
+  title: string
+  students: string
+  tutor: string
+  tutorStatus: 'CONFIRMADA' | 'PENDIENTE' | 'SIN_ASIGNAR'
+  management: string
+  modality: string
+  phaseCode: string
+  phase: string
+  statusCode: string
+  status: string
+  isFinal: boolean
+  registeredAt: string
+  reviewDeadline: string | null
+  pendingReviews: number
+  isOverdue: boolean
+}
+type AdminDashboard = {
+  user: AdministratorUser
+  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number }
+  statuses: { code: string; name: string }[]
+  projects: AdminProject[]
+}
+type AdminStaff = { id: string; name: string; email: string; roles: ('TUTOR' | 'REVISOR')[] }
+type AdminAssignment = {
+  id: string
+  type: 'TUTOR' | 'REVISOR_1' | 'REVISOR_2'
+  active: boolean
+  teacherId: string
+  teacher: string
+  email: string
+  assignedAt: string
+  deadline: string | null
+  finishedAt: string | null
+  respondedAt: string | null
+  reason: string | null
+}
+type AdminProjectDetail = {
+  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'reviewDeadline' | 'pendingReviews' | 'isOverdue'> & { description: string; generalObjective: string }
+  students: { name: string; registration: string }[]
+  staff: AdminStaff[]
+  assignments: AdminAssignment[]
+  profiles: { documentId: string; versionId: string; version: number; filename: string; uploadedAt: string; size: number }[]
+  rounds: { id: string; number: number; version: number; requestedAt: string; deadline: string; closedAt: string | null; reviews: { id: string; decision: string; decidedAt: string | null; comment: string | null; assignmentType: string; reviewer: string; openObservations: number }[] }[]
+  statuses: { code: string; name: string }[]
+  phases: { code: string; name: string }[]
+  cancellation: { reason: string; detail: string; cancelledAt: string } | null
 }
 type SessionResponse = { user: User }
 
@@ -724,13 +780,253 @@ function TutorPortal({ data, onLogout, onRefresh }: { data: TutorDashboard; onLo
   </main>
 }
 
+function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh }: { projectId: string; user: AdministratorUser; onBack: () => void; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+  const [detail, setDetail] = useState<AdminProjectDetail | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [message, setMessage] = useState('')
+  const [projectTitle, setProjectTitle] = useState('')
+  const [projectDescription, setProjectDescription] = useState('')
+  const [projectObjective, setProjectObjective] = useState('')
+  const [tutorId, setTutorId] = useState('')
+  const [reviewer1Id, setReviewer1Id] = useState('')
+  const [reviewer2Id, setReviewer2Id] = useState('')
+  const [profileVersionId, setProfileVersionId] = useState('')
+  const [reviewDeadline, setReviewDeadline] = useState('')
+  const [statusCode, setStatusCode] = useState('')
+  const [phaseCode, setPhaseCode] = useState('')
+  const [statusReason, setStatusReason] = useState('')
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelDetail, setCancelDetail] = useState('')
+  const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'A'
+
+  function defaultDeadline() {
+    const date = new Date()
+    date.setDate(date.getDate() + 7)
+    return date.toISOString().slice(0, 10)
+  }
+
+  async function loadDetail() {
+    setIsLoading(true)
+    try {
+      const payload = await api<AdminProjectDetail>(`/api/admin/projects/${projectId}`)
+      setDetail(payload)
+      setProjectTitle(payload.project.title)
+      setProjectDescription(payload.project.description)
+      setProjectObjective(payload.project.generalObjective)
+      setTutorId(payload.assignments.find((item) => item.type === 'TUTOR')?.teacherId ?? '')
+      setReviewer1Id(payload.assignments.find((item) => item.type === 'REVISOR_1')?.teacherId ?? '')
+      setReviewer2Id(payload.assignments.find((item) => item.type === 'REVISOR_2')?.teacherId ?? '')
+      setProfileVersionId(payload.profiles[0]?.versionId ?? '')
+      setReviewDeadline(defaultDeadline())
+      setStatusCode(payload.project.statusCode)
+      setPhaseCode(payload.project.phaseCode)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible cargar el proyecto.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadDetail() }, [projectId])
+
+  async function submitAssignments(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/assignments`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tutorId, reviewer1Id, reviewer2Id }) })
+      setMessage(result.message)
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar los responsables.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function saveProjectData(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: projectTitle, description: projectDescription, generalObjective: projectObjective }) })
+      setMessage(result.message)
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar los datos del proyecto.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function startReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versionId: profileVersionId, deadline: reviewDeadline }) })
+      setMessage(result.message)
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible iniciar la revisión.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function changeStatus(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ statusCode, phaseCode, reason: statusReason }) })
+      setMessage(result.message)
+      setStatusReason('')
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar la fase y el estado.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function cancelProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: cancelReason, detail: cancelDetail }) })
+      setMessage(result.message)
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible anular el proyecto.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const tutors = detail?.staff.filter((item) => item.roles.includes('TUTOR')) ?? []
+  const reviewers = detail?.staff.filter((item) => item.roles.includes('REVISOR')) ?? []
+  const isCancelled = detail?.project.statusCode === 'ANULADO'
+
+  return <main className="student-page admin-page">
+    <aside className="student-sidebar admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></aside>
+    <section className="student-content"><header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Administración</span><span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span><Icon name="chevron" /></div></header><div className="student-main admin-main admin-workspace">
+      <button className="text-button admin-back" onClick={onBack} type="button">← Volver a proyectos</button>
+      {isLoading && <section className="documents-loading">Cargando información operativa del proyecto…</section>}
+      {!isLoading && !detail && <section className="tutor-empty"><Icon name="clipboard" /><strong>No fue posible cargar el proyecto.</strong><span>{message || 'Intenta nuevamente desde el listado.'}</span></section>}
+      {!isLoading && detail && <>
+        <div className="breadcrumb">Administración <span>/</span> Proyectos <span>/</span> {detail.project.code}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Gestión del proyecto</p><h1>{detail.project.title}</h1><p>{detail.project.code} · {detail.project.management} · {detail.project.modality}</p></div><span className={`admin-status status-${detail.project.statusCode.toLocaleLowerCase()}`}>{detail.project.phase} · {detail.project.status}</span></div>
+        {message && <p className="student-message is-visible tutor-message">{message}</p>}
+        <section className="admin-project-context"><div><small>Estudiante{detail.students.length === 1 ? '' : 's'}</small><strong>{detail.students.map((item) => item.name).join(', ') || 'Sin estudiante asignado'}</strong><span>{detail.students.map((item) => item.registration).join(', ')}</span></div><div><small>Objetivo general</small><p>{detail.project.generalObjective}</p></div></section>
+
+        {!isCancelled && <form className="admin-operation-card admin-project-edit" onSubmit={(event) => void saveProjectData(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>DATOS DEL PROYECTO</p><h2>Validar y actualizar propuesta</h2></div></div><p>Administración puede corregir los datos académicos registrados en el Formulario 1. Cada ajuste queda auditado.</p><label className="form-field"><span>Título del proyecto <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setProjectTitle(event.target.value)} value={projectTitle} /></label><label className="form-field"><span>Descripción <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setProjectDescription(event.target.value)} rows={3} value={projectDescription} /></label><label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setProjectObjective(event.target.value)} rows={2} value={projectObjective} /></label><button className="secondary-button" disabled={isSubmitting} type="submit">Guardar datos</button></form>}
+
+        {!isCancelled && <div className="admin-operation-grid">
+          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>RESPONSABLES</p><h2>Tutor y revisores</h2></div></div><p>Define los docentes responsables. Un nuevo tutor recibe una invitación y los revisores quedan listos para la siguiente ronda.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting} type="submit">Guardar responsables</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>REVISIÓN DEL PERFIL</p><h2>Programar ronda</h2></div></div><p>Envía una versión del perfil a Revisor 1 y Revisor 2 con un único plazo de respuesta.</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label>{detail.profiles[0] && <a className="document-download admin-document-link" href={`/api/admin/documents/${detail.profiles[0].documentId}/download?versionId=${detail.profiles[0].versionId}`}><Icon name="download" />Descargar última versión</a>}<label className="form-field"><span>Fecha límite <b>*</b></span><input disabled={isSubmitting} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setReviewDeadline(event.target.value)} type="date" value={reviewDeadline} /></label><button className="primary-button" disabled={isSubmitting || detail.profiles.length === 0} type="submit">Iniciar revisión</button></form>
+        </div>}
+
+        <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se programó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Solicitada: {formatDate(round.requestedAt)} · Límite: {formatDate(round.deadline)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
+
+        {!isCancelled ? <div className="admin-operation-grid admin-secondary-grid"><form className="admin-operation-card" onSubmit={(event) => void changeStatus(event)}><div className="admin-operation-heading"><Icon name="check" /><div><p>TRAZABILIDAD</p><h2>Actualizar fase y estado</h2></div></div><p>Todo cambio se guarda en el historial académico del proyecto.</p><label className="form-field"><span>Fase <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setPhaseCode(event.target.value)} value={phaseCode}>{detail.phases.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label><label className="form-field"><span>Estado <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setStatusCode(event.target.value)} value={statusCode}>{detail.statuses.filter((item) => !['ANULADO', 'FINALIZADO'].includes(item.code)).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label><label className="form-field"><span>Motivo <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setStatusReason(event.target.value)} placeholder="Registra por qué se realiza este cambio." rows={3} value={statusReason} /></label><button className="secondary-button" disabled={isSubmitting} type="submit">Guardar cambio</button></form><form className="admin-operation-card admin-cancel-card" onSubmit={(event) => void cancelProject(event)}><div className="admin-operation-heading"><Icon name="trash" /><div><p>ACCIÓN CONTROLADA</p><h2>Anular proyecto</h2></div></div><p>Esta acción cierra asignaciones y rondas abiertas, y conserva el registro de anulación.</p><label className="form-field"><span>Motivo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setCancelReason(event.target.value)} placeholder="Ej.: Abandono del proyecto" value={cancelReason} /></label><label className="form-field"><span>Detalle <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setCancelDetail(event.target.value)} placeholder="Explica la situación para el historial académico." rows={3} value={cancelDetail} /></label><button className="danger-button" disabled={isSubmitting} type="submit">Anular proyecto</button></form></div> : <section className="admin-cancellation"><Icon name="trash" /><div><h2>Proyecto anulado</h2><p><strong>{detail.cancellation?.reason}</strong> · {detail.cancellation?.detail}</p><small>{detail.cancellation?.cancelledAt && formatDate(detail.cancellation.cancelledAt)}</small></div></section>}
+      </>}
+    </div></section>
+  </main>
+}
+
+function AdminPortal({ data, onLogout, onRefresh }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+  const [view, setView] = useState<'home' | 'projects'>('home')
+  const [search, setSearch] = useState('')
+  const [status, setStatus] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'A'
+  const normalizedSearch = search.trim().toLocaleLowerCase()
+  const visibleProjects = data.projects.filter((project) => {
+    const matchesSearch = !normalizedSearch || [project.code, project.title, project.students, project.tutor].some((value) => value.toLocaleLowerCase().includes(normalizedSearch))
+    return matchesSearch && (!status || project.statusCode === status)
+  })
+  const heading = view === 'home' ? 'Inicio' : 'Proyectos'
+
+  if (selectedProjectId) return <AdminProjectWorkspace onBack={() => setSelectedProjectId('')} onLogout={onLogout} onRefresh={onRefresh} projectId={selectedProjectId} user={data.user} />
+
+  function projectCard(project: AdminProject) {
+    const reviewLabel = project.isOverdue
+      ? 'Revisión fuera de plazo'
+      : project.reviewDeadline
+        ? `Límite de revisión: ${formatDate(project.reviewDeadline)}`
+        : 'Sin revisión programada'
+    const tutorLabel = project.tutorStatus === 'CONFIRMADA'
+      ? 'Tutoría confirmada'
+      : project.tutorStatus === 'PENDIENTE'
+        ? 'Tutoría pendiente'
+        : 'Sin tutor asignado'
+
+    return <article className={project.isOverdue ? 'admin-project-card is-overdue' : 'admin-project-card'} key={project.id}>
+      <div className="admin-project-top"><span className="tutor-code">{project.code}</span><span className={`admin-status status-${project.statusCode.toLocaleLowerCase()}`}>{project.status}</span></div>
+      <h2>{project.title}</h2>
+      <div className="admin-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase}</span></div>
+      <div className="admin-project-details"><div><small>Tutor asignado</small><strong>{project.tutor}</strong><span>{tutorLabel}</span></div><div><small>Revisión</small><strong>{project.pendingReviews > 0 ? `${project.pendingReviews} pendiente${project.pendingReviews === 1 ? '' : 's'}` : 'Sin pendientes'}</strong><span>{reviewLabel}</span></div></div>
+      <footer><span>{project.management}</span><span>Registrado: {formatDate(project.registeredAt)}</span><button className="text-button" onClick={() => setSelectedProjectId(project.id)} type="button">Gestionar</button></footer>
+    </article>
+  }
+
+  return <main className="student-page admin-page">
+    <aside className="student-sidebar admin-sidebar">
+      <div>
+        <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
+        <p className="student-role">ADMINISTRACIÓN</p>
+        <nav aria-label="Navegación de Administración" className="student-nav">
+          <button className={view === 'home' ? 'is-active' : ''} onClick={() => setView('home')} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
+          <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
+          <button type="button"><Icon name="help" /><span>Ayuda</span></button>
+        </nav>
+      </div>
+      <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+    </aside>
+
+    <section className="student-content">
+      <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Administración</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.career}</small></span><Icon name="chevron" /></div></header>
+      <div className="student-main admin-main">
+        <div className="breadcrumb">Administración <span>/</span> {heading}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : 'Busca y filtra los proyectos para conocer su fase, responsables y revisiones.'}</p></div></div>
+
+        <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div><small>En registro</small><strong>{data.summary.registered}</strong><span>Requieren gestión inicial.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section>
+
+        {view === 'home' && <>
+          <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
+          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Proyectos recientes</h2><p>Prioriza los casos con una revisión vencida o con tutoría pendiente.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div>{data.projects.length > 0 ? <div className="admin-project-list">{data.projects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No hay proyectos registrados.</strong><span>Los registros del Formulario 1 aparecerán aquí.</span></section>}</section>
+        </>}
+
+        {view === 'projects' && <>
+          <section className="admin-filters" aria-label="Filtros de proyectos"><label><span>Buscar proyecto</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Código, título, estudiante o tutor" type="search" value={search} /></label><label><span>Estado</span><select onChange={(event) => setStatus(event.target.value)} value={status}><option value="">Todos los estados</option>{data.statuses.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label></section>
+          <div className="admin-list-heading"><span>{visibleProjects.length} proyecto{visibleProjects.length === 1 ? '' : 's'} encontrado{visibleProjects.length === 1 ? '' : 's'}</span>{(search || status) && <button className="text-button" onClick={() => { setSearch(''); setStatus('') }} type="button">Limpiar filtros</button>}</div>
+          {visibleProjects.length > 0 ? <div className="admin-project-list">{visibleProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No encontramos proyectos con esos filtros.</strong><span>Prueba con otro estado o término de búsqueda.</span></section>}
+        </>}
+      </div>
+    </section>
+  </main>
+}
+
 function App() {
-  const [data, setData] = useState<Bootstrap | TutorDashboard | null>(null)
+  const [data, setData] = useState<Bootstrap | TutorDashboard | AdminDashboard | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
+    if (session.user.role === 'ADMINISTRADOR') {
+      const dashboard = await api<AdminDashboard>('/api/admin/dashboard')
+      setData(dashboard)
+      return
+    }
     if (session.user.role === 'TUTOR') {
       const dashboard = await api<TutorDashboard>('/api/tutor/dashboard')
       setData(dashboard)
@@ -755,6 +1051,7 @@ function App() {
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
   if (!data) return <LoginView onAuthenticated={loadPortal} />
+  if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
   if ('invitations' in data) return <TutorPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
   return view === 'home'
     ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} />
