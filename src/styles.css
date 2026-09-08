@@ -1,0 +1,397 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@600;700&display=swap');
+
+:root {
+  --univalle-wine: #9f0043;
+  --univalle-wine-dark: #75002f;
+  color: #211a1b;
+  background: #f8f6f5;
+  font-family: 'DM Sans', Arial, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-width: 320px; }
+
+button, input { font: inherit; }
+
+button { cursor: pointer; }
+
+.login-page { display: grid; grid-template-columns: minmax(440px, 1.1fr) minmax(440px, .9fr); min-height: 100dvh; }
+
+.welcome-panel {
+  background: var(--univalle-wine);
+  color: #fffafb;
+  min-height: 100%;
+  overflow: hidden;
+  padding: 46px clamp(40px, 6.2vw, 108px) 34px;
+  position: relative;
+}
+
+.welcome-panel::before, .welcome-panel::after { border: 1px solid rgba(255, 255, 255, .13); border-radius: 50%; content: ''; position: absolute; }
+.welcome-panel::before { height: 520px; right: -238px; top: -190px; width: 520px; }
+.welcome-panel::after { bottom: -315px; height: 610px; left: -260px; width: 610px; }
+
+.welcome-content { display: flex; flex-direction: column; height: 100%; position: relative; z-index: 1; }
+
+.wordmark, .mobile-brand { align-items: center; color: inherit; display: inline-flex; gap: 12px; text-decoration: none; }
+.wordmark strong, .mobile-brand strong { display: block; font-size: 14px; font-weight: 700; letter-spacing: .16em; line-height: 1; }
+.wordmark small { display: block; font-size: 10px; letter-spacing: .035em; margin-top: 6px; opacity: .8; }
+
+.brand-logo { border-radius: 6px; display: block; flex: 0 0 auto; height: 54px; object-fit: cover; width: 54px; }
+
+.welcome-copy { margin-top: clamp(76px, 14vh, 175px); max-width: 540px; }
+.eyebrow { color: inherit; font-size: 11px; font-weight: 700; letter-spacing: .14em; margin: 0 0 16px; text-transform: uppercase; }
+.welcome-copy h1 { font-family: 'Playfair Display', Georgia, serif; font-size: clamp(42px, 4.2vw, 66px); font-weight: 600; letter-spacing: -.035em; line-height: 1.04; margin: 0; }
+.welcome-description { color: rgba(255, 250, 251, .78); font-size: 17px; line-height: 1.65; margin: 27px 0 0; max-width: 450px; }
+
+.phase-card { background: rgba(78, 0, 32, .24); border: 1px solid rgba(255, 255, 255, .15); border-radius: 14px; margin-top: auto; max-width: 525px; padding: 22px 25px 18px; }
+.phase-card > p { font-size: 13px; font-weight: 600; margin: 0 0 15px; }
+.phase-card ol { display: grid; gap: 11px; list-style: none; margin: 0; padding: 0; }
+.phase-card li { align-items: center; display: grid; gap: 12px; grid-template-columns: 25px 1fr; }
+.phase-card li > span { color: #e4a7b8; font-size: 10px; font-weight: 700; letter-spacing: .08em; }
+.phase-card li div { align-items: baseline; display: flex; gap: 10px; }
+.phase-card li strong { font-size: 13px; font-weight: 600; }
+.phase-card li small { color: rgba(255, 255, 255, .65); font-size: 12px; }
+.panel-footer { color: rgba(255, 255, 255, .57); font-size: 11px; letter-spacing: .03em; margin: 34px 0 0; position: relative; z-index: 1; }
+
+.form-panel { align-items: center; background: #fbfaf9; display: flex; justify-content: center; padding: 42px; }
+.form-wrapper { max-width: 398px; width: 100%; }
+.mobile-brand { color: var(--univalle-wine); display: none; }
+.mobile-brand .brand-logo { height: 42px; width: 42px; }
+.form-heading { margin-bottom: 37px; }
+.form-heading .eyebrow { color: var(--univalle-wine); margin-bottom: 13px; }
+.form-heading h2 { color: #2c2124; font-family: 'Playfair Display', Georgia, serif; font-size: 42px; letter-spacing: -.035em; line-height: 1.05; margin: 0; }
+.form-heading p:last-child { color: #786d70; font-size: 15px; line-height: 1.55; margin: 13px 0 0; }
+
+.field-label { color: #3d3034; display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.input-shell { align-items: center; background: #fff; border: 1px solid #ded7d8; border-radius: 8px; display: flex; height: 51px; margin-bottom: 23px; transition: border-color .18s, box-shadow .18s; }
+.input-shell:focus-within { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(159, 0, 67, .1); }
+.input-shell > svg { color: #88797d; flex: 0 0 auto; height: 19px; margin-left: 16px; width: 19px; }
+.input-shell input { background: transparent; border: 0; color: #2c2124; height: 100%; min-width: 0; outline: 0; padding: 0 14px; width: 100%; }
+.input-shell input::placeholder { color: #aaa0a3; }
+.password-heading { align-items: baseline; display: flex; justify-content: space-between; }
+.text-button { background: transparent; border: 0; color: var(--univalle-wine); font-size: 12px; padding: 0; }
+.text-button:hover { color: var(--univalle-wine-dark); text-decoration: underline; }
+.icon-button { align-items: center; background: transparent; border: 0; color: #88797d; display: grid; height: 42px; padding: 0 15px 0 4px; place-items: center; }
+.icon-button svg { height: 19px; margin: 0; width: 19px; }
+.remember-option { align-items: center; color: #675b5e; cursor: pointer; display: inline-flex; font-size: 13px; gap: 9px; margin-top: -4px; }
+.remember-option input { accent-color: var(--univalle-wine); height: 15px; margin: 0; width: 15px; }
+.submit-button { align-items: center; background: var(--univalle-wine); border: 1px solid var(--univalle-wine); border-radius: 8px; color: #fff; display: flex; font-size: 14px; font-weight: 600; justify-content: space-between; margin-top: 30px; min-height: 52px; padding: 0 17px 0 20px; transition: background .18s, transform .18s; width: 100%; }
+.submit-button:hover { background: var(--univalle-wine-dark); transform: translateY(-1px); }
+.submit-button svg { height: 20px; width: 20px; }
+.form-message { color: var(--univalle-wine); font-size: 13px; line-height: 1.45; margin: 0; max-height: 0; opacity: 0; overflow: hidden; transition: all .2s ease; }
+.form-message.is-visible { margin-top: 15px; max-height: 60px; opacity: 1; }
+.help-text { color: #8e8385; font-size: 12px; line-height: 1.5; margin: 30px 0 0; text-align: center; }
+.app-loading { align-items: center; background: #fbfaf9; color: #705e63; display: flex; font-size: 14px; justify-content: center; min-height: 100dvh; }
+button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: not-allowed; opacity: .68; }
+
+@media (max-width: 860px) {
+  .login-page { grid-template-columns: 1fr; }
+  .welcome-panel { display: none; }
+  .form-panel { min-height: 100dvh; padding: 32px 24px; }
+  .mobile-brand { display: inline-flex; margin-bottom: 68px; }
+}
+
+@media (max-width: 420px) {
+  .form-panel { align-items: flex-start; padding: 30px 20px; }
+  .mobile-brand { margin-bottom: 52px; }
+  .form-heading h2 { font-size: 38px; }
+  .password-heading { align-items: flex-start; flex-direction: column; gap: 5px; }
+}
+
+/* Student portal */
+.student-page { background: #f6f4f4; color: #302629; display: flex; min-height: 100dvh; }
+.student-sidebar { background: #fff; border-right: 1px solid #e6e0e1; display: flex; flex: 0 0 250px; flex-direction: column; justify-content: space-between; min-height: 100dvh; padding: 28px 16px 20px; }
+.student-brand { align-items: center; display: flex; gap: 10px; padding: 0 10px; }
+.student-brand .brand-logo { border-radius: 5px; height: 43px; width: 43px; }
+.student-brand strong { color: var(--univalle-wine); display: block; font-size: 12px; letter-spacing: .14em; }
+.student-brand small { color: #857a7d; display: block; font-size: 10px; margin-top: 4px; }
+.student-role { color: #95898c; font-size: 10px; font-weight: 700; letter-spacing: .12em; margin: 46px 10px 12px; }
+.student-nav { display: grid; gap: 5px; }
+.student-nav button { align-items: center; background: transparent; border: 0; border-radius: 7px; color: #756a6d; display: flex; font-size: 13px; gap: 12px; padding: 11px 12px; text-align: left; width: 100%; }
+.student-nav button svg { height: 18px; width: 18px; }
+.student-nav button:hover { background: #f8f3f5; color: var(--univalle-wine); }
+.student-nav button.is-active { background: #f9eaf0; color: var(--univalle-wine); font-weight: 700; }
+.sidebar-bottom { border-top: 1px solid #eee8e9; padding: 18px 6px 0; }
+.student-help { align-items: flex-start; color: #86797c; display: flex; font-size: 11px; gap: 8px; line-height: 1.45; padding: 0 5px 17px; }
+.student-help svg { color: var(--univalle-wine); flex: 0 0 auto; height: 18px; width: 18px; }
+.student-help strong, .student-help small { display: block; }
+.student-help strong { color: #514548; font-size: 11px; }
+.logout-button { align-items: center; background: transparent; border: 0; color: #84777a; display: flex; font-size: 12px; gap: 9px; padding: 8px 5px; }
+.logout-button:hover { color: var(--univalle-wine); }
+.logout-button svg { height: 17px; width: 17px; }
+
+.student-content { min-width: 0; width: 100%; }
+.student-header { align-items: center; background: #fff; border-bottom: 1px solid #e7e1e2; display: flex; height: 76px; justify-content: flex-end; padding: 0 clamp(24px, 5vw, 70px); }
+.session-info { align-items: center; display: flex; gap: 9px; }
+.session-info > span:last-of-type { display: grid; gap: 2px; }
+.session-info strong { color: #473b3e; font-size: 12px; }
+.session-info small { color: #968a8d; font-size: 10px; }
+.session-info > svg { color: #94878a; height: 18px; margin-left: 5px; width: 18px; }
+.demo-status { background: #fff2e7; border-radius: 99px; color: #9a4b14; font-size: 10px; font-weight: 700; margin-right: 8px; padding: 5px 9px; }
+.student-avatar { align-items: center; background: #f1d7e1; border-radius: 50%; color: var(--univalle-wine); display: inline-flex; font-size: 13px; font-weight: 700; height: 34px; justify-content: center; width: 34px; }
+.mobile-student-brand { align-items: center; color: var(--univalle-wine); display: none; gap: 9px; font-size: 12px; letter-spacing: .12em; }
+.mobile-student-brand .brand-logo { height: 35px; width: 35px; }
+
+.student-main { margin: 0 auto; max-width: 1060px; padding: 38px clamp(24px, 5vw, 70px) 64px; }
+.breadcrumb { color: #998d90; font-size: 12px; }
+.breadcrumb span { color: #b9afb1; padding: 0 7px; }
+.student-title-row { align-items: end; display: flex; gap: 35px; justify-content: space-between; margin: 20px 0 27px; }
+.student-title-row .eyebrow { color: var(--univalle-wine); margin-bottom: 10px; }
+.student-title-row h1 { color: #32272a; font-family: 'Playfair Display', Georgia, serif; font-size: clamp(32px, 3.4vw, 43px); letter-spacing: -.035em; line-height: 1.06; margin: 0; }
+.student-title-row p:last-child { color: #776c6f; font-size: 14px; line-height: 1.55; margin: 12px 0 0; max-width: 590px; }
+.form-progress { flex: 0 0 180px; font-size: 11px; }
+.form-progress span { color: #887c7f; }
+.form-progress strong { color: var(--univalle-wine); float: right; }
+.form-progress div { background: #e8e1e3; border-radius: 10px; height: 5px; margin-top: 8px; overflow: hidden; }
+.form-progress i { background: var(--univalle-wine); display: block; height: 100%; width: 0; }
+.student-callout { align-items: flex-start; background: #fdf0f4; border: 1px solid #f2d7e0; border-radius: 9px; display: flex; gap: 11px; margin-bottom: 22px; padding: 15px 17px; }
+.student-callout svg { color: var(--univalle-wine); flex: 0 0 auto; height: 20px; width: 20px; }
+.student-callout strong { color: #5f1231; font-size: 13px; }
+.student-callout p { color: #835d6b; font-size: 12px; line-height: 1.5; margin: 3px 0 0; }
+
+.project-form { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 10px 27px rgba(71, 39, 49, .04); }
+.form-section { border-bottom: 1px solid #eee8e9; padding: 30px clamp(21px, 4vw, 42px); }
+.section-heading { align-items: flex-start; display: flex; gap: 13px; margin-bottom: 25px; }
+.section-heading > span { align-items: center; background: #f7e8ed; border-radius: 50%; color: var(--univalle-wine); display: inline-flex; flex: 0 0 auto; font-size: 11px; font-weight: 700; height: 26px; justify-content: center; width: 26px; }
+.section-heading h2 { color: #3a2e31; font-size: 17px; margin: 2px 0 0; }
+.section-heading p { color: #8a7e81; font-size: 12px; line-height: 1.5; margin: 4px 0 0; }
+.field-grid { display: grid; gap: 19px; }
+.field-grid-three { grid-template-columns: 1fr 1.5fr 1fr; margin-bottom: 19px; }
+.form-field { display: block; margin-bottom: 19px; }
+.form-field > span, .objective-label > span { color: #514447; display: block; font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+.form-field b, .objective-label b, .form-footer b { color: var(--univalle-wine); }
+.form-field input, .form-field select, .form-field textarea, .readonly-field { background: #fff; border: 1px solid #ddd6d8; border-radius: 7px; color: #352a2d; font-size: 13px; outline: 0; padding: 11px 12px; transition: border-color .18s, box-shadow .18s; width: 100%; }
+.form-field select { appearance: auto; min-height: 42px; }
+.form-field textarea { line-height: 1.55; resize: vertical; }
+.form-field input:focus, .form-field select:focus, .form-field textarea:focus { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(159, 0, 67, .09); }
+.form-field input::placeholder, .form-field textarea::placeholder { color: #aca2a5; }
+.form-field small { color: #92878a; display: block; font-size: 10px; line-height: 1.45; margin-top: 6px; }
+.readonly-field { background: #f7f4f4; color: #8e8285; min-height: 42px; }
+.objectives-area { margin-top: 4px; }
+.objective-label { margin-bottom: 10px; }
+.objective-label small { color: #92878a; display: block; font-size: 11px; line-height: 1.45; margin-top: -2px; }
+.objective-input { align-items: center; display: flex; gap: 9px; margin-bottom: 9px; }
+.objective-input > span { align-items: center; background: #f5eff0; border-radius: 50%; color: #806f74; display: inline-flex; flex: 0 0 auto; font-size: 11px; font-weight: 700; height: 24px; justify-content: center; width: 24px; }
+.objective-input input { background: #fff; border: 1px solid #ddd6d8; border-radius: 7px; color: #352a2d; font-size: 13px; min-width: 0; outline: 0; padding: 10px 12px; width: 100%; }
+.objective-input input:focus { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(159, 0, 67, .09); }
+.objective-input button { background: transparent; border: 0; color: #9c888d; display: grid; padding: 5px; place-items: center; }
+.objective-input button:hover { color: #a81945; }
+.objective-input button svg { height: 18px; width: 18px; }
+.add-objective { align-items: center; background: transparent; border: 0; color: var(--univalle-wine); display: inline-flex; font-size: 12px; font-weight: 700; gap: 7px; margin: 5px 0 0 33px; padding: 6px 0; }
+.add-objective svg { height: 16px; width: 16px; }
+.upload-box { align-items: center; background: #fbfaf9; border: 1px dashed #cbbdc1; border-radius: 8px; color: #817276; cursor: pointer; display: flex; gap: 12px; min-height: 78px; padding: 14px; transition: background .18s, border-color .18s; }
+.upload-box:hover { background: #fcf4f6; border-color: var(--univalle-wine); }
+.upload-box.has-file { background: #f8f7f5; border-color: #84a68b; }
+.upload-box input { height: 1px; opacity: 0; position: absolute; width: 1px; }
+.upload-box > svg { color: var(--univalle-wine); flex: 0 0 auto; height: 23px; width: 23px; }
+.upload-box > div { display: grid; gap: 3px; min-width: 0; }
+.upload-box strong { color: #4d4144; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.upload-box small { color: #94898b; font-size: 10px; }
+.upload-box > span { color: var(--univalle-wine); font-size: 11px; font-weight: 700; margin-left: auto; white-space: nowrap; }
+.form-footer { align-items: center; display: flex; justify-content: space-between; padding: 23px clamp(21px, 4vw, 42px); }
+.form-footer > p { color: #94888b; font-size: 11px; margin: 0; }
+.form-footer > div { display: flex; gap: 10px; }
+.secondary-button, .primary-button { align-items: center; border-radius: 7px; display: inline-flex; font-size: 12px; font-weight: 700; gap: 8px; min-height: 40px; padding: 0 14px; }
+.secondary-button { background: #fff; border: 1px solid #dcd5d7; color: #6f6265; }
+.secondary-button:hover { background: #faf7f7; }
+.primary-button { background: var(--univalle-wine); border: 1px solid var(--univalle-wine); color: #fff; }
+.primary-button:hover { background: var(--univalle-wine-dark); }
+.primary-button svg { height: 17px; width: 17px; }
+.student-message { color: var(--univalle-wine); font-size: 12px; line-height: 1.45; margin: 0; max-height: 0; opacity: 0; overflow: hidden; padding: 0 clamp(21px, 4vw, 42px); transition: all .2s ease; }
+.student-message.is-visible { max-height: 60px; opacity: 1; padding-bottom: 22px; }
+.project-registered { background: #eef8f0; border-color: #cfe7d4; }
+.project-registered svg, .project-registered strong { color: #27653a; }
+.project-registered p { color: #5a7962; }
+.project-summary { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 10px 27px rgba(71, 39, 49, .04); }
+.project-summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, 1fr); margin: 2px 0 26px; }
+.project-summary-grid > div { background: #faf7f7; border: 1px solid #eee8e9; border-radius: 7px; display: grid; gap: 5px; min-height: 72px; padding: 13px; }
+.project-summary small { color: #94878a; font-size: 10px; }
+.project-summary-grid strong { color: #4d4144; font-size: 12px; line-height: 1.35; }
+.project-summary-copy { border-top: 1px solid #eee8e9; display: grid; gap: 6px; padding-top: 20px; }
+.project-summary-copy p { color: #66595d; font-size: 13px; line-height: 1.55; margin: 0 0 13px; }
+.documents-title { align-items: flex-start; }
+.document-project-tag { background: #fff; border: 1px solid #e7e0e2; border-radius: 8px; display: grid; gap: 5px; min-width: 170px; padding: 12px 15px; }
+.document-project-tag small { color: #968a8d; font-size: 10px; }
+.document-project-tag strong { color: var(--univalle-wine); font-size: 13px; letter-spacing: .03em; }
+.document-rules { margin-bottom: 18px; }
+.documents-loading, .empty-documents { align-items: center; background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; color: #7a6e71; display: flex; font-size: 13px; justify-content: center; min-height: 110px; }
+.empty-documents { flex-direction: column; gap: 8px; padding: 28px; text-align: center; }
+.empty-documents svg { color: var(--univalle-wine); height: 27px; width: 27px; }
+.empty-documents strong { color: #4b3e42; font-size: 13px; }
+.empty-documents span { color: #95898c; font-size: 11px; }
+.documents-list { display: grid; gap: 15px; }
+.document-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); overflow: hidden; }
+.document-card-header { align-items: center; display: flex; gap: 12px; padding: 20px clamp(18px, 3vw, 26px); }
+.document-symbol { align-items: center; background: #f9eaf0; border-radius: 8px; color: var(--univalle-wine); display: grid; flex: 0 0 auto; height: 38px; place-items: center; width: 38px; }
+.document-symbol svg { height: 20px; width: 20px; }
+.document-card-header > div:nth-child(2) { min-width: 0; }
+.document-card-header p { color: var(--univalle-wine); font-size: 10px; font-weight: 700; letter-spacing: .08em; margin: 0 0 5px; text-transform: uppercase; }
+.document-card-header h2 { color: #403438; font-size: 15px; margin: 0; }
+.document-card-header span { color: #968a8d; display: block; font-size: 11px; margin-top: 5px; }
+.document-version-badge { background: #f7f4f4; border-radius: 99px; color: #76676b; font-size: 10px; font-weight: 700; margin-left: auto; padding: 6px 9px; white-space: nowrap; }
+.document-latest { align-items: center; background: #fbfaf9; border-bottom: 1px solid #eee8e9; border-top: 1px solid #eee8e9; display: flex; gap: 20px; justify-content: space-between; padding: 15px clamp(18px, 3vw, 26px); }
+.document-latest > div { display: grid; gap: 4px; min-width: 0; }
+.document-latest small, .document-latest span { color: #968a8d; font-size: 10px; }
+.document-latest strong { color: #56484c; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-download { align-items: center; color: var(--univalle-wine); display: inline-flex; flex: 0 0 auto; font-size: 11px; font-weight: 700; gap: 6px; text-decoration: none; }
+.document-download:hover { color: var(--univalle-wine-dark); text-decoration: underline; }
+.document-download svg, .version-history a svg { height: 17px; width: 17px; }
+.version-history { border-bottom: 1px solid #eee8e9; color: #75686b; font-size: 12px; }
+.version-history summary { cursor: pointer; font-weight: 700; padding: 14px clamp(18px, 3vw, 26px); }
+.version-history ul { border-top: 1px solid #f0ebec; list-style: none; margin: 0; padding: 0 clamp(18px, 3vw, 26px); }
+.version-history li { align-items: center; border-bottom: 1px solid #f2edef; display: flex; gap: 12px; justify-content: space-between; padding: 11px 0; }
+.version-history li:last-child { border-bottom: 0; }
+.version-history li div { display: grid; gap: 4px; min-width: 0; }
+.version-history li strong { color: #5b4d51; font-size: 11px; }
+.version-history li span { color: #988c8f; font-size: 10px; line-height: 1.4; }
+.version-history a { color: var(--univalle-wine); padding: 4px; }
+.document-actions { align-items: center; display: flex; gap: 12px; padding: 15px clamp(18px, 3vw, 26px); }
+.document-actions small, .document-lock-note { color: #918487; font-size: 11px; line-height: 1.45; }
+.document-lock-note { background: #fcf8f8; margin: 0; padding: 14px clamp(18px, 3vw, 26px); }
+.version-form { background: #fcf6f8; border-top: 1px solid #efdce3; padding: 20px clamp(18px, 3vw, 26px); }
+.version-form .form-field { margin-bottom: 14px; }
+.version-form input[type='file'] { background: #fff; padding: 9px; }
+.documents-message { background: #fdf0f4; border: 1px solid #f2d7e0; border-radius: 8px; margin-top: 15px; padding-bottom: 12px; padding-top: 12px; }
+
+/* Inicio del estudiante */
+.home-title { align-items: flex-start; }
+.home-empty .primary-button { margin-top: 13px; }
+.home-overview { display: grid; gap: 17px; }
+.overview-hero { background: linear-gradient(135deg, #8f003b, #b50050); border-radius: 11px; box-shadow: 0 12px 30px rgba(111, 0, 47, .15); color: #fff; overflow: hidden; padding: 27px clamp(21px, 4vw, 34px); position: relative; }
+.overview-hero::after { border: 1px solid rgba(255, 255, 255, .14); border-radius: 50%; content: ''; height: 260px; position: absolute; right: -95px; top: -150px; width: 260px; }
+.overview-hero > * { position: relative; z-index: 1; }
+.overview-hero-top { align-items: center; display: flex; gap: 9px; justify-content: space-between; }
+.overview-phase, .overview-status { border-radius: 99px; font-size: 10px; font-weight: 700; letter-spacing: .045em; padding: 6px 9px; text-transform: uppercase; }
+.overview-phase { background: rgba(255, 255, 255, .15); }
+.overview-status { background: #fff5e9; color: #8d4518; }
+.overview-hero h2 { font-family: 'Playfair Display', Georgia, serif; font-size: clamp(23px, 3vw, 31px); letter-spacing: -.025em; line-height: 1.15; margin: 20px 0 8px; max-width: 740px; }
+.overview-hero > p { color: rgba(255, 255, 255, .78); font-size: 13px; line-height: 1.55; margin: 0; max-width: 720px; }
+.overview-facts { border-top: 1px solid rgba(255, 255, 255, .2); display: grid; gap: 12px; grid-template-columns: repeat(4, 1fr); margin-top: 22px; padding-top: 17px; }
+.overview-facts > div { display: grid; gap: 5px; }
+.overview-facts small { color: rgba(255, 255, 255, .67); font-size: 10px; }
+.overview-facts strong { font-size: 12px; line-height: 1.35; }
+.overview-two-columns { display: grid; gap: 17px; grid-template-columns: 1fr 1fr; }
+.overview-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: clamp(19px, 3vw, 25px); }
+.overview-card-heading { align-items: flex-start; display: flex; gap: 11px; }
+.overview-card-heading > svg { background: #f9eaf0; border-radius: 8px; color: var(--univalle-wine); flex: 0 0 auto; height: 37px; padding: 9px; width: 37px; }
+.overview-card-heading p { color: var(--univalle-wine); font-size: 10px; font-weight: 700; letter-spacing: .08em; margin: 1px 0 5px; text-transform: uppercase; }
+.overview-card-heading h2 { color: #44373b; font-size: 14px; line-height: 1.4; margin: 0; }
+.assignment-status { border-radius: 99px; display: inline-block; font-size: 10px; font-weight: 700; margin: 16px 0 0 48px; padding: 6px 9px; }
+.assignment-status.confirmed { background: #e9f5ec; color: #28663b; }
+.assignment-status.proposed { background: #fff2e7; color: #9a4b14; }
+.overview-card-note { color: #8b7e82; font-size: 11px; line-height: 1.5; margin: 11px 0 0 48px; }
+.profile-card .document-download { margin: 15px 0 0 48px; }
+.objectives-card, .history-card { padding-bottom: 21px; }
+.general-objective { background: #fbf8f8; border-left: 3px solid #d9a1b6; margin: 20px 0 15px; padding: 12px 14px; }
+.general-objective small { color: var(--univalle-wine); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.general-objective p { color: #5e5155; font-size: 12px; line-height: 1.55; margin: 6px 0 0; }
+.overview-objectives { display: grid; gap: 9px; list-style: none; margin: 0; padding: 0; }
+.overview-objectives li { align-items: flex-start; display: flex; gap: 10px; }
+.overview-objectives span { align-items: center; background: #f7e8ed; border-radius: 50%; color: var(--univalle-wine); display: inline-flex; flex: 0 0 auto; font-size: 10px; font-weight: 700; height: 22px; justify-content: center; margin-top: 1px; width: 22px; }
+.overview-objectives p { color: #66595d; font-size: 12px; line-height: 1.5; margin: 0; }
+.overview-history { display: grid; gap: 0; list-style: none; margin: 19px 0 0; padding: 0; }
+.overview-history li { display: grid; gap: 12px; grid-template-columns: 13px 1fr; min-height: 63px; position: relative; }
+.overview-history li:not(:last-child)::before { background: #eadce1; content: ''; height: calc(100% - 12px); left: 5px; position: absolute; top: 13px; width: 2px; }
+.history-dot { background: var(--univalle-wine); border: 3px solid #f4dce5; border-radius: 50%; height: 13px; position: relative; width: 13px; z-index: 1; }
+.overview-history strong { color: #55474b; display: block; font-size: 12px; }
+.overview-history p { color: #827579; font-size: 11px; line-height: 1.45; margin: 4px 0; }
+.overview-history small { color: #a09497; font-size: 10px; }
+
+/* Portal del tutor */
+.tutor-sidebar .student-role { color: #8e5d2b; }
+.notification-bell { align-items: center; background: #fff; border: 1px solid #e1d8da; border-radius: 50%; color: var(--univalle-wine); display: inline-flex; height: 35px; justify-content: center; margin-right: 4px; padding: 0; position: relative; width: 35px; }
+.notification-bell:hover { background: #fdf1f5; }
+.notification-bell svg { height: 18px; width: 18px; }
+.notification-bell b { align-items: center; background: #d64519; border: 2px solid #fff; border-radius: 50%; color: #fff; display: flex; font-size: 8px; height: 17px; justify-content: center; min-width: 17px; position: absolute; right: -6px; top: -6px; }
+.nav-count { align-items: center; background: #f4dce5; border-radius: 99px; color: var(--univalle-wine); display: inline-flex; font-size: 10px; height: 19px; justify-content: center; margin-left: auto; min-width: 19px; padding: 0 5px; }
+.student-nav .is-active .nav-count { background: #fff; }
+.tutor-title { align-items: flex-start; }
+.notification-summary { align-items: center; background: #fff; border: 1px solid #e8e1e2; border-radius: 9px; color: var(--univalle-wine); display: flex; gap: 10px; min-width: 158px; padding: 11px 13px; text-align: left; }
+.notification-summary:hover { background: #fdf5f7; }
+.notification-summary > svg { height: 21px; width: 21px; }
+.notification-summary span { display: grid; gap: 2px; }
+.notification-summary small { color: #907f84; font-size: 10px; }
+.notification-summary strong { color: #4e3d42; font-size: 17px; }
+.tutor-message { background: #fdf0f4; border: 1px solid #f2d7e0; border-radius: 8px; margin-bottom: 15px; padding-bottom: 12px; padding-top: 12px; }
+.tutor-stats { display: grid; gap: 15px; grid-template-columns: repeat(3, 1fr); margin-bottom: 25px; }
+.tutor-stats > div { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); display: grid; gap: 5px; min-height: 121px; padding: 19px; }
+.tutor-stats small { color: #8e8084; font-size: 11px; }
+.tutor-stats strong { color: var(--univalle-wine); font-family: 'Playfair Display', Georgia, serif; font-size: 34px; line-height: 1; }
+.tutor-stats span { color: #918387; font-size: 10px; }
+.tutor-section { margin-top: 27px; }
+.tutor-section-heading { align-items: flex-end; display: flex; justify-content: space-between; margin: 0 2px 12px; }
+.tutor-section-heading h2 { color: #4c3d41; font-size: 16px; margin: 0; }
+.tutor-section-heading p { color: #8b7d81; font-size: 11px; margin: 5px 0 0; }
+.tutor-cards { display: grid; gap: 15px; }
+.tutor-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: clamp(19px, 3vw, 25px); }
+.tutor-invitation { border-left: 4px solid #b47a24; }
+.tutor-project-card { border-left: 4px solid #74977a; }
+.tutor-card-top { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.tutor-code { color: var(--univalle-wine); font-size: 11px; font-weight: 700; letter-spacing: .05em; }
+.tutor-request-status { background: #fff2e7; border-radius: 99px; color: #9a4b14; font-size: 10px; font-weight: 700; padding: 6px 9px; }
+.tutor-card h2 { color: #44373b; font-size: 17px; margin: 14px 0 6px; }
+.tutor-card-description { color: #776a6e; font-size: 12px; line-height: 1.55; margin: 0; }
+.tutor-project-meta { display: flex; flex-wrap: wrap; gap: 8px 17px; margin-top: 15px; }
+.tutor-project-meta span { align-items: center; color: #7d6f73; display: inline-flex; font-size: 11px; gap: 5px; }
+.tutor-project-meta svg { color: var(--univalle-wine); height: 15px; width: 15px; }
+.tutor-card-date { color: #94878a; font-size: 10px; margin: 15px 0 0; }
+.tutor-document-link { margin-top: 13px; }
+.tutor-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; }
+.tutor-actions .primary-button svg { height: 16px; width: 16px; }
+.decline-box { background: #fcf5f6; border-top: 1px solid #efdcdf; margin: 18px -25px -25px; padding: 19px 25px; }
+.decline-box .form-field { margin: 0; }
+.tutor-project-footer { align-items: flex-end; border-top: 1px solid #eee8e9; display: flex; gap: 18px; justify-content: space-between; margin-top: 18px; padding-top: 15px; }
+.tutor-project-footer > div { min-width: 0; }
+.tutor-project-footer small { color: #988b8e; font-size: 10px; }
+.tutor-project-footer p { color: #66595d; font-size: 11px; line-height: 1.45; margin: 5px 0 0; }
+.tutor-empty { align-items: center; background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; color: #897c80; display: flex; flex-direction: column; font-size: 12px; gap: 7px; justify-content: center; min-height: 150px; padding: 25px; text-align: center; }
+.tutor-empty svg { color: var(--univalle-wine); height: 27px; width: 27px; }
+.tutor-empty strong { color: #4d3e43; font-size: 13px; }
+.tutor-empty span { color: #96898d; font-size: 11px; }
+.notification-list { display: grid; gap: 10px; }
+.notification-item { align-items: flex-start; background: #fff; border: 1px solid #e8e1e2; border-radius: 9px; display: grid; gap: 13px; grid-template-columns: 36px 1fr auto; padding: 15px; }
+.notification-item.is-unread { background: #fffafd; border-color: #edcfdc; }
+.notification-icon { align-items: center; background: #f8e8ee; border-radius: 8px; color: var(--univalle-wine); display: grid; height: 36px; place-items: center; width: 36px; }
+.notification-icon svg { height: 18px; width: 18px; }
+.notification-item strong { color: #4e3e43; display: block; font-size: 12px; }
+.notification-item p { color: #786a6e; font-size: 11px; line-height: 1.45; margin: 4px 0; }
+.notification-item small { color: #9a8e91; font-size: 10px; }
+.notification-item .text-button { align-self: center; white-space: nowrap; }
+
+@media (max-width: 860px) {
+  .student-sidebar { display: none; }
+  .student-header { height: 66px; justify-content: space-between; padding: 0 24px; }
+  .mobile-student-brand { display: inline-flex; }
+  .student-main { padding: 30px 24px 50px; }
+  .tutor-stats { grid-template-columns: repeat(3, 1fr); }
+}
+
+@media (max-width: 650px) {
+  .student-header { padding: 0 18px; }
+  .demo-status { display: none; }
+  .student-main { padding: 25px 16px 42px; }
+  .student-title-row { align-items: flex-start; flex-direction: column; gap: 18px; }
+  .form-progress { width: 100%; }
+  .field-grid-three { grid-template-columns: 1fr; gap: 0; }
+  .form-section { padding: 25px 18px; }
+  .form-footer { align-items: flex-start; flex-direction: column; gap: 17px; padding: 20px 18px; }
+  .form-footer > div { justify-content: stretch; width: 100%; }
+  .form-footer button { justify-content: center; width: 100%; }
+  .upload-box { align-items: flex-start; flex-wrap: wrap; }
+  .upload-box > span { margin-left: 35px; }
+  .student-message { padding-left: 18px; padding-right: 18px; }
+  .project-summary-grid { grid-template-columns: 1fr 1fr; }
+  .document-project-tag { width: 100%; }
+  .document-latest { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .document-actions { align-items: flex-start; flex-direction: column; }
+  .overview-facts { grid-template-columns: 1fr 1fr; }
+  .overview-two-columns { grid-template-columns: 1fr; }
+  .notification-summary { width: 100%; }
+  .tutor-stats { grid-template-columns: 1fr; }
+  .tutor-project-footer { align-items: flex-start; flex-direction: column; }
+  .notification-item { display: flex; flex-direction: column; }
+  .notification-item .text-button { align-self: flex-start; }
+}
