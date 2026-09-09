@@ -19,32 +19,35 @@ type IconName =
   | 'upload'
   | 'user'
 
+type RoleCode = 'ESTUDIANTE' | 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR'
+
 type UserBase = {
   id: string
   fullName: string
   email: string
   career: string
+  roles: RoleCode[]
 }
 type StudentUser = UserBase & {
-  role: 'ESTUDIANTE'
+  role: Extract<RoleCode, 'ESTUDIANTE'>
   studentId: string
   teacherId: null
   registration: string
 }
 type TutorUser = UserBase & {
-  role: 'TUTOR'
+  role: Extract<RoleCode, 'TUTOR'>
   studentId: null
   teacherId: string
   registration: null
 }
 type ReviewerUser = UserBase & {
-  role: 'REVISOR'
+  role: Extract<RoleCode, 'REVISOR'>
   studentId: null
   teacherId: string
   registration: null
 }
 type AdministratorUser = UserBase & {
-  role: 'ADMINISTRADOR'
+  role: Extract<RoleCode, 'ADMINISTRADOR'>
   studentId: null
   teacherId: null
   registration: null
@@ -75,6 +78,7 @@ type AppNotification = {
   title: string
   message: string
   link: string | null
+  role: RoleCode
   readAt: string | null
   createdAt: string
 }
@@ -173,6 +177,7 @@ type AdminProjectDetail = {
   cancellation: { reason: string; detail: string; cancelledAt: string } | null
 }
 type SessionResponse = { user: User }
+type NotificationsResponse = { notifications: AppNotification[]; unreadCount: number }
 
 type Option = { id: string; codigo: string; nombre: string }
 type Tutor = { id: string; name: string }
@@ -290,6 +295,54 @@ function BrandLogo({ className = 'brand-logo' }: { className?: string }) {
   return <img alt="Universidad Privada del Valle" className={className} height="447" src="/univalle-logo.png" width="447" />
 }
 
+function roleLabel(role: RoleCode) {
+  if (role === 'ADMINISTRADOR') return 'Administración'
+  if (role === 'ESTUDIANTE') return 'Estudiante'
+  return role[0] + role.slice(1).toLowerCase()
+}
+
+function roleDescription(role: RoleCode) {
+  if (role === 'TUTOR') return 'Acompañamiento académico'
+  if (role === 'REVISOR') return 'Evaluación de perfiles'
+  if (role === 'ADMINISTRADOR') return 'Gestión operativa'
+  return 'Seguimiento de mi proyecto'
+}
+
+function RoleSwitcher({ user, isSwitching, onRoleChange }: { user: User; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void> }) {
+  const [isOpen, setIsOpen] = useState(false)
+  const roles = [...new Set(user.roles.length > 0 ? user.roles : [user.role])]
+
+  if (roles.length === 1) return <span className={`role-single-badge role-${user.role.toLowerCase()}`}>{roleLabel(user.role)}</span>
+
+  return <div className={isOpen ? 'role-switcher is-open' : 'role-switcher'}>
+    <button aria-expanded={isOpen} aria-haspopup="menu" aria-label={`Cambiar vista, rol activo: ${roleLabel(user.role)}`} className="role-switcher-trigger" disabled={isSwitching} onClick={() => setIsOpen((open) => !open)} type="button">
+      <span className={`active-role-label role-${user.role.toLowerCase()}`}>{roleLabel(user.role)}</span><Icon name="chevron" />
+    </button>
+    <div aria-label="Vistas disponibles" className="role-switcher-menu" role="menu">
+      <p>CAMBIAR VISTA</p>
+      {roles.map((role) => <button aria-current={role === user.role ? 'page' : undefined} className={`role-option role-${role.toLowerCase()}${role === user.role ? ' is-active' : ''}`} disabled={isSwitching || role === user.role} key={role} onClick={() => { setIsOpen(false); void onRoleChange(role) }} role="menuitem" type="button"><span className="role-option-color" /><span><strong>{roleLabel(role)}</strong><small>{roleDescription(role)}</small></span>{role === user.role && <em>Actual</em>}</button>)}
+    </div>
+  </div>
+}
+
+function SessionActions({ user, notifications, isSwitching, onRoleChange, onNotificationClick }: { user: User; notifications: AppNotification[]; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void> }) {
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false)
+  const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'U'
+  const unreadCount = notifications.filter((notification) => !notification.readAt).length
+
+  return <div className="session-info">
+    <div className={isNotificationOpen ? 'notification-menu is-open' : 'notification-menu'}>
+      <button aria-expanded={isNotificationOpen} aria-haspopup="menu" aria-label="Ver notificaciones" className="notification-bell" onClick={() => setIsNotificationOpen((open) => !open)} type="button"><Icon name="bell" />{unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}</button>
+      <div aria-label="Notificaciones" className="notification-popover" role="menu">
+        <div><strong>Notificaciones</strong><span>{unreadCount > 0 ? `${unreadCount} sin leer` : 'Todo al día'}</span></div>
+        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} role="menuitem" type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
+      </div>
+    </div>
+    <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
+    <span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span>
+  </div>
+}
+
 function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
@@ -391,7 +444,7 @@ function ExistingProject({ project, message }: { project: Project; message: stri
   )
 }
 
-function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome }: { data: Bootstrap; onLogout: () => Promise<void>; onRegistered: () => Promise<void>; onDocuments: () => void; onHome: () => void }) {
+function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessionActions }: { data: Bootstrap; onLogout: () => Promise<void>; onRegistered: () => Promise<void>; onDocuments: () => void; onHome: () => void; sessionActions: ReactNode }) {
   const [title, setTitle] = useState('')
   const [managementId, setManagementId] = useState('')
   const [modalityId, setModalityId] = useState('')
@@ -452,8 +505,6 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome }: { da
     }
   }
 
-  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'E'
-
   return (
     <main className="student-page">
       <aside className="student-sidebar">
@@ -471,7 +522,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome }: { da
       </aside>
 
       <section className="student-content">
-        <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Sesión activa</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.registration} · {data.user.career}</small></span><Icon name="chevron" /></div></header>
+        <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
         <div className="student-main">
           <div className="breadcrumb">Inicio <span>/</span> Mi proyecto <span>/</span> Formulario 1</div>
           <div className="student-title-row"><div><p className="eyebrow">Fase 1 · Perfil</p><h1>{data.project ? 'Mi proyecto' : 'Registra tu proyecto'}</h1><p>{data.project ? 'Consulta la información registrada y el estado actual de tu proceso.' : 'Completa el Formulario 1 con la información inicial de tu propuesta de titulación.'}</p></div>{!data.project && <div className="form-progress"><span>Progreso del formulario</span><strong>0%</strong><div><i /></div></div>}</div>
@@ -528,7 +579,7 @@ function documentLabel(type: string) {
   return type === 'PERFIL_PROYECTO' ? 'Perfil de proyecto' : type.replaceAll('_', ' ')
 }
 
-function HomeView({ data, onLogout, onProject, onDocuments }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void }) {
+function HomeView({ data, onLogout, onProject, onDocuments, sessionActions }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void; sessionActions: ReactNode }) {
   const [overview, setOverview] = useState<StudentOverview | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(data.project))
   const [error, setError] = useState('')
@@ -550,7 +601,6 @@ function HomeView({ data, onLogout, onProject, onDocuments }: { data: Bootstrap;
     return () => { isCurrent = false }
   }, [data.project?.id])
 
-  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'E'
   const project = overview?.project ?? data.project
 
   return (
@@ -570,7 +620,7 @@ function HomeView({ data, onLogout, onProject, onDocuments }: { data: Bootstrap;
       </aside>
 
       <section className="student-content">
-        <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Sesión activa</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.registration} · {data.user.career}</small></span><Icon name="chevron" /></div></header>
+        <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
         <div className="student-main">
           <div className="breadcrumb">Inicio</div>
           <div className="student-title-row home-title"><div><p className="eyebrow">Mi proceso de titulación</p><h1>Bienvenido, {data.user.fullName.split(' ')[0]}</h1><p>Consulta la información registrada y el avance de tu propuesta en un solo lugar.</p></div>{project && <div className="document-project-tag"><small>Código de seguimiento</small><strong>{project.code}</strong></div>}</div>
@@ -609,7 +659,7 @@ function HomeView({ data, onLogout, onProject, onDocuments }: { data: Bootstrap;
   )
 }
 
-function DocumentsView({ data, onLogout, onProject, onHome }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onHome: () => void }) {
+function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onHome: () => void; sessionActions: ReactNode }) {
   const [documents, setDocuments] = useState<StudentDocument[]>([])
   const [isLoading, setIsLoading] = useState(Boolean(data.project))
   const [error, setError] = useState('')
@@ -668,8 +718,6 @@ function DocumentsView({ data, onLogout, onProject, onHome }: { data: Bootstrap;
     }
   }
 
-  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'E'
-
   return (
     <main className="student-page">
       <aside className="student-sidebar">
@@ -687,7 +735,7 @@ function DocumentsView({ data, onLogout, onProject, onHome }: { data: Bootstrap;
       </aside>
 
       <section className="student-content">
-        <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Sesión activa</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.registration} · {data.user.career}</small></span><Icon name="chevron" /></div></header>
+        <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
         <div className="student-main">
           <div className="breadcrumb">Inicio <span>/</span> Documentos</div>
           <div className="student-title-row documents-title"><div><p className="eyebrow">Mi proceso</p><h1>Documentos</h1><p>Consulta, descarga y mantiene las versiones autorizadas de los documentos de tu proyecto.</p></div>{data.project && <div className="document-project-tag"><small>Código de seguimiento</small><strong>{data.project.code}</strong></div>}</div>
@@ -719,13 +767,12 @@ function DocumentsView({ data, onLogout, onProject, onHome }: { data: Bootstrap;
   )
 }
 
-function TutorPortal({ data, onLogout, onRefresh }: { data: TutorDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+function TutorPortal({ data, onLogout, onRefresh, sessionActions }: { data: TutorDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'notifications'>('home')
   const [decliningId, setDecliningId] = useState('')
   const [declineReason, setDeclineReason] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
-  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'T'
 
   async function respond(assignmentId: string, decision: 'ACEPTAR' | 'DECLINAR') {
     if (decision === 'DECLINAR' && declineReason.trim().length < 5) {
@@ -803,7 +850,7 @@ function TutorPortal({ data, onLogout, onRefresh }: { data: TutorDashboard; onLo
     </aside>
 
     <section className="student-content">
-      <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><button aria-label="Ver notificaciones" className="notification-bell" onClick={() => setView('notifications')} type="button"><Icon name="bell" />{data.unreadCount > 0 && <b>{data.unreadCount > 9 ? '9+' : data.unreadCount}</b>}</button><span className="demo-status">Tutor</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.career}</small></span><Icon name="chevron" /></div></header>
+      <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main tutor-main">
         <div className="breadcrumb">Portal del tutor <span>/</span> {heading}</div>
         <div className="student-title-row tutor-title"><div><p className="eyebrow">Acompañamiento académico</p><h1>{heading}</h1><p>{copy}</p></div>{view !== 'notifications' && <button className="notification-summary" onClick={() => setView('notifications')} type="button"><Icon name="bell" /><span><small>Notificaciones sin leer</small><strong>{data.unreadCount}</strong></span></button>}</div>
@@ -823,14 +870,13 @@ function TutorPortal({ data, onLogout, onRefresh }: { data: TutorDashboard; onLo
   </main>
 }
 
-function ReviewerPortal({ data, onLogout, onRefresh }: { data: ReviewerDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+function ReviewerPortal({ data, onLogout, onRefresh, sessionActions }: { data: ReviewerDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [view, setView] = useState<'home' | 'pending' | 'completed' | 'notifications'>('home')
   const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
   const [generalComment, setGeneralComment] = useState('')
   const [observationDrafts, setObservationDrafts] = useState<string[]>([''])
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
-  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'R'
 
   function openReview(review: ReviewerReview) {
     setSelectedReview(review)
@@ -936,7 +982,7 @@ function ReviewerPortal({ data, onLogout, onRefresh }: { data: ReviewerDashboard
     </aside>
 
     <section className="student-content">
-      <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><button aria-label="Ver notificaciones" className="notification-bell" onClick={() => { closeReview(); setView('notifications') }} type="button"><Icon name="bell" />{data.unreadCount > 0 && <b>{data.unreadCount > 9 ? '9+' : data.unreadCount}</b>}</button><span className="demo-status">Revisor</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.career}</small></span><Icon name="chevron" /></div></header>
+      <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main tutor-main reviewer-main">
         <div className="breadcrumb">Portal del revisor <span>/</span> {heading}</div>
         <div className="student-title-row tutor-title"><div><p className="eyebrow">Evaluación académica</p><h1>{heading}</h1><p>{copy}</p></div>{!selectedReview && view !== 'notifications' && <button className="notification-summary" onClick={() => setView('notifications')} type="button"><Icon name="bell" /><span><small>Notificaciones sin leer</small><strong>{data.unreadCount}</strong></span></button>}</div>
@@ -962,7 +1008,7 @@ function ReviewerPortal({ data, onLogout, onRefresh }: { data: ReviewerDashboard
   </main>
 }
 
-function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh }: { projectId: string; user: AdministratorUser; onBack: () => void; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, sessionActions }: { projectId: string; user: AdministratorUser; onBack: () => void; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [detail, setDetail] = useState<AdminProjectDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -980,7 +1026,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh }:
   const [statusReason, setStatusReason] = useState('')
   const [cancelReason, setCancelReason] = useState('')
   const [cancelDetail, setCancelDetail] = useState('')
-  const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'A'
 
   function defaultDeadline() {
     const date = new Date()
@@ -1099,7 +1144,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh }:
 
   return <main className="student-page admin-page">
     <aside className="student-sidebar admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></aside>
-    <section className="student-content"><header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Administración</span><span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span><Icon name="chevron" /></div></header><div className="student-main admin-main admin-workspace">
+    <section className="student-content"><header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header><div className="student-main admin-main admin-workspace">
       <button className="text-button admin-back" onClick={onBack} type="button">← Volver a proyectos</button>
       {isLoading && <section className="documents-loading">Cargando información operativa del proyecto…</section>}
       {!isLoading && !detail && <section className="tutor-empty"><Icon name="clipboard" /><strong>No fue posible cargar el proyecto.</strong><span>{message || 'Intenta nuevamente desde el listado.'}</span></section>}
@@ -1124,12 +1169,11 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh }:
   </main>
 }
 
-function AdminPortal({ data, onLogout, onRefresh }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [view, setView] = useState<'home' | 'projects'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
-  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'A'
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const visibleProjects = data.projects.filter((project) => {
     const matchesSearch = !normalizedSearch || [project.code, project.title, project.students, project.tutor].some((value) => value.toLocaleLowerCase().includes(normalizedSearch))
@@ -1137,7 +1181,7 @@ function AdminPortal({ data, onLogout, onRefresh }: { data: AdminDashboard; onLo
   })
   const heading = view === 'home' ? 'Inicio' : 'Proyectos'
 
-  if (selectedProjectId) return <AdminProjectWorkspace onBack={() => setSelectedProjectId('')} onLogout={onLogout} onRefresh={onRefresh} projectId={selectedProjectId} user={data.user} />
+  if (selectedProjectId) return <AdminProjectWorkspace onBack={() => setSelectedProjectId('')} onLogout={onLogout} onRefresh={onRefresh} projectId={selectedProjectId} sessionActions={sessionActions} user={data.user} />
 
   function projectCard(project: AdminProject) {
     const reviewLabel = project.isOverdue
@@ -1175,7 +1219,7 @@ function AdminPortal({ data, onLogout, onRefresh }: { data: AdminDashboard; onLo
     </aside>
 
     <section className="student-content">
-      <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><span className="demo-status">Administración</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.career}</small></span><Icon name="chevron" /></div></header>
+      <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
         <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : 'Busca y filtra los proyectos para conocer su fase, responsables y revisiones.'}</p></div></div>
@@ -1199,28 +1243,35 @@ function AdminPortal({ data, onLogout, onRefresh }: { data: AdminDashboard; onLo
 
 function App() {
   const [data, setData] = useState<Bootstrap | TutorDashboard | ReviewerDashboard | AdminDashboard | null>(null)
+  const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [isSwitchingRole, setIsSwitchingRole] = useState(false)
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
+    const notificationsRequest = api<NotificationsResponse>('/api/notifications')
     if (session.user.role === 'ADMINISTRADOR') {
-      const dashboard = await api<AdminDashboard>('/api/admin/dashboard')
+      const [dashboard, notificationData] = await Promise.all([api<AdminDashboard>('/api/admin/dashboard'), notificationsRequest])
       setData(dashboard)
+      setNotifications(notificationData.notifications)
       return
     }
     if (session.user.role === 'TUTOR') {
-      const dashboard = await api<TutorDashboard>('/api/tutor/dashboard')
+      const [dashboard, notificationData] = await Promise.all([api<TutorDashboard>('/api/tutor/dashboard'), notificationsRequest])
       setData(dashboard)
+      setNotifications(notificationData.notifications)
       return
     }
     if (session.user.role === 'REVISOR') {
-      const dashboard = await api<ReviewerDashboard>('/api/reviewer/dashboard')
+      const [dashboard, notificationData] = await Promise.all([api<ReviewerDashboard>('/api/reviewer/dashboard'), notificationsRequest])
       setData(dashboard)
+      setNotifications(notificationData.notifications)
       return
     }
-    const bootstrap = await api<Bootstrap>('/api/student/bootstrap')
+    const [bootstrap, notificationData] = await Promise.all([api<Bootstrap>('/api/student/bootstrap'), notificationsRequest])
     setData(bootstrap)
+    setNotifications(notificationData.notifications)
   }
 
   useEffect(() => {
@@ -1232,20 +1283,52 @@ function App() {
       await api('/api/auth/logout', { method: 'POST' })
     } finally {
       setData(null)
+      setNotifications([])
       setView('home')
     }
   }
 
+  async function handleRoleChange(role: RoleCode) {
+    setIsSwitchingRole(true)
+    try {
+      await api<SessionResponse>('/api/auth/active-role', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      })
+      await loadPortal()
+      setView('home')
+    } finally {
+      setIsSwitchingRole(false)
+    }
+  }
+
+  async function handleNotificationClick(notification: AppNotification) {
+    if (!notification.readAt) {
+      await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item))
+    }
+    if (data && notification.role !== data.user.role) {
+      await handleRoleChange(notification.role)
+      return
+    }
+    await loadPortal()
+  }
+
+  function sessionActions(user: User) {
+    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
+  }
+
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
   if (!data) return <LoginView onAuthenticated={loadPortal} />
-  if ('pendingReviews' in data) return <ReviewerPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
-  if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
-  if ('invitations' in data) return <TutorPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
+  if ('pendingReviews' in data) return <ReviewerPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('invitations' in data) return <TutorPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   return view === 'home'
-    ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} />
+    ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
     : view === 'documents'
-      ? <DocumentsView data={data} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} />
-      : <StudentForm data={data} onDocuments={() => setView('documents')} onHome={() => setView('home')} onLogout={handleLogout} onRegistered={loadPortal} />
+      ? <DocumentsView data={data} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
+      : <StudentForm data={data} onDocuments={() => setView('documents')} onHome={() => setView('home')} onLogout={handleLogout} onRegistered={loadPortal} sessionActions={sessionActions(data.user)} />
 }
 
 export default App
