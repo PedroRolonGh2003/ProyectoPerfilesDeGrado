@@ -12,6 +12,7 @@ const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
 const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
+const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 
 const pool = new Pool({
   host: process.env.DB_HOST,
@@ -55,15 +56,41 @@ function setSessionCookie(response, token, maxAge) {
 }
 
 function sanitizeUser(row) {
+  const roles = Array.isArray(row.roles)
+    ? row.roles.filter((role) => supportedRoles.includes(role))
+    : []
   return {
     id: row.usuario_id,
     fullName: `${row.nombres} ${row.apellidos}`.trim(),
     email: row.correo,
     role: row.rol_codigo,
+    roles: roles.length > 0 ? roles : [row.rol_codigo],
     studentId: row.estudiante_id,
     teacherId: row.docente_id,
     registration: row.registro_universitario,
     career: row.carrera_nombre ?? 'Sin carrera asignada',
+  }
+}
+
+function notificationRole(row) {
+  const link = row.enlace ?? ''
+  if (link.startsWith('/tutor')) return 'TUTOR'
+  if (link.startsWith('/revisor')) return 'REVISOR'
+  if (link.startsWith('/admin')) return 'ADMINISTRADOR'
+  return 'ESTUDIANTE'
+}
+
+function notificationPayload(row) {
+  return {
+    id: row.id,
+    projectId: row.proyecto_id,
+    type: row.tipo,
+    title: row.titulo,
+    message: row.mensaje,
+    link: row.enlace,
+    role: notificationRole(row),
+    readAt: row.leida_en,
+    createdAt: row.creada_en,
   }
 }
 
@@ -84,7 +111,16 @@ async function sessionFromRequest(request) {
        e.registro_universitario,
        d.id AS docente_id,
        COALESCE(e.carrera_id, d.carrera_id) AS carrera_id,
-       c.nombre AS carrera_nombre
+       c.nombre AS carrera_nombre,
+       COALESCE((
+         SELECT array_agg(available_role.codigo ORDER BY CASE available_role.codigo
+           WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'REVISOR' THEN 3 WHEN 'ADMINISTRADOR' THEN 4 ELSE 5 END)
+         FROM titulacion.usuario_roles available_user_role
+         JOIN titulacion.roles available_role ON available_role.id = available_user_role.rol_id AND available_role.activo
+         WHERE available_user_role.usuario_id = u.id
+           AND available_user_role.activo
+           AND available_role.codigo IN ('ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR')
+       ), ARRAY[r.codigo]) AS roles
      FROM titulacion.sesiones_usuario s
      JOIN titulacion.usuarios u ON u.id = s.usuario_id AND u.activo
      JOIN titulacion.roles r ON r.id = s.rol_activo_id AND r.activo
@@ -399,7 +435,16 @@ app.post('/api/auth/login', async (request, response, next) => {
          e.id AS estudiante_id,
          e.registro_universitario,
          d.id AS docente_id,
-         c.nombre AS carrera_nombre
+         c.nombre AS carrera_nombre,
+         COALESCE((
+           SELECT array_agg(available_role.codigo ORDER BY CASE available_role.codigo
+             WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'REVISOR' THEN 3 WHEN 'ADMINISTRADOR' THEN 4 ELSE 5 END)
+           FROM titulacion.usuario_roles available_user_role
+           JOIN titulacion.roles available_role ON available_role.id = available_user_role.rol_id AND available_role.activo
+           WHERE available_user_role.usuario_id = u.id
+             AND available_user_role.activo
+             AND available_role.codigo IN ('ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR')
+         ), ARRAY[r.codigo]) AS roles
        FROM titulacion.usuarios u
        JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
        JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo
@@ -455,6 +500,47 @@ app.get('/api/auth/session', requireSession, (request, response) => {
   response.json({ user: sanitizeUser(request.session) })
 })
 
+app.post('/api/auth/active-role', requireSession, async (request, response, next) => {
+  try {
+    const roleCode = text(request.body?.role).toUpperCase()
+    if (!supportedRoles.includes(roleCode)) {
+      return response.status(422).json({ message: 'El rol seleccionado no es válido.' })
+    }
+
+    const availableRole = await pool.query(
+      `SELECT r.id, r.codigo
+       FROM titulacion.usuario_roles ur
+       JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo
+       LEFT JOIN titulacion.estudiantes e ON e.usuario_id = ur.usuario_id AND e.activo
+       LEFT JOIN titulacion.docentes d ON d.usuario_id = ur.usuario_id AND d.activo
+       WHERE ur.usuario_id = $1
+         AND ur.activo
+         AND r.codigo = $2
+         AND (
+           (r.codigo = 'ESTUDIANTE' AND e.id IS NOT NULL)
+           OR (r.codigo IN ('TUTOR', 'REVISOR') AND d.id IS NOT NULL)
+           OR r.codigo = 'ADMINISTRADOR'
+         )
+       LIMIT 1`,
+      [request.session.usuario_id, roleCode],
+    )
+    if (!availableRole.rows[0]) {
+      return response.status(403).json({ message: 'No tienes acceso a la vista seleccionada.' })
+    }
+
+    await pool.query(
+      `UPDATE titulacion.sesiones_usuario
+       SET rol_activo_id = $1
+       WHERE id = $2 AND usuario_id = $3 AND cerrada_en IS NULL`,
+      [availableRole.rows[0].id, request.session.sesion_id, request.session.usuario_id],
+    )
+    const updatedSession = await sessionFromRequest(request)
+    return response.json({ user: sanitizeUser(updatedSession) })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 app.post('/api/auth/logout', async (request, response, next) => {
   try {
     const token = cookieValue(request, 'stit_session')
@@ -491,16 +577,7 @@ app.get('/api/notifications', requireSession, async (request, response, next) =>
         [request.session.usuario_id],
       ),
     ])
-    return response.json({ notifications: notifications.rows.map((item) => ({
-      id: item.id,
-      projectId: item.proyecto_id,
-      type: item.tipo,
-      title: item.titulo,
-      message: item.mensaje,
-      link: item.enlace,
-      readAt: item.leida_en,
-      createdAt: item.creada_en,
-    })), unreadCount: unread.rows[0].total })
+    return response.json({ notifications: notifications.rows.map(notificationPayload), unreadCount: unread.rows[0].total })
   } catch (error) {
     return next(error)
   }
@@ -1288,16 +1365,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       user: sanitizeUser(session),
       invitations: invitations.rows.map(assignmentPayload),
       projects: projects.rows.map(assignmentPayload),
-      notifications: notifications.rows.map((item) => ({
-        id: item.id,
-        projectId: item.proyecto_id,
-        type: item.tipo,
-        title: item.titulo,
-        message: item.mensaje,
-        link: item.enlace,
-        readAt: item.leida_en,
-        createdAt: item.creada_en,
-      })),
+      notifications: notifications.rows.map(notificationPayload),
       unreadCount: unread.rows[0].total,
     })
   } catch (error) {
@@ -1552,16 +1620,7 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
       summary: { pending: pendingReviews.length, overdue: overdueCount, completed: completedReviews.length },
       pendingReviews,
       completedReviews,
-      notifications: notifications.rows.map((item) => ({
-        id: item.id,
-        projectId: item.proyecto_id,
-        type: item.tipo,
-        title: item.titulo,
-        message: item.mensaje,
-        link: item.enlace,
-        readAt: item.leida_en,
-        createdAt: item.creada_en,
-      })),
+      notifications: notifications.rows.map(notificationPayload),
       unreadCount: unread.rows[0].total,
     })
   } catch (error) {
