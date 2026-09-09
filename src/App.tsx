@@ -318,9 +318,9 @@ function RoleSwitcher({ user, isSwitching, onRoleChange }: { user: User; isSwitc
     <button aria-expanded={isOpen} aria-haspopup="menu" aria-label={`Cambiar vista, rol activo: ${roleLabel(user.role)}`} className="role-switcher-trigger" disabled={isSwitching} onClick={() => setIsOpen((open) => !open)} type="button">
       <span className={`active-role-label role-${user.role.toLowerCase()}`}>{roleLabel(user.role)}</span><Icon name="chevron" />
     </button>
-    <div aria-label="Vistas disponibles" className="role-switcher-menu" role="menu">
+    <div aria-label="Vistas disponibles" className="role-switcher-menu">
       <p>CAMBIAR VISTA</p>
-      {roles.map((role) => <button aria-current={role === user.role ? 'page' : undefined} className={`role-option role-${role.toLowerCase()}${role === user.role ? ' is-active' : ''}`} disabled={isSwitching || role === user.role} key={role} onClick={() => { setIsOpen(false); void onRoleChange(role) }} role="menuitem" type="button"><span className="role-option-color" /><span><strong>{roleLabel(role)}</strong><small>{roleDescription(role)}</small></span>{role === user.role && <em>Actual</em>}</button>)}
+      {roles.map((role) => <button aria-current={role === user.role ? 'page' : undefined} className={`role-option role-${role.toLowerCase()}${role === user.role ? ' is-active' : ''}`} disabled={isSwitching || role === user.role} key={role} onClick={() => { setIsOpen(false); void onRoleChange(role) }} type="button"><span className="role-option-color" /><span><strong>{roleLabel(role)}</strong><small>{roleDescription(role)}</small></span>{role === user.role && <em>Actual</em>}</button>)}
     </div>
   </div>
 }
@@ -333,9 +333,9 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
   return <div className="session-info">
     <div className={isNotificationOpen ? 'notification-menu is-open' : 'notification-menu'}>
       <button aria-expanded={isNotificationOpen} aria-haspopup="menu" aria-label="Ver notificaciones" className="notification-bell" onClick={() => setIsNotificationOpen((open) => !open)} type="button"><Icon name="bell" />{unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}</button>
-      <div aria-label="Notificaciones" className="notification-popover" role="menu">
+      <div aria-label="Notificaciones" className="notification-popover">
         <div><strong>Notificaciones</strong><span>{unreadCount > 0 ? `${unreadCount} sin leer` : 'Todo al día'}</span></div>
-        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} role="menuitem" type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
+        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
       </div>
     </div>
     <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
@@ -966,8 +966,8 @@ function ReviewerPortal({ data, onLogout, onRefresh, sessionActions }: { data: R
           ? 'Consulta los dictámenes que ya registraste.'
           : 'Mantente al tanto de las asignaciones y cambios de tus revisiones.'
 
-  return <main className="student-page tutor-page reviewer-page">
-    <aside className="student-sidebar tutor-sidebar reviewer-sidebar">
+  return <main className="student-page reviewer-page">
+    <aside className="student-sidebar reviewer-sidebar">
       <div>
         <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
         <p className="student-role">PORTAL DEL REVISOR</p>
@@ -983,7 +983,7 @@ function ReviewerPortal({ data, onLogout, onRefresh, sessionActions }: { data: R
 
     <section className="student-content">
       <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
-      <div className="student-main tutor-main reviewer-main">
+      <div className="student-main reviewer-main">
         <div className="breadcrumb">Portal del revisor <span>/</span> {heading}</div>
         <div className="student-title-row tutor-title"><div><p className="eyebrow">Evaluación académica</p><h1>{heading}</h1><p>{copy}</p></div>{!selectedReview && view !== 'notifications' && <button className="notification-summary" onClick={() => setView('notifications')} type="button"><Icon name="bell" /><span><small>Notificaciones sin leer</small><strong>{data.unreadCount}</strong></span></button>}</div>
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
