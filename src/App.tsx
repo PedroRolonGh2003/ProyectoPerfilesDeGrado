@@ -37,13 +37,19 @@ type TutorUser = UserBase & {
   teacherId: string
   registration: null
 }
+type ReviewerUser = UserBase & {
+  role: 'REVISOR'
+  studentId: null
+  teacherId: string
+  registration: null
+}
 type AdministratorUser = UserBase & {
   role: 'ADMINISTRADOR'
   studentId: null
   teacherId: null
   registration: null
 }
-type User = StudentUser | TutorUser | AdministratorUser
+type User = StudentUser | TutorUser | ReviewerUser | AdministratorUser
 type TutorAssignment = {
   id: string
   projectId: string
@@ -76,6 +82,43 @@ type TutorDashboard = {
   user: TutorUser
   invitations: TutorAssignment[]
   projects: TutorAssignment[]
+  notifications: AppNotification[]
+  unreadCount: number
+}
+type ReviewerObservation = { id: string; number: number; detail: string; status: string }
+type ReviewerReview = {
+  id: string
+  roundId: string
+  assignmentId: string
+  assignmentType: 'REVISOR_1' | 'REVISOR_2'
+  projectId: string
+  code: string
+  title: string
+  description: string
+  generalObjective: string
+  management: string
+  modality: string
+  phase: string
+  status: string
+  students: string
+  registrations: string
+  roundNumber: number
+  requestedAt: string
+  deadline: string
+  closedAt: string | null
+  decision: 'PENDIENTE' | 'APROBADO' | 'OBSERVADO' | 'RECHAZADO'
+  generalComment: string | null
+  decidedAt: string | null
+  canSubmit: boolean
+  profile: { documentId: string; versionId: string; filename: string; version: number; uploadedAt: string }
+  observations: ReviewerObservation[]
+  teamReviews: { assignmentType: string; reviewer: string; decision: string; decidedAt: string | null }[]
+}
+type ReviewerDashboard = {
+  user: ReviewerUser
+  summary: { pending: number; overdue: number; completed: number }
+  pendingReviews: ReviewerReview[]
+  completedReviews: ReviewerReview[]
   notifications: AppNotification[]
   unreadCount: number
 }
@@ -780,6 +823,145 @@ function TutorPortal({ data, onLogout, onRefresh }: { data: TutorDashboard; onLo
   </main>
 }
 
+function ReviewerPortal({ data, onLogout, onRefresh }: { data: ReviewerDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
+  const [view, setView] = useState<'home' | 'pending' | 'completed' | 'notifications'>('home')
+  const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
+  const [generalComment, setGeneralComment] = useState('')
+  const [observationDrafts, setObservationDrafts] = useState<string[]>([''])
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [message, setMessage] = useState('')
+  const initials = data.user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'R'
+
+  function openReview(review: ReviewerReview) {
+    setSelectedReview(review)
+    setGeneralComment('')
+    setObservationDrafts([''])
+    setMessage('')
+  }
+
+  function closeReview() {
+    setSelectedReview(null)
+    setGeneralComment('')
+    setObservationDrafts([''])
+  }
+
+  function updateObservation(index: number, value: string) {
+    setObservationDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? value : item))
+  }
+
+  function removeObservation(index: number) {
+    setObservationDrafts((current) => current.length === 1 ? [''] : current.filter((_item, itemIndex) => itemIndex !== index))
+  }
+
+  async function submitDecision(decision: 'APROBADO' | 'OBSERVADO') {
+    if (!selectedReview) return
+    const observations = observationDrafts.map((item) => item.trim()).filter(Boolean)
+    if (decision === 'OBSERVADO' && observations.length === 0) {
+      setMessage('Registra al menos una observación antes de devolver el perfil.')
+      return
+    }
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/reviewer/reviews/${selectedReview.id}/decision`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision, generalComment: generalComment.trim(), observations }),
+      })
+      closeReview()
+      await onRefresh()
+      setView('completed')
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible registrar el dictamen.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function markRead(notificationId: string) {
+    try {
+      await api(`/api/notifications/${notificationId}/read`, { method: 'POST' })
+      await onRefresh()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar la notificación.')
+    }
+  }
+
+  function decisionLabel(decision: ReviewerReview['decision']) {
+    if (decision === 'APROBADO') return 'Aprobado'
+    if (decision === 'OBSERVADO') return 'Con observaciones'
+    if (decision === 'RECHAZADO') return 'Rechazado'
+    return 'Pendiente'
+  }
+
+  function reviewCard(review: ReviewerReview, showAction = true) {
+    const isOverdue = review.canSubmit && new Date(review.deadline) < new Date()
+    const isObserved = review.decision === 'OBSERVADO'
+    return <article className={isOverdue ? 'reviewer-card is-overdue' : 'reviewer-card'} key={review.id}>
+      <div className="reviewer-card-top"><div><span className="tutor-code">{review.code}</span><span className="reviewer-round">Ronda {review.roundNumber} · {review.assignmentType === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'}</span></div><span className={`reviewer-decision decision-${review.decision.toLowerCase()}`}>{decisionLabel(review.decision)}</span></div>
+      <h2>{review.title}</h2>
+      <p className="tutor-card-description">{review.description}</p>
+      <div className="tutor-project-meta"><span><Icon name="user" />{review.students}</span><span><Icon name="clipboard" />{review.modality}</span><span><Icon name="check" />{review.phase} · {review.status}</span></div>
+      <div className="reviewer-card-info"><div><small>Entrega de revisión</small><strong className={isOverdue ? 'is-overdue' : ''}>{formatDate(review.deadline)}{isOverdue ? ' · Vencida' : ''}</strong></div><div><small>Perfil asignado</small><a className="document-download reviewer-document-link" href={`/api/reviewer/documents/${review.profile.documentId}/download?version=${review.profile.versionId}`}><Icon name="download" />V{review.profile.version} · Descargar</a></div></div>
+      {review.decision !== 'PENDIENTE' && <div className={isObserved ? 'reviewer-result is-observed' : 'reviewer-result'}><strong>{isObserved ? `${review.observations.length} observación${review.observations.length === 1 ? '' : 'es'} registrada${review.observations.length === 1 ? '' : 's'}` : 'Dictamen emitido sin observaciones'}</strong>{review.generalComment && <p>{review.generalComment}</p>}</div>}
+      {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />Revisar perfil</button></div>}
+    </article>
+  }
+
+  const heading = selectedReview ? 'Emitir dictamen' : view === 'home' ? 'Inicio' : view === 'pending' ? 'Revisiones pendientes' : view === 'completed' ? 'Dictámenes emitidos' : 'Notificaciones'
+  const copy = selectedReview
+    ? 'Revisa el perfil asignado y registra un dictamen definitivo para esta ronda.'
+    : view === 'home'
+      ? 'Organiza tus revisiones de perfil y mantente al tanto de los plazos.'
+      : view === 'pending'
+        ? 'Cada perfil debe recibir un dictamen antes de la fecha límite indicada.'
+        : view === 'completed'
+          ? 'Consulta los dictámenes que ya registraste.'
+          : 'Mantente al tanto de las asignaciones y cambios de tus revisiones.'
+
+  return <main className="student-page tutor-page reviewer-page">
+    <aside className="student-sidebar tutor-sidebar reviewer-sidebar">
+      <div>
+        <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
+        <p className="student-role">PORTAL DEL REVISOR</p>
+        <nav aria-label="Navegación del revisor" className="student-nav">
+          <button className={!selectedReview && view === 'home' ? 'is-active' : ''} onClick={() => { closeReview(); setView('home') }} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
+          <button className={!selectedReview && view === 'pending' ? 'is-active' : ''} onClick={() => { closeReview(); setView('pending') }} type="button"><Icon name="clipboard" /><span>Por revisar</span>{data.summary.pending > 0 && <b className="nav-count">{data.summary.pending}</b>}</button>
+          <button className={!selectedReview && view === 'completed' ? 'is-active' : ''} onClick={() => { closeReview(); setView('completed') }} type="button"><Icon name="check" /><span>Dictámenes</span></button>
+          <button type="button"><Icon name="help" /><span>Ayuda</span></button>
+        </nav>
+      </div>
+      <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+    </aside>
+
+    <section className="student-content">
+      <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div><div className="session-info"><button aria-label="Ver notificaciones" className="notification-bell" onClick={() => { closeReview(); setView('notifications') }} type="button"><Icon name="bell" />{data.unreadCount > 0 && <b>{data.unreadCount > 9 ? '9+' : data.unreadCount}</b>}</button><span className="demo-status">Revisor</span><span className="student-avatar">{initials}</span><span><strong>{data.user.fullName}</strong><small>{data.user.career}</small></span><Icon name="chevron" /></div></header>
+      <div className="student-main tutor-main reviewer-main">
+        <div className="breadcrumb">Portal del revisor <span>/</span> {heading}</div>
+        <div className="student-title-row tutor-title"><div><p className="eyebrow">Evaluación académica</p><h1>{heading}</h1><p>{copy}</p></div>{!selectedReview && view !== 'notifications' && <button className="notification-summary" onClick={() => setView('notifications')} type="button"><Icon name="bell" /><span><small>Notificaciones sin leer</small><strong>{data.unreadCount}</strong></span></button>}</div>
+        {message && <p className="student-message is-visible tutor-message">{message}</p>}
+
+        {selectedReview && <section className="reviewer-workspace">
+          <button className="text-button reviewer-back" onClick={closeReview} type="button">← Volver a revisiones pendientes</button>
+          <div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedReview.code}</span><h2>{selectedReview.title}</h2><p>{selectedReview.description}</p></div><span className="reviewer-decision decision-pendiente">Ronda {selectedReview.roundNumber}</span></div>
+          <section className="reviewer-project-context"><div><small>Estudiante(s)</small><strong>{selectedReview.students}</strong><span>{selectedReview.registrations}</span></div><div><small>Objetivo general</small><p>{selectedReview.generalObjective}</p></div><div><small>Fecha límite</small><strong>{formatDate(selectedReview.deadline)}</strong></div></section>
+          <section className="reviewer-document-panel"><div><Icon name="file" /><div><small>Documento para revisar</small><strong>{selectedReview.profile.filename}</strong><span>Versión {selectedReview.profile.version} subida el {formatDate(selectedReview.profile.uploadedAt)}</span></div></div><a className="primary-button" href={`/api/reviewer/documents/${selectedReview.profile.documentId}/download?version=${selectedReview.profile.versionId}`}><Icon name="download" />Descargar perfil</a></section>
+          <section className="reviewer-form-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>DICTAMEN DE REVISIÓN</p><h2>Registra tu evaluación</h2></div></div><p>Tu dictamen no podrá modificarse después de guardarlo. La ronda se cerrará cuando ambos revisores hayan respondido.</p><label className="form-field"><span>Comentario general</span><textarea disabled={isSubmitting} onChange={(event) => setGeneralComment(event.target.value)} placeholder="Resume los aspectos principales de tu revisión." rows={3} value={generalComment} /></label><div className="reviewer-observations"><div><strong>Observaciones puntuales</strong><small>Son obligatorias solo si devuelves el perfil.</small></div>{observationDrafts.map((observation, index) => <div className="reviewer-observation-row" key={index}><span>{index + 1}</span><textarea aria-label={`Observación ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObservation(index, event.target.value)} placeholder="Indica con claridad qué debe corregirse." rows={2} value={observation} />{observationDrafts.length > 1 && <button aria-label={`Eliminar observación ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => removeObservation(index)} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || observationDrafts.length >= 20} onClick={() => setObservationDrafts((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir observación</button></div><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitDecision('APROBADO')} type="button"><Icon name="check" />Aprobar perfil</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitDecision('OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Devolver con observaciones'} <Icon name="arrow" /></button></div></section>
+        </section>}
+
+        {!selectedReview && view === 'home' && <>
+          <section className="tutor-stats reviewer-stats"><div><small>Revisiones pendientes</small><strong>{data.summary.pending}</strong><span>Requieren tu dictamen.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren atención prioritaria.</span></div><div><small>Dictámenes emitidos</small><strong>{data.summary.completed}</strong><span>Historial de tus revisiones.</span></div></section>
+          {data.pendingReviews.length > 0 ? <section className="tutor-section"><div className="tutor-section-heading"><div><h2>Próximas revisiones</h2><p>Descarga el perfil y registra tu dictamen antes del plazo.</p></div><button className="text-button" onClick={() => setView('pending')} type="button">Ver todas</button></div><div className="tutor-cards">{data.pendingReviews.slice(0, 2).map((review) => reviewCard(review))}</div></section> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán aquí y en la campanita.</span></section>}
+        </>}
+        {!selectedReview && view === 'pending' && (data.pendingReviews.length > 0 ? <div className="tutor-cards">{data.pendingReviews.map((review) => reviewCard(review))}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán automáticamente en esta sección.</span></section>)}
+        {!selectedReview && view === 'completed' && (data.completedReviews.length > 0 ? <div className="tutor-cards">{data.completedReviews.map((review) => reviewCard(review, false))}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no emitiste dictámenes.</strong><span>Cuando finalices una revisión aparecerá en este historial.</span></section>)}
+        {!selectedReview && view === 'notifications' && <section className="notification-list">{data.notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las asignaciones y cambios del proceso aparecerán aquí.</span></div> : data.notifications.map((notification) => <article className={notification.readAt ? 'notification-item' : 'notification-item is-unread'} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
+      </div>
+    </section>
+  </main>
+}
+
 function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh }: { projectId: string; user: AdministratorUser; onBack: () => void; onLogout: () => Promise<void>; onRefresh: () => Promise<void> }) {
   const [detail, setDetail] = useState<AdminProjectDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -1016,7 +1198,7 @@ function AdminPortal({ data, onLogout, onRefresh }: { data: AdminDashboard; onLo
 }
 
 function App() {
-  const [data, setData] = useState<Bootstrap | TutorDashboard | AdminDashboard | null>(null)
+  const [data, setData] = useState<Bootstrap | TutorDashboard | ReviewerDashboard | AdminDashboard | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
 
@@ -1029,6 +1211,11 @@ function App() {
     }
     if (session.user.role === 'TUTOR') {
       const dashboard = await api<TutorDashboard>('/api/tutor/dashboard')
+      setData(dashboard)
+      return
+    }
+    if (session.user.role === 'REVISOR') {
+      const dashboard = await api<ReviewerDashboard>('/api/reviewer/dashboard')
       setData(dashboard)
       return
     }
@@ -1051,6 +1238,7 @@ function App() {
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
   if (!data) return <LoginView onAuthenticated={loadPortal} />
+  if ('pendingReviews' in data) return <ReviewerPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
   if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
   if ('invitations' in data) return <TutorPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} />
   return view === 'home'

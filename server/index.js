@@ -144,6 +144,20 @@ async function requireTutor(request, response, next) {
   }
 }
 
+async function requireReviewer(request, response, next) {
+  try {
+    const session = await sessionFromRequest(request)
+    if (!session) return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
+    if (session.rol_codigo !== 'REVISOR' || !session.docente_id) {
+      return response.status(403).json({ message: 'Esta vista está disponible únicamente para revisores.' })
+    }
+    request.session = session
+    return next()
+  } catch (error) {
+    return next(error)
+  }
+}
+
 async function requireAdministrator(request, response, next) {
   try {
     const session = await sessionFromRequest(request)
@@ -397,9 +411,10 @@ app.post('/api/auth/login', async (request, response, next) => {
          AND (
            (r.codigo = 'ESTUDIANTE' AND e.id IS NOT NULL)
            OR (r.codigo = 'TUTOR' AND d.id IS NOT NULL)
+           OR (r.codigo = 'REVISOR' AND d.id IS NOT NULL)
            OR r.codigo = 'ADMINISTRADOR'
          )
-       ORDER BY CASE r.codigo WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'ADMINISTRADOR' THEN 3 ELSE 4 END
+       ORDER BY CASE r.codigo WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'REVISOR' THEN 3 WHEN 'ADMINISTRADOR' THEN 4 ELSE 5 END
        LIMIT 1`,
       [identifier],
     )
@@ -1400,6 +1415,340 @@ app.get('/api/tutor/documents/:documentId/download', requireTutor, async (reques
     )
     const version = result.rows[0]
     if (!version) return response.status(404).json({ message: 'El archivo no está disponible para tus proyectos asignados.' })
+    const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
+    if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
+    try {
+      await access(filePath)
+    } catch {
+      return response.status(404).json({ message: 'El archivo ya no se encuentra en el almacenamiento local.' })
+    }
+    return response.download(filePath, path.basename(version.nombre_archivo), (error) => {
+      if (error && !response.headersSent) next(error)
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, next) => {
+  try {
+    const { session } = request
+    const reviews = await pool.query(
+      `SELECT r.id AS review_id, r.decision, r.comentario_general, r.decidida_en,
+              a.id AS assignment_id, a.tipo AS assignment_type, a.activo AS assignment_active,
+              a.fecha_fin AS assignment_finished_at,
+              rr.id AS round_id, rr.numero_ronda, rr.fecha_solicitud, rr.fecha_limite, rr.cerrada_en,
+              p.id AS project_id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
+              p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
+              f.nombre AS fase_nombre, ep.nombre AS estado_nombre,
+              document.id AS document_id, version.id AS version_id, version.numero_version,
+              version.nombre_archivo, version.subida_en,
+              students.nombres_estudiantes, students.registros_estudiantes,
+              COALESCE(observations.items, '[]'::json) AS observations,
+              COALESCE(team.items, '[]'::json) AS team_reviews
+       FROM titulacion.revisiones r
+       JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
+       JOIN titulacion.versiones_documento version ON version.id = rr.version_documento_id
+       JOIN titulacion.documentos document ON document.id = version.documento_id AND document.activo
+       JOIN titulacion.proyectos p ON p.id = document.proyecto_id
+       JOIN titulacion.gestiones g ON g.id = p.gestion_id
+       JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
+       JOIN titulacion.fases f ON f.id = p.fase_actual_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       JOIN LATERAL (
+         SELECT string_agg(trim(concat(u.nombres, ' ', u.apellidos)), ', ' ORDER BY u.apellidos, u.nombres) AS nombres_estudiantes,
+                string_agg(e.registro_universitario, ', ' ORDER BY e.registro_universitario) AS registros_estudiantes
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id
+         WHERE pe.proyecto_id = p.id AND pe.activo
+       ) students ON true
+       JOIN LATERAL (
+         SELECT json_agg(json_build_object(
+           'id', o.id,
+           'number', o.numero,
+           'detail', o.detalle,
+           'status', o.estado
+         ) ORDER BY o.numero) AS items
+         FROM titulacion.observaciones o
+         WHERE o.revision_id = r.id
+       ) observations ON true
+       JOIN LATERAL (
+         SELECT json_agg(json_build_object(
+           'assignmentType', teammate_assignment.tipo,
+           'reviewer', trim(concat(teammate_user.nombres, ' ', teammate_user.apellidos)),
+           'decision', teammate_review.decision,
+           'decidedAt', teammate_review.decidida_en
+         ) ORDER BY teammate_assignment.tipo) AS items
+         FROM titulacion.revisiones teammate_review
+         JOIN titulacion.asignaciones_proyecto teammate_assignment ON teammate_assignment.id = teammate_review.asignacion_proyecto_id
+         JOIN titulacion.docentes teammate_teacher ON teammate_teacher.id = teammate_assignment.docente_id
+         JOIN titulacion.usuarios teammate_user ON teammate_user.id = teammate_teacher.usuario_id
+         WHERE teammate_review.ronda_revision_id = rr.id
+       ) team ON true
+       WHERE a.docente_id = $1 AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+       ORDER BY (r.decision = 'PENDIENTE') DESC, rr.fecha_limite ASC, rr.fecha_solicitud DESC`,
+      [session.docente_id],
+    )
+    const [notifications, unread] = await Promise.all([
+      pool.query(
+        `SELECT id, proyecto_id, tipo, titulo, mensaje, enlace, leida_en, creada_en
+         FROM titulacion.notificaciones
+         WHERE usuario_id = $1
+         ORDER BY creada_en DESC
+         LIMIT 15`,
+        [session.usuario_id],
+      ),
+      pool.query(
+        `SELECT count(*)::int AS total
+         FROM titulacion.notificaciones
+         WHERE usuario_id = $1 AND leida_en IS NULL`,
+        [session.usuario_id],
+      ),
+    ])
+
+    const reviewPayload = (review) => ({
+      id: review.review_id,
+      roundId: review.round_id,
+      assignmentId: review.assignment_id,
+      assignmentType: review.assignment_type,
+      projectId: review.project_id,
+      code: review.codigo_seguimiento,
+      title: review.titulo_tentativo,
+      description: review.descripcion,
+      generalObjective: review.objetivo_general,
+      management: review.gestion_nombre,
+      modality: review.modalidad_nombre,
+      phase: review.fase_nombre,
+      status: review.estado_nombre,
+      students: review.nombres_estudiantes ?? 'Estudiante no disponible',
+      registrations: review.registros_estudiantes ?? '',
+      roundNumber: review.numero_ronda,
+      requestedAt: review.fecha_solicitud,
+      deadline: review.fecha_limite,
+      closedAt: review.cerrada_en,
+      decision: review.decision,
+      generalComment: review.comentario_general,
+      decidedAt: review.decidida_en,
+      canSubmit: review.decision === 'PENDIENTE' && !review.cerrada_en && review.assignment_active && !review.assignment_finished_at,
+      profile: {
+        documentId: review.document_id,
+        versionId: review.version_id,
+        filename: review.nombre_archivo,
+        version: review.numero_version,
+        uploadedAt: review.subida_en,
+      },
+      observations: review.observations,
+      teamReviews: review.team_reviews,
+    })
+    const payload = reviews.rows.map(reviewPayload)
+    const pendingReviews = payload.filter((review) => review.canSubmit)
+    const completedReviews = payload.filter((review) => review.decision !== 'PENDIENTE')
+    const overdueCount = pendingReviews.filter((review) => new Date(review.deadline) < new Date()).length
+
+    return response.json({
+      user: sanitizeUser(session),
+      summary: { pending: pendingReviews.length, overdue: overdueCount, completed: completedReviews.length },
+      pendingReviews,
+      completedReviews,
+      notifications: notifications.rows.map((item) => ({
+        id: item.id,
+        projectId: item.proyecto_id,
+        type: item.tipo,
+        title: item.titulo,
+        message: item.mensaje,
+        link: item.enlace,
+        readAt: item.leida_en,
+        createdAt: item.creada_en,
+      })),
+      unreadCount: unread.rows[0].total,
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (request, response, next) => {
+  let databaseClient = null
+  try {
+    const reviewId = request.params.reviewId
+    const decision = text(request.body?.decision).toUpperCase()
+    const generalComment = text(request.body?.generalComment)
+    const observations = Array.isArray(request.body?.observations)
+      ? request.body.observations.map(text).filter(Boolean).slice(0, 20)
+      : []
+    if (!isUuid(reviewId) || !['APROBADO', 'OBSERVADO'].includes(decision)) {
+      return response.status(422).json({ message: 'Selecciona un dictamen válido para la revisión.' })
+    }
+    if (decision === 'OBSERVADO' && observations.length === 0) {
+      return response.status(422).json({ message: 'Registra al menos una observación antes de devolver el perfil.' })
+    }
+    if (decision === 'APROBADO' && observations.length > 0) {
+      return response.status(422).json({ message: 'Para aprobar el perfil elimina las observaciones o selecciona devolver con observaciones.' })
+    }
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const selected = await databaseClient.query(
+      `SELECT r.id AS review_id, r.decision AS current_decision,
+              rr.id AS round_id, rr.numero_ronda, rr.cerrada_en,
+              a.id AS assignment_id,
+              p.id AS project_id, p.codigo_seguimiento, p.estado_actual_id, p.fase_actual_id,
+              ep.codigo AS estado_codigo
+       FROM titulacion.revisiones r
+       JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
+       JOIN titulacion.versiones_documento version ON version.id = rr.version_documento_id
+       JOIN titulacion.documentos document ON document.id = version.documento_id
+       JOIN titulacion.proyectos p ON p.id = document.proyecto_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       WHERE r.id = $1
+         AND a.docente_id = $2
+         AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+         AND a.activo AND a.fecha_fin IS NULL
+       FOR UPDATE OF r, rr, a, p`,
+      [reviewId, request.session.docente_id],
+    )
+    const review = selected.rows[0]
+    if (!review) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'La revisión no está disponible para tu cuenta.' })
+    }
+    if (review.cerrada_en || review.estado_codigo === 'ANULADO' || review.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'La ronda de revisión ya está cerrada.' })
+    }
+    if (review.current_decision !== 'PENDIENTE') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Ya emitiste un dictamen para esta revisión.' })
+    }
+
+    await databaseClient.query(
+      `UPDATE titulacion.revisiones
+       SET decision = $2, comentario_general = $3, decidida_en = now()
+       WHERE id = $1`,
+      [review.review_id, decision, generalComment || null],
+    )
+    if (decision === 'OBSERVADO') {
+      for (const [index, detail] of observations.entries()) {
+        await databaseClient.query(
+          `INSERT INTO titulacion.observaciones (revision_id, numero, detalle)
+           VALUES ($1, $2, $3)`,
+          [review.review_id, index + 1, detail],
+        )
+      }
+    }
+    await databaseClient.query(
+      `UPDATE titulacion.notificaciones
+       SET leida_en = COALESCE(leida_en, now())
+       WHERE usuario_id = $1 AND proyecto_id = $2 AND tipo = 'REVISION_ASIGNADA' AND leida_en IS NULL`,
+      [request.session.usuario_id, review.project_id],
+    )
+
+    const roundReviews = await databaseClient.query(
+      `SELECT decision FROM titulacion.revisiones WHERE ronda_revision_id = $1 FOR UPDATE`,
+      [review.round_id],
+    )
+    const roundCompleted = roundReviews.rows.length > 0 && roundReviews.rows.every((item) => item.decision !== 'PENDIENTE')
+    let roundResult = null
+    if (roundCompleted) {
+      const hasObservations = roundReviews.rows.some((item) => item.decision === 'OBSERVADO' || item.decision === 'RECHAZADO')
+      const catalog = await databaseClient.query(
+        `SELECT
+           (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id,
+           (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`,
+        [hasObservations ? 'OBSERVADO' : 'PENDIENTE_APROBACION', hasObservations ? 'REGISTRO' : 'APROBACION_PERFIL'],
+      )
+      if (!catalog.rows[0].state_id || !catalog.rows[0].phase_id) throw new Error('Faltan catálogos para cerrar la ronda de revisión.')
+      await databaseClient.query(
+        `UPDATE titulacion.rondas_revision SET cerrada_en = now() WHERE id = $1`,
+        [review.round_id],
+      )
+      await recordProjectStatus(databaseClient, {
+        projectId: review.project_id,
+        previousStateId: review.estado_actual_id,
+        nextStateId: catalog.rows[0].state_id,
+        previousPhaseId: review.fase_actual_id,
+        nextPhaseId: catalog.rows[0].phase_id,
+        userId: request.session.usuario_id,
+        reason: hasObservations
+          ? `Ronda ${review.numero_ronda} cerrada con observaciones de los revisores.`
+          : `Ronda ${review.numero_ronda} aprobada por ambos revisores.`,
+      })
+      const students = await databaseClient.query(
+        `SELECT u.id AS usuario_id, u.correo
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
+         WHERE pe.proyecto_id = $1 AND pe.activo`,
+        [review.project_id],
+      )
+      for (const student of students.rows) {
+        await createNotification(databaseClient, {
+          userId: student.usuario_id,
+          recipientEmail: student.correo,
+          projectId: review.project_id,
+          type: hasObservations ? 'REVISION_DEVUELTA' : 'PERFIL_APROBADO_REVISION',
+          title: hasObservations ? 'Perfil devuelto con observaciones' : 'Perfil aprobado en revisión',
+          message: hasObservations
+            ? `El perfil ${review.codigo_seguimiento} recibió observaciones. Revísalas y adjunta una nueva versión del documento.`
+            : `El perfil ${review.codigo_seguimiento} fue aprobado por ambos revisores y pasa a aprobación institucional.`,
+          link: hasObservations ? '/documentos' : '/student',
+          queueEmail: hasObservations,
+        })
+      }
+      roundResult = hasObservations ? 'observed' : 'approved'
+    }
+    await recordAudit(databaseClient, request.session, {
+      projectId: review.project_id,
+      action: 'EMITIR_DICTAMEN_REVISION',
+      entity: 'revisiones',
+      entityId: review.review_id,
+      detail: { decision, observationCount: observations.length, roundCompleted, roundResult },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({
+      message: roundCompleted
+        ? roundResult === 'observed'
+          ? 'Dictamen registrado. La ronda se cerró y el perfil fue devuelto al estudiante con observaciones.'
+          : 'Dictamen registrado. La ronda se cerró y el perfil pasa a aprobación institucional.'
+        : 'Dictamen registrado. La ronda se cerrará cuando el segundo revisor emita su dictamen.',
+      roundCompleted,
+      roundResult,
+    })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
+  }
+})
+
+app.get('/api/reviewer/documents/:documentId/download', requireReviewer, async (request, response, next) => {
+  try {
+    const documentId = request.params.documentId
+    const versionId = text(request.query.version)
+    if (!isUuid(documentId) || (versionId && !isUuid(versionId))) {
+      return response.status(400).json({ message: 'El documento solicitado no es válido.' })
+    }
+    const result = await pool.query(
+      `SELECT document.proyecto_id, version.nombre_archivo, version.ruta_archivo
+       FROM titulacion.documentos document
+       JOIN titulacion.versiones_documento version ON version.documento_id = document.id
+       JOIN titulacion.rondas_revision rr ON rr.version_documento_id = version.id
+       JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id
+       JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+       WHERE document.id = $2 AND document.activo
+         AND a.docente_id = $1 AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+         AND a.activo AND a.fecha_fin IS NULL
+         AND ($3::uuid IS NULL OR version.id = $3::uuid)
+       ORDER BY version.numero_version DESC
+       LIMIT 1`,
+      [request.session.docente_id, documentId, versionId || null],
+    )
+    const version = result.rows[0]
+    if (!version) return response.status(404).json({ message: 'El archivo no está disponible para tus revisiones asignadas.' })
     const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
     if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
     try {

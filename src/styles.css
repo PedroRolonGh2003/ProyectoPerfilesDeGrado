@@ -446,6 +446,66 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-cancellation p { font-size: 11px; line-height: 1.5; margin: 0 0 5px; }
 .admin-cancellation small { color: #937478; font-size: 10px; }
 
+.reviewer-sidebar .student-role { color: #8d1745; }
+.reviewer-main { max-width: 1080px; }
+.reviewer-stats > div.requires-attention { background: #fff8f1; border-color: #f0d8b7; }
+.reviewer-stats > div.requires-attention strong { color: #a95a18; }
+.reviewer-card { background: #fff; border: 1px solid #e8e1e2; border-left: 4px solid #9a3159; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: clamp(19px, 3vw, 25px); }
+.reviewer-card.is-overdue { border-left-color: #c4701f; }
+.reviewer-card-top { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
+.reviewer-card-top > div { display: grid; gap: 5px; }
+.reviewer-round { color: #8e8084; font-size: 10px; }
+.reviewer-decision { background: #f3e6eb; border-radius: 99px; color: var(--univalle-wine); font-size: 10px; font-weight: 700; padding: 6px 9px; text-align: center; white-space: nowrap; }
+.reviewer-decision.decision-aprobado { background: #e9f5ec; color: #28663b; }
+.reviewer-decision.decision-observado, .reviewer-decision.decision-rechazado { background: #fff0f1; color: #ad333a; }
+.reviewer-decision.decision-pendiente { background: #fff2e7; color: #9a4b14; }
+.reviewer-card h2 { color: #44373b; font-size: 17px; margin: 14px 0 6px; }
+.reviewer-card-info { border-top: 1px solid #eee8e9; display: grid; gap: 18px; grid-template-columns: 1fr 1fr; margin-top: 18px; padding-top: 14px; }
+.reviewer-card-info > div { display: grid; gap: 5px; }
+.reviewer-card-info small { color: #988b8e; font-size: 10px; }
+.reviewer-card-info strong { color: #5d4e53; font-size: 11px; }
+.reviewer-card-info strong.is-overdue { color: #a95a18; }
+.reviewer-document-link { font-size: 11px; padding: 7px 9px; width: fit-content; }
+.reviewer-result { background: #f1f8f3; border: 1px solid #d9eadc; border-radius: 8px; color: #3c6d49; font-size: 11px; margin-top: 15px; padding: 10px 12px; }
+.reviewer-result.is-observed { background: #fff5f6; border-color: #f1d9dd; color: #93444b; }
+.reviewer-result p { color: #786a6e; line-height: 1.45; margin: 5px 0 0; }
+.reviewer-workspace { padding-bottom: 30px; }
+.reviewer-back { margin-bottom: 16px; }
+.reviewer-workspace-heading { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; margin-bottom: 18px; }
+.reviewer-workspace-heading h2 { color: #44373b; font-family: 'Playfair Display', Georgia, serif; font-size: clamp(23px, 3vw, 31px); line-height: 1.2; margin: 7px 0; }
+.reviewer-workspace-heading p { color: #786a6e; font-size: 12px; line-height: 1.5; margin: 0; max-width: 720px; }
+.reviewer-project-context { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; display: grid; gap: 18px; grid-template-columns: .8fr 1.4fr .7fr; margin-bottom: 17px; padding: 18px 20px; }
+.reviewer-project-context > div { display: grid; gap: 5px; min-width: 0; }
+.reviewer-project-context small { color: #96898d; font-size: 10px; }
+.reviewer-project-context strong { color: #4e3e43; font-size: 11px; }
+.reviewer-project-context span, .reviewer-project-context p { color: #786a6e; font-size: 11px; line-height: 1.45; margin: 0; }
+.reviewer-document-panel { align-items: center; background: #fffafc; border: 1px solid #ecd7df; border-radius: 10px; display: flex; gap: 16px; justify-content: space-between; margin-bottom: 17px; padding: 16px 18px; }
+.reviewer-document-panel > div { align-items: center; display: flex; gap: 12px; min-width: 0; }
+.reviewer-document-panel > div > svg { background: #f5e3eb; border-radius: 8px; color: var(--univalle-wine); flex: 0 0 auto; height: 38px; padding: 9px; width: 38px; }
+.reviewer-document-panel small, .reviewer-document-panel span { color: #8d7f83; display: block; font-size: 10px; }
+.reviewer-document-panel strong { color: #54464a; display: block; font-size: 12px; margin: 3px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reviewer-document-panel .primary-button { flex: 0 0 auto; margin: 0; padding: 10px 13px; text-decoration: none; }
+.reviewer-form-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: 21px; }
+.reviewer-form-card > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
+.reviewer-form-card .form-field > span { color: #685a5e; font-size: 11px; }
+.reviewer-observations { border-top: 1px solid #eee8e9; display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; }
+.reviewer-observations > div:first-child { display: grid; gap: 3px; }
+.reviewer-observations > div:first-child strong { color: #504246; font-size: 12px; }
+.reviewer-observations > div:first-child small { color: #8e8084; font-size: 10px; }
+.reviewer-observation-row { align-items: flex-start; display: grid; gap: 9px; grid-template-columns: 24px 1fr 31px; }
+.reviewer-observation-row > span { align-items: center; background: #f5e5ec; border-radius: 50%; color: var(--univalle-wine); display: flex; font-size: 10px; font-weight: 700; height: 24px; justify-content: center; margin-top: 4px; width: 24px; }
+.reviewer-observation-row textarea { background: #fbfaf9; border: 1px solid #dcd5d7; border-radius: 7px; color: #55474b; font: inherit; font-size: 12px; line-height: 1.45; min-height: 54px; outline: none; padding: 9px 10px; resize: vertical; width: 100%; }
+.reviewer-observation-row textarea:focus { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(173, 0, 71, .08); }
+.icon-button { align-items: center; background: #fff4f5; border: 1px solid #f1d9dd; border-radius: 7px; color: #a4474e; cursor: pointer; display: flex; height: 31px; justify-content: center; margin-top: 4px; padding: 0; width: 31px; }
+.icon-button:hover { background: #fee9eb; }
+.icon-button svg { height: 15px; width: 15px; }
+.reviewer-observations > .text-button { align-items: center; display: inline-flex; gap: 5px; justify-self: start; }
+.reviewer-observations > .text-button svg { height: 14px; width: 14px; }
+.reviewer-decision-actions { align-items: center; border-top: 1px solid #eee8e9; display: flex; flex-wrap: wrap; gap: 10px; margin-top: 19px; padding-top: 17px; }
+.reviewer-decision-actions .primary-button, .reviewer-decision-actions .secondary-button { margin: 0; }
+.reviewer-observe-button { background: #9a3159; }
+.reviewer-observe-button:hover { background: #7d2145; }
+
 @media (max-width: 860px) {
   .student-sidebar { display: none; }
   .student-header { height: 66px; justify-content: space-between; padding: 0 24px; }
@@ -454,6 +514,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .tutor-stats { grid-template-columns: repeat(3, 1fr); }
   .admin-stats { grid-template-columns: repeat(3, 1fr); }
   .admin-operation-grid { grid-template-columns: 1fr; }
+  .reviewer-project-context { grid-template-columns: 1fr 1fr; }
 }
 
 @media (max-width: 650px) {
@@ -488,4 +549,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .admin-project-card footer .text-button { margin-left: 0; }
   .admin-project-context, .admin-round { grid-template-columns: 1fr; }
   .admin-workspace .student-title-row > .admin-status { margin-top: 0; }
+  .reviewer-card-info, .reviewer-project-context { grid-template-columns: 1fr; }
+  .reviewer-workspace-heading, .reviewer-document-panel { align-items: flex-start; flex-direction: column; }
+  .reviewer-document-panel .primary-button { width: 100%; }
 }
