@@ -13,15 +13,18 @@ const port = Number(process.env.PORT ?? 3001)
 const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
 const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
+const databaseUrl = process.env.DATABASE_URL?.trim()
 
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT ?? 5432),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  options: '-c search_path=titulacion,public',
-})
+const pool = new Pool(databaseUrl
+  ? { connectionString: databaseUrl, options: '-c search_path=titulacion,public' }
+  : {
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT ?? 5432),
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      options: '-c search_path=titulacion,public',
+    })
 
 const app = express()
 const upload = multer({
@@ -210,6 +213,41 @@ async function requireAdministrator(request, response, next) {
 
 function text(value) {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function normalizedRoles(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value
+    .filter((role) => typeof role === 'string')
+    .map((role) => role.trim().toUpperCase())
+    .filter((role) => supportedRoles.includes(role)))]
+}
+
+function isEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+function administratorUserPayload(row) {
+  return {
+    id: row.id,
+    firstName: row.nombres,
+    lastName: row.apellidos,
+    fullName: `${row.nombres} ${row.apellidos}`.trim(),
+    email: row.correo,
+    phone: row.telefono ?? '',
+    active: row.activo,
+    createdAt: row.creado_en,
+    lastAccessAt: row.ultimo_acceso_en,
+    roles: Array.isArray(row.roles) ? row.roles : [],
+    careerId: row.carrera_id ?? null,
+    career: row.carrera_nombre ?? 'Sin carrera asignada',
+    studentId: row.estudiante_id ?? null,
+    registration: row.registro_universitario ?? null,
+    teacherId: row.docente_id ?? null,
+    teacherCode: row.codigo_docente ?? null,
+    specialty: row.especialidad ?? null,
+    relatedProjects: Number(row.proyectos_estudiante ?? 0) + Number(row.proyectos_docente ?? 0),
+  }
 }
 
 function isWordDocument(file) {
@@ -598,6 +636,582 @@ app.post('/api/notifications/:notificationId/read', requireSession, async (reque
     return response.json({ id: result.rows[0].id, readAt: result.rows[0].leida_en })
   } catch (error) {
     return next(error)
+  }
+})
+
+app.get('/api/admin/users', requireAdministrator, async (request, response, next) => {
+  try {
+    const search = text(request.query?.search).slice(0, 100)
+    const role = text(request.query?.role).toUpperCase()
+    const active = text(request.query?.active).toLowerCase()
+    const filters = []
+    const values = []
+
+    if (search) {
+      values.push(`%${search}%`)
+      filters.push(`(
+        u.nombres ILIKE $${values.length}
+        OR u.apellidos ILIKE $${values.length}
+        OR u.correo ILIKE $${values.length}
+        OR COALESCE(e.registro_universitario, '') ILIKE $${values.length}
+        OR COALESCE(d.codigo_docente, '') ILIKE $${values.length}
+      )`)
+    }
+    if (supportedRoles.includes(role)) {
+      values.push(role)
+      filters.push(`EXISTS (
+        SELECT 1
+        FROM titulacion.usuario_roles filtered_user_role
+        JOIN titulacion.roles filtered_role ON filtered_role.id = filtered_user_role.rol_id
+        WHERE filtered_user_role.usuario_id = u.id
+          AND filtered_user_role.activo
+          AND filtered_role.activo
+          AND filtered_role.codigo = $${values.length}
+      )`)
+    }
+    if (active === 'true' || active === 'false') {
+      values.push(active === 'true')
+      filters.push(`u.activo = $${values.length}`)
+    }
+
+    const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+    const [users, roles, careers] = await Promise.all([
+      pool.query(
+        `SELECT u.id, u.nombres, u.apellidos, u.correo, u.telefono, u.activo, u.creado_en, u.ultimo_acceso_en,
+                e.id AS estudiante_id, e.registro_universitario,
+                d.id AS docente_id, d.codigo_docente, d.especialidad,
+                COALESCE(ec.id, dc.id) AS carrera_id,
+                COALESCE(ec.nombre, dc.nombre) AS carrera_nombre,
+                COALESCE(user_roles.roles, ARRAY[]::text[]) AS roles,
+                COALESCE(student_projects.total, 0)::int AS proyectos_estudiante,
+                COALESCE(teacher_projects.total, 0)::int AS proyectos_docente
+         FROM titulacion.usuarios u
+         LEFT JOIN titulacion.estudiantes e ON e.usuario_id = u.id
+         LEFT JOIN titulacion.docentes d ON d.usuario_id = u.id
+         LEFT JOIN titulacion.carreras ec ON ec.id = e.carrera_id
+         LEFT JOIN titulacion.carreras dc ON dc.id = d.carrera_id
+         LEFT JOIN LATERAL (
+           SELECT array_agg(r.codigo ORDER BY CASE r.codigo
+             WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'REVISOR' THEN 3 WHEN 'ADMINISTRADOR' THEN 4 ELSE 5 END) AS roles
+           FROM titulacion.usuario_roles ur
+           JOIN titulacion.roles r ON r.id = ur.rol_id
+           WHERE ur.usuario_id = u.id AND ur.activo AND r.activo
+         ) user_roles ON true
+         LEFT JOIN LATERAL (
+           SELECT count(DISTINCT pe.proyecto_id)::int AS total
+           FROM titulacion.proyecto_estudiantes pe
+           WHERE pe.estudiante_id = e.id AND pe.activo
+         ) student_projects ON true
+         LEFT JOIN LATERAL (
+           SELECT count(DISTINCT a.proyecto_id)::int AS total
+           FROM titulacion.asignaciones_proyecto a
+           WHERE a.docente_id = d.id AND (a.activo OR (a.tipo = 'TUTOR' AND a.fecha_fin IS NULL))
+         ) teacher_projects ON true
+         ${where}
+         ORDER BY u.activo DESC, u.apellidos, u.nombres
+         LIMIT 250`,
+        values,
+      ),
+      pool.query(
+        `SELECT codigo, nombre
+         FROM titulacion.roles
+         WHERE activo AND codigo = ANY($1::text[])
+         ORDER BY CASE codigo
+           WHEN 'ESTUDIANTE' THEN 1 WHEN 'TUTOR' THEN 2 WHEN 'REVISOR' THEN 3 WHEN 'ADMINISTRADOR' THEN 4 ELSE 5 END`,
+        [supportedRoles],
+      ),
+      pool.query(`SELECT id, codigo, nombre FROM titulacion.carreras WHERE activa ORDER BY nombre`),
+    ])
+
+    const userRows = users.rows.map(administratorUserPayload)
+    const summary = userRows.reduce((total, user) => ({
+      total: total.total + 1,
+      active: total.active + (user.active ? 1 : 0),
+      students: total.students + (user.roles.includes('ESTUDIANTE') ? 1 : 0),
+      staff: total.staff + (user.roles.some((item) => item === 'TUTOR' || item === 'REVISOR') ? 1 : 0),
+    }), { total: 0, active: 0, students: 0, staff: 0 })
+
+    return response.json({
+      users: userRows,
+      summary,
+      roles: roles.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
+      careers: careers.rows.map((item) => ({ id: item.id, code: item.codigo, name: item.nombre })),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/admin/users', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const firstName = text(request.body?.firstName)
+    const lastName = text(request.body?.lastName)
+    const email = text(request.body?.email).toLowerCase()
+    const phone = text(request.body?.phone)
+    const password = request.body?.password
+    const roles = normalizedRoles(request.body?.roles)
+    const careerId = text(request.body?.careerId)
+    const registration = text(request.body?.registration)
+    const teacherCode = text(request.body?.teacherCode)
+    const specialty = text(request.body?.specialty)
+    const needsStudent = roles.includes('ESTUDIANTE')
+    const needsTeacher = roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
+
+    if (firstName.length < 2 || lastName.length < 2 || !isEmail(email) || typeof password !== 'string' || password.length < 8 || roles.length === 0) {
+      return response.status(422).json({ message: 'Completa nombres, apellidos, correo válido, contraseña de al menos 8 caracteres y al menos un rol.' })
+    }
+    if ((needsStudent || needsTeacher) && !isUuid(careerId)) {
+      return response.status(422).json({ message: 'Selecciona la carrera para el perfil de estudiante o docente.' })
+    }
+    if (needsStudent && registration.length < 4) return response.status(422).json({ message: 'Registra el número de matrícula del estudiante.' })
+    if (needsTeacher && teacherCode.length < 4) return response.status(422).json({ message: 'Registra el código docente.' })
+
+    await databaseClient.query('BEGIN')
+    const existing = await databaseClient.query(`SELECT id FROM titulacion.usuarios WHERE lower(correo) = lower($1) FOR UPDATE`, [email])
+    if (existing.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Ya existe un usuario con ese correo.' })
+    }
+    if (needsStudent || needsTeacher) {
+      const career = await databaseClient.query(`SELECT id FROM titulacion.carreras WHERE id = $1 AND activa`, [careerId])
+      if (!career.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(422).json({ message: 'La carrera seleccionada no está disponible.' })
+      }
+    }
+    if (needsStudent) {
+      const existingRegistration = await databaseClient.query(`SELECT id FROM titulacion.estudiantes WHERE registro_universitario = $1`, [registration])
+      if (existingRegistration.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'La matrícula ya pertenece a otro estudiante.' })
+      }
+    }
+    if (needsTeacher) {
+      const existingTeacherCode = await databaseClient.query(`SELECT id FROM titulacion.docentes WHERE codigo_docente = $1`, [teacherCode])
+      if (existingTeacherCode.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'El código docente ya pertenece a otra persona.' })
+      }
+    }
+
+    const user = await databaseClient.query(
+      `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, telefono)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [firstName, lastName, email, await bcrypt.hash(password, 10), phone || null],
+    )
+    const roleRows = await databaseClient.query(`SELECT id, codigo FROM titulacion.roles WHERE activo AND codigo = ANY($1::text[])`, [roles])
+    if (roleRows.rows.length !== roles.length) throw new Error('No fue posible validar todos los roles seleccionados.')
+    await Promise.all(roleRows.rows.map((role) => databaseClient.query(
+      `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, asignado_por_usuario_id)
+       VALUES ($1, $2, $3)`,
+      [user.rows[0].id, role.id, request.session.usuario_id],
+    )))
+    if (needsStudent) {
+      await databaseClient.query(
+        `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario)
+         VALUES ($1, $2, $3)`,
+        [user.rows[0].id, careerId, registration],
+      )
+    }
+    if (needsTeacher) {
+      await databaseClient.query(
+        `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad)
+         VALUES ($1, $2, $3, $4)`,
+        [user.rows[0].id, careerId, teacherCode, specialty || null],
+      )
+    }
+    await recordAudit(databaseClient, request.session, {
+      action: 'CREAR_USUARIO',
+      entity: 'usuarios',
+      entityId: user.rows[0].id,
+      detail: { email, roles },
+    })
+    await databaseClient.query('COMMIT')
+    return response.status(201).json({ message: 'El usuario fue creado correctamente.', userId: user.rows[0].id })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.patch('/api/admin/users/:userId', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const userId = request.params.userId
+    const firstName = text(request.body?.firstName)
+    const lastName = text(request.body?.lastName)
+    const email = text(request.body?.email).toLowerCase()
+    const phone = text(request.body?.phone)
+    const password = request.body?.password
+    const roles = normalizedRoles(request.body?.roles)
+    const careerId = text(request.body?.careerId)
+    const registration = text(request.body?.registration)
+    const teacherCode = text(request.body?.teacherCode)
+    const specialty = text(request.body?.specialty)
+    const active = typeof request.body?.active === 'boolean' ? request.body.active : null
+    const needsStudent = roles.includes('ESTUDIANTE')
+    const needsTeacher = roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
+
+    if (!isUuid(userId) || firstName.length < 2 || lastName.length < 2 || !isEmail(email) || roles.length === 0 || active === null) {
+      return response.status(422).json({ message: 'Completa los datos básicos, selecciona al menos un rol y define el estado del usuario.' })
+    }
+    if (typeof password !== 'undefined' && typeof password !== 'string') return response.status(422).json({ message: 'La contraseña no es válida.' })
+    if (typeof password === 'string' && password.length > 0 && password.length < 8) return response.status(422).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres.' })
+    if ((needsStudent || needsTeacher) && !isUuid(careerId)) return response.status(422).json({ message: 'Selecciona la carrera para el perfil de estudiante o docente.' })
+    if (needsStudent && registration.length < 4) return response.status(422).json({ message: 'Registra el número de matrícula del estudiante.' })
+    if (needsTeacher && teacherCode.length < 4) return response.status(422).json({ message: 'Registra el código docente.' })
+    if (userId === request.session.usuario_id && (!active || !roles.includes('ADMINISTRADOR'))) {
+      return response.status(422).json({ message: 'No puedes quitar tu propio acceso administrativo ni desactivar tu cuenta desde esta sesión.' })
+    }
+
+    await databaseClient.query('BEGIN')
+    const user = await databaseClient.query(`SELECT id FROM titulacion.usuarios WHERE id = $1 FOR UPDATE`, [userId])
+    if (!user.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El usuario no existe.' })
+    }
+    if (needsStudent || needsTeacher) {
+      const career = await databaseClient.query(`SELECT id FROM titulacion.carreras WHERE id = $1 AND activa`, [careerId])
+      if (!career.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(422).json({ message: 'La carrera seleccionada no está disponible.' })
+      }
+    }
+    const duplicateEmail = await databaseClient.query(`SELECT id FROM titulacion.usuarios WHERE lower(correo) = lower($1) AND id <> $2`, [email, userId])
+    if (duplicateEmail.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Ya existe otro usuario con ese correo.' })
+    }
+    const [student, teacher] = await Promise.all([
+      databaseClient.query(`SELECT id FROM titulacion.estudiantes WHERE usuario_id = $1 FOR UPDATE`, [userId]),
+      databaseClient.query(`SELECT id FROM titulacion.docentes WHERE usuario_id = $1 FOR UPDATE`, [userId]),
+    ])
+    if (student.rows[0] && (!active || !needsStudent)) {
+      const activeProject = await databaseClient.query(
+        `SELECT 1
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
+         JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+         WHERE pe.estudiante_id = $1 AND pe.activo AND ep.codigo NOT IN ('ANULADO', 'FINALIZADO')
+         LIMIT 1`,
+        [student.rows[0].id],
+      )
+      if (activeProject.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'No puedes desactivar el perfil de estudiante mientras tenga un proyecto activo.' })
+      }
+    }
+    if (teacher.rows[0] && (!active || !needsTeacher)) {
+      const activeAssignment = await databaseClient.query(
+        `SELECT 1 FROM titulacion.asignaciones_proyecto
+         WHERE docente_id = $1 AND (activo OR (tipo = 'TUTOR' AND fecha_fin IS NULL))
+         LIMIT 1`,
+        [teacher.rows[0].id],
+      )
+      if (activeAssignment.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'No puedes desactivar el perfil docente mientras tenga asignaciones activas o invitaciones pendientes.' })
+      }
+    }
+    if (needsStudent) {
+      const duplicateRegistration = await databaseClient.query(`SELECT id FROM titulacion.estudiantes WHERE registro_universitario = $1 AND usuario_id <> $2`, [registration, userId])
+      if (duplicateRegistration.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'La matrícula ya pertenece a otro estudiante.' })
+      }
+    }
+    if (needsTeacher) {
+      const duplicateTeacherCode = await databaseClient.query(`SELECT id FROM titulacion.docentes WHERE codigo_docente = $1 AND usuario_id <> $2`, [teacherCode, userId])
+      if (duplicateTeacherCode.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'El código docente ya pertenece a otra persona.' })
+      }
+    }
+
+    await databaseClient.query(
+      `UPDATE titulacion.usuarios
+       SET nombres = $2, apellidos = $3, correo = $4, telefono = $5, activo = $6,
+           password_hash = CASE WHEN $7::text = '' THEN password_hash ELSE $8 END,
+           actualizado_en = now()
+       WHERE id = $1`,
+      [userId, firstName, lastName, email, phone || null, active, typeof password === 'string' ? password : '', typeof password === 'string' && password ? await bcrypt.hash(password, 10) : null],
+    )
+    const [allRoleRows, targetRoleRows] = await Promise.all([
+      databaseClient.query(
+        `SELECT ur.id, r.codigo
+         FROM titulacion.usuario_roles ur
+         JOIN titulacion.roles r ON r.id = ur.rol_id
+         WHERE ur.usuario_id = $1
+         FOR UPDATE`,
+        [userId],
+      ),
+      databaseClient.query(`SELECT id, codigo FROM titulacion.roles WHERE activo AND codigo = ANY($1::text[])`, [roles]),
+    ])
+    if (targetRoleRows.rows.length !== roles.length) throw new Error('No fue posible validar todos los roles seleccionados.')
+    for (const existingRole of allRoleRows.rows) {
+      if (!roles.includes(existingRole.codigo)) {
+        await databaseClient.query(
+          `UPDATE titulacion.usuario_roles
+           SET activo = false, retirado_en = COALESCE(retirado_en, now())
+           WHERE id = $1`,
+          [existingRole.id],
+        )
+      }
+    }
+    for (const role of targetRoleRows.rows) {
+      const existingRole = allRoleRows.rows.find((item) => item.codigo === role.codigo)
+      if (existingRole) {
+        await databaseClient.query(
+          `UPDATE titulacion.usuario_roles
+           SET activo = true, retirado_en = NULL, asignado_por_usuario_id = $2
+           WHERE id = $1`,
+          [existingRole.id, request.session.usuario_id],
+        )
+      } else {
+        await databaseClient.query(
+          `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo, asignado_por_usuario_id)
+           VALUES ($1, $2, true, $3)`,
+          [userId, role.id, request.session.usuario_id],
+        )
+      }
+    }
+    if (needsStudent) {
+      if (student.rows[0]) {
+        await databaseClient.query(
+          `UPDATE titulacion.estudiantes
+           SET carrera_id = $2, registro_universitario = $3, activo = $4
+           WHERE id = $1`,
+          [student.rows[0].id, careerId, registration, active],
+        )
+      } else {
+        await databaseClient.query(
+          `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
+           VALUES ($1, $2, $3, $4)`,
+          [userId, careerId, registration, active],
+        )
+      }
+    } else if (student.rows[0]) {
+      await databaseClient.query(`UPDATE titulacion.estudiantes SET activo = false WHERE id = $1`, [student.rows[0].id])
+    }
+    if (needsTeacher) {
+      if (teacher.rows[0]) {
+        await databaseClient.query(
+          `UPDATE titulacion.docentes
+           SET carrera_id = $2, codigo_docente = $3, especialidad = $4, activo = $5
+           WHERE id = $1`,
+          [teacher.rows[0].id, careerId, teacherCode, specialty || null, active],
+        )
+      } else {
+        await databaseClient.query(
+          `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad, activo)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [userId, careerId, teacherCode, specialty || null, active],
+        )
+      }
+    } else if (teacher.rows[0]) {
+      await databaseClient.query(`UPDATE titulacion.docentes SET activo = false WHERE id = $1`, [teacher.rows[0].id])
+    }
+    if (!active) {
+      await databaseClient.query(`UPDATE titulacion.sesiones_usuario SET cerrada_en = COALESCE(cerrada_en, now()) WHERE usuario_id = $1`, [userId])
+    }
+    await recordAudit(databaseClient, request.session, {
+      action: active ? 'ACTUALIZAR_USUARIO' : 'DESACTIVAR_USUARIO',
+      entity: 'usuarios',
+      entityId: userId,
+      detail: { email, roles, active },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: active ? 'El usuario fue actualizado correctamente.' : 'El usuario fue desactivado sin eliminar su historial.' })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.get('/api/admin/project-catalog', requireAdministrator, async (_request, response, next) => {
+  try {
+    const [managements, modalities, students] = await Promise.all([
+      pool.query(
+        `SELECT g.id, g.codigo, g.nombre, g.carrera_id
+         FROM titulacion.gestiones g
+         WHERE g.activa
+         ORDER BY g.fecha_inicio DESC, g.nombre`,
+      ),
+      pool.query(
+        `SELECT m.id, m.codigo, m.nombre, m.carrera_id
+         FROM titulacion.modalidades_titulacion m
+         WHERE m.activa
+         ORDER BY m.nombre`,
+      ),
+      pool.query(
+        `SELECT e.id, e.carrera_id, e.registro_universitario,
+                trim(concat(u.nombres, ' ', u.apellidos)) AS nombre,
+                c.nombre AS carrera_nombre
+         FROM titulacion.estudiantes e
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
+         JOIN titulacion.carreras c ON c.id = e.carrera_id AND c.activa
+         WHERE e.activo
+           AND NOT EXISTS (
+             SELECT 1
+             FROM titulacion.proyecto_estudiantes pe
+             JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
+             JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+             WHERE pe.estudiante_id = e.id AND pe.activo AND ep.codigo NOT IN ('ANULADO', 'FINALIZADO')
+           )
+         ORDER BY u.apellidos, u.nombres`,
+      ),
+    ])
+    return response.json({
+      managements: managements.rows.map((item) => ({ id: item.id, code: item.codigo, name: item.nombre, careerId: item.carrera_id })),
+      modalities: modalities.rows.map((item) => ({ id: item.id, code: item.codigo, name: item.nombre, careerId: item.carrera_id })),
+      students: students.rows.map((item) => ({ id: item.id, name: item.nombre, registration: item.registro_universitario, careerId: item.carrera_id, career: item.carrera_nombre })),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), async (request, response, next) => {
+  let savedFilePath = null
+  let databaseClient = null
+  try {
+    const studentId = text(request.body?.studentId)
+    const managementId = text(request.body?.managementId)
+    const modalityId = text(request.body?.modalityId)
+    const title = text(request.body?.title)
+    const description = text(request.body?.description)
+    const generalObjective = text(request.body?.generalObjective)
+    let objectives = []
+
+    try {
+      objectives = JSON.parse(request.body?.objectives ?? '[]')
+    } catch {
+      return response.status(422).json({ message: 'Los objetivos específicos no tienen un formato válido.' })
+    }
+    const cleanObjectives = Array.isArray(objectives) ? objectives.map(text).filter(Boolean) : []
+    if (!isUuid(studentId) || !isUuid(managementId) || !isUuid(modalityId) || title.length < 10 || description.length < 20 || generalObjective.length < 10 || cleanObjectives.length === 0 || cleanObjectives.some((item) => item.length < 10)) {
+      return response.status(422).json({ message: 'Completa estudiante, gestión, modalidad, título, descripción, objetivo general y al menos un objetivo específico válido.' })
+    }
+    if (!isWordDocument(request.file)) return response.status(422).json({ message: 'Adjunta el perfil inicial en formato Word (.doc o .docx).' })
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const student = await databaseClient.query(
+      `SELECT e.id, e.carrera_id, u.id AS usuario_id
+       FROM titulacion.estudiantes e
+       JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
+       WHERE e.id = $1 AND e.activo
+       FOR UPDATE`,
+      [studentId],
+    )
+    if (!student.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'El estudiante seleccionado no está disponible.' })
+    }
+    const existingProject = await databaseClient.query(
+      `SELECT 1
+       FROM titulacion.proyecto_estudiantes pe
+       JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       WHERE pe.estudiante_id = $1 AND pe.activo AND ep.codigo NOT IN ('ANULADO', 'FINALIZADO')
+       LIMIT 1`,
+      [studentId],
+    )
+    if (existingProject.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'El estudiante ya participa en un proyecto activo.' })
+    }
+    const catalog = await databaseClient.query(
+      `SELECT
+         (SELECT id FROM titulacion.gestiones WHERE id = $1 AND carrera_id = $3 AND activa) AS gestion_id,
+         (SELECT id FROM titulacion.modalidades_titulacion WHERE id = $2 AND carrera_id = $3 AND activa) AS modalidad_id,
+         (SELECT id FROM titulacion.fases WHERE codigo = 'REGISTRO' AND activa) AS fase_id,
+         (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'REGISTRADO') AS estado_id`,
+      [managementId, modalityId, student.rows[0].carrera_id],
+    )
+    const values = catalog.rows[0]
+    if (!values?.gestion_id || !values?.modalidad_id || !values?.fase_id || !values?.estado_id) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'La gestión o modalidad no corresponde a la carrera del estudiante.' })
+    }
+    const project = await databaseClient.query(
+      `INSERT INTO titulacion.proyectos
+        (codigo_seguimiento, gestion_id, modalidad_id, fase_actual_id, estado_actual_id,
+         titulo_tentativo, descripcion, objetivo_general, creado_por_usuario_id)
+       VALUES ('', $1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id, codigo_seguimiento`,
+      [values.gestion_id, values.modalidad_id, values.fase_id, values.estado_id, title, description, generalObjective, request.session.usuario_id],
+    )
+    const createdProject = project.rows[0]
+    await databaseClient.query(
+      `INSERT INTO titulacion.proyecto_estudiantes (proyecto_id, estudiante_id, es_responsable_principal)
+       VALUES ($1, $2, true)`,
+      [createdProject.id, studentId],
+    )
+    for (const [index, objective] of cleanObjectives.entries()) {
+      await databaseClient.query(
+        `INSERT INTO titulacion.objetivos_especificos (proyecto_id, numero, descripcion)
+         VALUES ($1, $2, $3)`,
+        [createdProject.id, index + 1, objective],
+      )
+    }
+    const extension = path.extname(request.file.originalname).toLowerCase()
+    const filename = `${crypto.randomUUID()}${extension}`
+    const relativePath = path.posix.join('uploads', 'proyectos', createdProject.id, filename)
+    savedFilePath = path.join(process.cwd(), ...relativePath.split('/'))
+    await mkdir(path.dirname(savedFilePath), { recursive: true })
+    await writeFile(savedFilePath, request.file.buffer, { flag: 'wx' })
+    const document = await databaseClient.query(
+      `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
+       VALUES ($1, $2, $3, 'PERFIL_PROYECTO', $4)
+       RETURNING id`,
+      [createdProject.id, values.fase_id, title, request.session.usuario_id],
+    )
+    await databaseClient.query(
+      `INSERT INTO titulacion.versiones_documento
+        (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega)
+       VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        document.rows[0].id,
+        path.basename(request.file.originalname),
+        relativePath,
+        request.file.mimetype || 'application/octet-stream',
+        request.file.size,
+        crypto.createHash('sha256').update(request.file.buffer).digest('hex'),
+        request.session.usuario_id,
+        'Perfil inicial registrado por Administración.',
+      ],
+    )
+    await databaseClient.query(
+      `INSERT INTO titulacion.historial_estados
+        (proyecto_id, estado_nuevo_id, fase_nueva_id, cambiado_por_usuario_id, motivo)
+       VALUES ($1, $2, $3, $4, 'Registro inicial creado por Administración.')`,
+      [createdProject.id, values.estado_id, values.fase_id, request.session.usuario_id],
+    )
+    await recordAudit(databaseClient, request.session, {
+      projectId: createdProject.id,
+      action: 'CREAR_PROYECTO_ADMINISTRACION',
+      entity: 'proyectos',
+      entityId: createdProject.id,
+      detail: { studentId, title },
+    })
+    await databaseClient.query('COMMIT')
+    return response.status(201).json({
+      message: `El proyecto fue registrado con el código ${createdProject.codigo_seguimiento}.`,
+      project: { id: createdProject.id, code: createdProject.codigo_seguimiento },
+    })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    if (savedFilePath) await rm(savedFilePath, { force: true }).catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
   }
 })
 

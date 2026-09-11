@@ -151,6 +151,37 @@ type AdminDashboard = {
   statuses: { code: string; name: string }[]
   projects: AdminProject[]
 }
+type AdminUser = {
+  id: string
+  firstName: string
+  lastName: string
+  fullName: string
+  email: string
+  phone: string
+  active: boolean
+  createdAt: string
+  lastAccessAt: string | null
+  roles: RoleCode[]
+  careerId: string | null
+  career: string
+  studentId: string | null
+  registration: string | null
+  teacherId: string | null
+  teacherCode: string | null
+  specialty: string | null
+  relatedProjects: number
+}
+type AdminUsersResponse = {
+  users: AdminUser[]
+  summary: { total: number; active: number; students: number; staff: number }
+  roles: { code: RoleCode; name: string }[]
+  careers: { id: string; code: string; name: string }[]
+}
+type ProjectCatalog = {
+  managements: { id: string; code: string; name: string; careerId: string }[]
+  modalities: { id: string; code: string; name: string; careerId: string }[]
+  students: { id: string; name: string; registration: string; careerId: string; career: string }[]
+}
 type AdminStaff = { id: string; name: string; email: string; roles: ('TUTOR' | 'REVISOR')[] }
 type AdminAssignment = {
   id: string
@@ -1169,17 +1200,218 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   </main>
 }
 
+type AdminUserInput = {
+  firstName: string
+  lastName: string
+  email: string
+  phone: string
+  password: string
+  roles: RoleCode[]
+  active: boolean
+  careerId: string
+  registration: string
+  teacherCode: string
+  specialty: string
+}
+
+function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: AdminUser | null; roles: { code: RoleCode; name: string }[]; careers: { id: string; code: string; name: string }[]; onCancel: () => void; onSave: (payload: AdminUserInput) => Promise<void> }) {
+  const [form, setForm] = useState<AdminUserInput>({
+    firstName: user?.firstName ?? '', lastName: user?.lastName ?? '', email: user?.email ?? '', phone: user?.phone ?? '', password: '',
+    roles: user?.roles ?? ['ESTUDIANTE'], active: user?.active ?? true, careerId: user?.careerId ?? '', registration: user?.registration ?? '', teacherCode: user?.teacherCode ?? '', specialty: user?.specialty ?? '',
+  })
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const needsCareer = form.roles.some((role) => ['ESTUDIANTE', 'TUTOR', 'REVISOR'].includes(role))
+  const needsStudent = form.roles.includes('ESTUDIANTE')
+  const needsTeacher = form.roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
+
+  function toggleRole(role: RoleCode) {
+    setForm((current) => ({ ...current, roles: current.roles.includes(role) ? current.roles.filter((item) => item !== role) : [...current.roles, role] }))
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      await onSave(form)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible guardar el usuario.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return <form className="admin-operation-card admin-user-form" onSubmit={(event) => void submit(event)}>
+    <div className="admin-operation-heading"><Icon name="user" /><div><p>{user ? 'EDICIÓN DE USUARIO' : 'NUEVO USUARIO'}</p><h2>{user ? user.fullName : 'Registrar persona'}</h2></div></div>
+    <p>{user ? 'Actualiza datos, roles, perfiles académicos, estado y contraseña si corresponde.' : 'Crea un acceso institucional y habilita únicamente los roles necesarios.'}</p>
+    <div className="admin-user-form-grid">
+      <label className="form-field"><span>Nombres <b>*</b></span><input disabled={isSubmitting} minLength={2} onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))} required value={form.firstName} /></label>
+      <label className="form-field"><span>Apellidos <b>*</b></span><input disabled={isSubmitting} minLength={2} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} required value={form.lastName} /></label>
+      <label className="form-field"><span>Correo institucional <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} required type="email" value={form.email} /></label>
+      <label className="form-field"><span>Teléfono</span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} value={form.phone} /></label>
+      <label className="form-field"><span>{user ? 'Nueva contraseña' : 'Contraseña'} {!user && <b>*</b>}</span><input autoComplete="new-password" disabled={isSubmitting} minLength={user ? undefined : 8} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder={user ? 'Déjala vacía para conservarla' : 'Mínimo 8 caracteres'} required={!user} type="password" value={form.password} /></label>
+      <label className="form-field admin-toggle-field"><span>Estado</span><span className="admin-switch"><input checked={form.active} disabled={isSubmitting || user?.id === undefined} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />{form.active ? 'Activo' : 'Inactivo'}</span></label>
+    </div>
+    <fieldset className="admin-role-fields"><legend>Roles <b>*</b></legend><div>{roles.map((role) => <label className={`admin-role-check role-${role.code.toLowerCase()}`} key={role.code}><input checked={form.roles.includes(role.code)} disabled={isSubmitting} onChange={() => toggleRole(role.code)} type="checkbox" /><span>{role.name}</span></label>)}</div></fieldset>
+    {needsCareer && <label className="form-field"><span>Carrera <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, careerId: event.target.value }))} required value={form.careerId}><option value="">Selecciona una carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.name}</option>)}</select></label>}
+    {needsStudent && <label className="form-field"><span>Matrícula / registro universitario <b>*</b></span><input disabled={isSubmitting} minLength={4} onChange={(event) => setForm((current) => ({ ...current, registration: event.target.value }))} required value={form.registration} /></label>}
+    {needsTeacher && <div className="admin-user-form-grid"><label className="form-field"><span>Código docente <b>*</b></span><input disabled={isSubmitting} minLength={4} onChange={(event) => setForm((current) => ({ ...current, teacherCode: event.target.value }))} required value={form.teacherCode} /></label><label className="form-field"><span>Especialidad</span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, specialty: event.target.value }))} value={form.specialty} /></label></div>}
+    {message && <p className="student-message is-visible tutor-message">{message}</p>}
+    <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={onCancel} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting || form.roles.length === 0} type="submit">{isSubmitting ? 'Guardando…' : user ? 'Guardar cambios' : 'Crear usuario'}</button></div>
+  </form>
+}
+
+function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: ProjectCatalog; onCancel: () => void; onSave: (body: FormData) => Promise<void> }) {
+  const [studentId, setStudentId] = useState('')
+  const [managementId, setManagementId] = useState('')
+  const [modalityId, setModalityId] = useState('')
+  const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
+  const [generalObjective, setGeneralObjective] = useState('')
+  const [objectives, setObjectives] = useState([''])
+  const [profile, setProfile] = useState<File | null>(null)
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const student = catalog.students.find((item) => item.id === studentId)
+  const managements = catalog.managements.filter((item) => item.careerId === student?.careerId)
+  const modalities = catalog.modalities.filter((item) => item.careerId === student?.careerId)
+
+  function chooseStudent(value: string) {
+    setStudentId(value)
+    setManagementId('')
+    setModalityId('')
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!profile) {
+      setMessage('Adjunta el perfil inicial en formato Word para crear el proyecto.')
+      return
+    }
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const body = new FormData()
+      body.append('studentId', studentId)
+      body.append('managementId', managementId)
+      body.append('modalityId', modalityId)
+      body.append('title', title)
+      body.append('description', description)
+      body.append('generalObjective', generalObjective)
+      body.append('objectives', JSON.stringify(objectives))
+      body.append('profile', profile)
+      await onSave(body)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible registrar el proyecto.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return <form className="admin-operation-card admin-project-create" onSubmit={(event) => void submit(event)}>
+    <div className="admin-operation-heading"><Icon name="plus" /><div><p>NUEVO PROYECTO</p><h2>Registro administrativo</h2></div></div>
+    <p>Registra un proyecto con su perfil inicial y estudiante principal. Luego podrás asignar tutor y revisores desde su ficha.</p>
+    <label className="form-field"><span>Estudiante principal <b>*</b></span><select disabled={isSubmitting} onChange={(event) => chooseStudent(event.target.value)} required value={studentId}><option value="">Selecciona un estudiante sin proyecto activo</option>{catalog.students.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.registration} · {item.career}</option>)}</select></label>
+    <div className="admin-user-form-grid"><label className="form-field"><span>Gestión <b>*</b></span><select disabled={isSubmitting || !student} onChange={(event) => setManagementId(event.target.value)} required value={managementId}><option value="">Selecciona una gestión</option>{managements.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Modalidad <b>*</b></span><select disabled={isSubmitting || !student} onChange={(event) => setModalityId(event.target.value)} required value={modalityId}><option value="">Selecciona una modalidad</option>{modalities.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>
+    <label className="form-field"><span>Título tentativo <b>*</b></span><input disabled={isSubmitting} minLength={10} onChange={(event) => setTitle(event.target.value)} required value={title} /></label>
+    <label className="form-field"><span>Descripción <b>*</b></span><textarea disabled={isSubmitting} minLength={20} onChange={(event) => setDescription(event.target.value)} required rows={3} value={description} /></label>
+    <label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} minLength={10} onChange={(event) => setGeneralObjective(event.target.value)} required rows={3} value={generalObjective} /></label>
+    <div className="admin-objectives"><strong>Objetivos específicos <b>*</b></strong>{objectives.map((objective, index) => <div key={index}><textarea aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} minLength={10} onChange={(event) => setObjectives((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} required rows={2} value={objective} />{objectives.length > 1 && <button aria-label={`Eliminar objetivo ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => setObjectives((current) => current.filter((_item, itemIndex) => itemIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || objectives.length >= 10} onClick={() => setObjectives((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir objetivo</button></div>
+    <label className="form-field"><span>Perfil inicial Word (.doc o .docx) <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => setProfile(event.target.files?.[0] ?? null)} required type="file" /></label>
+    {message && <p className="student-message is-visible tutor-message">{message}</p>}
+    <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={onCancel} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Registrando…' : 'Registrar proyecto'}</button></div>
+  </form>
+}
+
 function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
-  const [view, setView] = useState<'home' | 'projects'>('home')
+  const [view, setView] = useState<'home' | 'projects' | 'users'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [usersData, setUsersData] = useState<AdminUsersResponse | null>(null)
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false)
+  const [userSearch, setUserSearch] = useState('')
+  const [userRole, setUserRole] = useState<RoleCode | ''>('')
+  const [userStatus, setUserStatus] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL')
+  const [editingUser, setEditingUser] = useState<AdminUser | null | undefined>(undefined)
+  const [projectCatalog, setProjectCatalog] = useState<ProjectCatalog | null>(null)
+  const [isCreatingProject, setIsCreatingProject] = useState(false)
+  const [message, setMessage] = useState('')
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const visibleProjects = data.projects.filter((project) => {
     const matchesSearch = !normalizedSearch || [project.code, project.title, project.students, project.tutor].some((value) => value.toLocaleLowerCase().includes(normalizedSearch))
     return matchesSearch && (!status || project.statusCode === status)
   })
-  const heading = view === 'home' ? 'Inicio' : 'Proyectos'
+  const normalizedUserSearch = userSearch.trim().toLocaleLowerCase()
+  const visibleUsers = (usersData?.users ?? []).filter((user) => {
+    const matchesSearch = !normalizedUserSearch || [user.fullName, user.email, user.registration ?? '', user.teacherCode ?? ''].some((value) => value.toLocaleLowerCase().includes(normalizedUserSearch))
+    const matchesRole = !userRole || user.roles.includes(userRole)
+    const matchesStatus = userStatus === 'ALL' || (userStatus === 'ACTIVE' ? user.active : !user.active)
+    return matchesSearch && matchesRole && matchesStatus
+  })
+  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : 'Usuarios'
+
+  async function loadUsers() {
+    setIsLoadingUsers(true)
+    try {
+      const payload = await api<AdminUsersResponse>('/api/admin/users')
+      setUsersData(payload)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible cargar los usuarios.')
+    } finally {
+      setIsLoadingUsers(false)
+    }
+  }
+
+  async function saveUser(payload: AdminUserInput) {
+    if (editingUser === undefined) return
+    const endpoint = editingUser ? `/api/admin/users/${editingUser.id}` : '/api/admin/users'
+    const result = await api<{ message: string }>(endpoint, {
+      method: editingUser ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    setMessage(result.message)
+    setEditingUser(undefined)
+    await loadUsers()
+  }
+
+  async function changeUserStatus(user: AdminUser, active: boolean) {
+    try {
+      const result = await api<{ message: string }>(`/api/admin/users/${user.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...user, password: '', active }),
+      })
+      setMessage(result.message)
+      await loadUsers()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar el usuario.')
+    }
+  }
+
+  async function openProjectCreate() {
+    setMessage('')
+    setIsCreatingProject(true)
+    try {
+      setProjectCatalog(await api<ProjectCatalog>('/api/admin/project-catalog'))
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible cargar el formulario de proyecto.')
+      setIsCreatingProject(false)
+    }
+  }
+
+  async function createProject(body: FormData) {
+    const result = await api<{ message: string; project: { id: string } }>('/api/admin/projects', { method: 'POST', body })
+    setMessage(result.message)
+    setIsCreatingProject(false)
+    await onRefresh()
+    setSelectedProjectId(result.project.id)
+  }
+
+  useEffect(() => {
+    if (view === 'users' && !usersData && !isLoadingUsers) void loadUsers()
+  }, [view, usersData, isLoadingUsers])
 
   if (selectedProjectId) return <AdminProjectWorkspace onBack={() => setSelectedProjectId('')} onLogout={onLogout} onRefresh={onRefresh} projectId={selectedProjectId} sessionActions={sessionActions} user={data.user} />
 
@@ -1212,6 +1444,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: Admi
         <nav aria-label="Navegación de Administración" className="student-nav">
           <button className={view === 'home' ? 'is-active' : ''} onClick={() => setView('home')} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
+          <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
           <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
       </div>
@@ -1222,9 +1455,11 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: Admi
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
-        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : 'Busca y filtra los proyectos para conocer su fase, responsables y revisiones.'}</p></div></div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
 
-        <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div><small>En registro</small><strong>{data.summary.registered}</strong><span>Requieren gestión inicial.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section>
+        {view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div><small>En registro</small><strong>{data.summary.registered}</strong><span>Requieren gestión inicial.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
+
+        {message && <p className="student-message is-visible tutor-message">{message}</p>}
 
         {view === 'home' && <>
           <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
@@ -1232,9 +1467,18 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: Admi
         </>}
 
         {view === 'projects' && <>
+          {isCreatingProject && (projectCatalog ? <AdminProjectCreateForm catalog={projectCatalog} onCancel={() => setIsCreatingProject(false)} onSave={createProject} /> : <section className="admin-operation-card"><p>Cargando estudiantes, gestiones y modalidades disponibles…</p></section>)}
           <section className="admin-filters" aria-label="Filtros de proyectos"><label><span>Buscar proyecto</span><input onChange={(event) => setSearch(event.target.value)} placeholder="Código, título, estudiante o tutor" type="search" value={search} /></label><label><span>Estado</span><select onChange={(event) => setStatus(event.target.value)} value={status}><option value="">Todos los estados</option>{data.statuses.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label></section>
           <div className="admin-list-heading"><span>{visibleProjects.length} proyecto{visibleProjects.length === 1 ? '' : 's'} encontrado{visibleProjects.length === 1 ? '' : 's'}</span>{(search || status) && <button className="text-button" onClick={() => { setSearch(''); setStatus('') }} type="button">Limpiar filtros</button>}</div>
           {visibleProjects.length > 0 ? <div className="admin-project-list">{visibleProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No encontramos proyectos con esos filtros.</strong><span>Prueba con otro estado o término de búsqueda.</span></section>}
+        </>}
+
+        {view === 'users' && <>
+          {editingUser !== undefined && <AdminUserForm careers={usersData?.careers ?? []} key={editingUser?.id ?? 'new'} onCancel={() => setEditingUser(undefined)} onSave={saveUser} roles={usersData?.roles ?? []} user={editingUser} />}
+          <section className="admin-filters admin-user-filters" aria-label="Filtros de usuarios"><label><span>Buscar persona</span><input onChange={(event) => setUserSearch(event.target.value)} placeholder="Nombre, correo, matrícula o código docente" type="search" value={userSearch} /></label><label><span>Rol</span><select onChange={(event) => setUserRole(event.target.value as RoleCode | '')} value={userRole}><option value="">Todos los roles</option>{(usersData?.roles ?? []).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label><label><span>Estado</span><select onChange={(event) => setUserStatus(event.target.value as 'ALL' | 'ACTIVE' | 'INACTIVE')} value={userStatus}><option value="ALL">Todos</option><option value="ACTIVE">Activos</option><option value="INACTIVE">Inactivos</option></select></label></section>
+          <div className="admin-list-heading"><span>{isLoadingUsers ? 'Cargando usuarios…' : `${visibleUsers.length} usuario${visibleUsers.length === 1 ? '' : 's'} encontrado${visibleUsers.length === 1 ? '' : 's'}`}</span>{(userSearch || userRole || userStatus !== 'ALL') && <button className="text-button" onClick={() => { setUserSearch(''); setUserRole(''); setUserStatus('ALL') }} type="button">Limpiar filtros</button>}</div>
+          {!isLoadingUsers && visibleUsers.length > 0 && <div className="admin-user-list">{visibleUsers.map((user) => <article className={user.active ? 'admin-user-card' : 'admin-user-card is-inactive'} key={user.id}><div className="admin-user-card-top"><div><span className={user.active ? 'admin-status status-registrado' : 'admin-status status-anulado'}>{user.active ? 'Activo' : 'Inactivo'}</span><h2>{user.fullName}</h2><p>{user.email}{user.phone ? ` · ${user.phone}` : ''}</p></div><div className="admin-user-actions"><button className="secondary-button" onClick={() => { setMessage(''); setEditingUser(user) }} type="button">Editar</button><button className={user.active ? 'danger-button' : 'primary-button'} disabled={user.id === data.user.id} onClick={() => void changeUserStatus(user, !user.active)} type="button">{user.active ? 'Desactivar' : 'Reactivar'}</button></div></div><div className="admin-role-badges">{user.roles.length > 0 ? user.roles.map((role) => <span className={`notification-role-badge role-${role.toLowerCase()}`} key={role}>{roleLabel(role)}</span>) : <span className="admin-empty-badge">Sin roles activos</span>}</div><div className="admin-user-details"><div><small>Carrera</small><strong>{user.career}</strong></div>{user.registration && <div><small>Matrícula</small><strong>{user.registration}</strong></div>}{user.teacherCode && <div><small>Código docente</small><strong>{user.teacherCode}</strong><span>{user.specialty || 'Sin especialidad registrada'}</span></div>}<div><small>Proyectos relacionados</small><strong>{user.relatedProjects}</strong></div><div><small>Último acceso</small><strong>{user.lastAccessAt ? formatDate(user.lastAccessAt) : 'Sin accesos registrados'}</strong></div></div></article>)}</div>}
+          {!isLoadingUsers && usersData && visibleUsers.length === 0 && <section className="tutor-empty"><Icon name="user" /><strong>No encontramos usuarios con esos filtros.</strong><span>Prueba con otro término o registra una nueva persona.</span></section>}
         </>}
       </div>
     </section>
