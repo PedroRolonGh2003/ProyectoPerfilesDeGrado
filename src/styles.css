@@ -497,6 +497,50 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-cancellation h2 { color: #77343a; font-size: 14px; margin: 0 0 6px; }
 .admin-cancellation p { font-size: 11px; line-height: 1.5; margin: 0 0 5px; }
 .admin-cancellation small { color: #937478; font-size: 10px; }
+.admin-title-action { align-items: center; display: inline-flex; gap: 7px; margin: 5px 0 0; white-space: nowrap; }
+.admin-title-action svg { height: 16px; width: 16px; }
+.admin-user-stats { grid-template-columns: repeat(4, 1fr); }
+.admin-user-form, .admin-project-create { margin-bottom: 18px; }
+.admin-user-form-grid { display: grid; gap: 13px; grid-template-columns: 1fr 1fr; }
+.admin-user-form .form-field, .admin-project-create .form-field { display: grid; gap: 6px; margin-bottom: 13px; }
+.admin-user-form .form-field > span, .admin-project-create .form-field > span { color: #685a5e; font-size: 11px; }
+.admin-user-form input, .admin-user-form select, .admin-user-form textarea, .admin-project-create input, .admin-project-create select, .admin-project-create textarea { background: #fbfaf9; border: 1px solid #dcd5d7; border-radius: 7px; color: #55474b; font: inherit; font-size: 12px; min-height: 39px; outline: none; padding: 9px 10px; width: 100%; }
+.admin-user-form select, .admin-project-create select { padding-bottom: 0; padding-top: 0; }
+.admin-user-form textarea, .admin-project-create textarea { line-height: 1.45; resize: vertical; }
+.admin-user-form input:focus, .admin-user-form select:focus, .admin-user-form textarea:focus, .admin-project-create input:focus, .admin-project-create select:focus, .admin-project-create textarea:focus { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(173, 0, 71, .08); }
+.admin-toggle-field { align-content: end; }
+.admin-switch { align-items: center; background: #f6f1f3; border-radius: 7px; color: #625157; display: flex; font-size: 12px; font-weight: 700; gap: 8px; min-height: 39px; padding: 0 10px; }
+.admin-switch input { accent-color: var(--univalle-wine); height: 15px; min-height: 0; padding: 0; width: 15px; }
+.admin-role-fields { border: 1px solid #eee2e6; border-radius: 8px; margin: 2px 0 14px; padding: 11px 13px 13px; }
+.admin-role-fields legend { color: #685a5e; font-size: 11px; padding: 0 4px; }
+.admin-role-fields > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-role-check { align-items: center; background: #f9f6f7; border: 1px solid #eadde2; border-radius: 99px; color: #66565c; cursor: pointer; display: inline-flex; font-size: 11px; font-weight: 700; gap: 6px; padding: 7px 10px; }
+.admin-role-check input { accent-color: currentColor; height: 14px; margin: 0; min-height: 0; padding: 0; width: 14px; }
+.admin-role-check.role-tutor { color: #8d003c; }
+.admin-role-check.role-revisor { color: #8b2150; }
+.admin-role-check.role-administrador { color: #5f5e65; }
+.admin-role-check.role-estudiante { color: #8a5314; }
+.admin-objectives { border-top: 1px solid #eee8e9; display: grid; gap: 9px; margin: 5px 0 15px; padding-top: 14px; }
+.admin-objectives > strong { color: #685a5e; font-size: 11px; }
+.admin-objectives > div { align-items: flex-start; display: grid; gap: 8px; grid-template-columns: 1fr 31px; }
+.admin-objectives .icon-button { margin: 0; }
+.admin-user-filters { grid-template-columns: minmax(0, 1fr) 190px 150px; }
+.admin-user-list { display: grid; gap: 13px; }
+.admin-user-card { background: #fff; border: 1px solid #e4dfe1; border-left: 4px solid #747078; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); overflow: hidden; padding: 18px 20px; }
+.admin-user-card.is-inactive { background: #f8f7f8; border-left-color: #aaa5a9; opacity: .82; }
+.admin-user-card-top { align-items: flex-start; display: flex; gap: 15px; justify-content: space-between; }
+.admin-user-card-top > div:first-child { display: grid; gap: 5px; }
+.admin-user-card h2 { color: #493d41; font-size: 15px; margin: 2px 0 0; }
+.admin-user-card p { color: #887a7e; font-size: 11px; margin: 0; }
+.admin-user-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-user-actions .primary-button, .admin-user-actions .secondary-button, .admin-user-actions .danger-button { margin: 0; min-height: 34px; padding: 0 11px; }
+.admin-role-badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 13px 0; }
+.admin-empty-badge { background: #efedef; border-radius: 99px; color: #716a6e; font-size: 9px; font-weight: 700; padding: 4px 7px; }
+.admin-user-details { border-top: 1px solid #eee8e9; display: flex; flex-wrap: wrap; gap: 15px 28px; padding-top: 12px; }
+.admin-user-details > div { display: grid; gap: 3px; min-width: 128px; }
+.admin-user-details small { color: #96898d; font-size: 10px; }
+.admin-user-details strong { color: #57494d; font-size: 11px; }
+.admin-user-details span { color: #8d7f83; font-size: 10px; }
 
 .reviewer-sidebar .student-role { color: #8d1745; }
 .reviewer-main { max-width: 1080px; }
@@ -617,7 +661,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .student-main { padding: 30px 24px 50px; }
   .tutor-stats { grid-template-columns: repeat(3, 1fr); }
   .admin-stats { grid-template-columns: repeat(3, 1fr); }
+  .admin-user-stats { grid-template-columns: repeat(2, 1fr); }
   .admin-operation-grid { grid-template-columns: 1fr; }
+  .admin-user-filters { grid-template-columns: 1fr 1fr; }
   .reviewer-project-context { grid-template-columns: 1fr 1fr; }
 }
 
@@ -644,6 +690,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .notification-summary { width: 100%; }
   .tutor-stats { grid-template-columns: 1fr; }
   .admin-stats { grid-template-columns: 1fr 1fr; }
+  .admin-user-stats { grid-template-columns: 1fr 1fr; }
   .tutor-project-footer { align-items: flex-start; flex-direction: column; }
   .notification-item { display: flex; flex-direction: column; }
   .notification-item .text-button { align-self: flex-start; }
@@ -652,6 +699,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .admin-project-card footer { align-items: flex-start; flex-direction: column; gap: 5px; }
   .admin-project-card footer .text-button { margin-left: 0; }
   .admin-project-context, .admin-round { grid-template-columns: 1fr; }
+  .admin-user-form-grid, .admin-user-filters { grid-template-columns: 1fr; }
+  .admin-title-action { width: 100%; justify-content: center; }
+  .admin-user-card-top { flex-direction: column; }
+  .admin-user-actions { width: 100%; }
+  .admin-user-actions .primary-button, .admin-user-actions .secondary-button, .admin-user-actions .danger-button { flex: 1; justify-content: center; }
   .admin-workspace .student-title-row > .admin-status { margin-top: 0; }
   .reviewer-card-info, .reviewer-project-context { grid-template-columns: 1fr; }
   .reviewer-workspace-heading, .reviewer-document-panel { align-items: flex-start; flex-direction: column; }

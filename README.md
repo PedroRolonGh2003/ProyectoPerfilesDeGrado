@@ -26,6 +26,18 @@ El comando inicia la aplicación web en `http://localhost:5173` y la API en `htt
 
 La conexión se toma de `.env`, que está ignorado por Git. Usa `.env.example` como referencia para otra instalación. No subas contraseñas ni archivos adjuntos: los perfiles se guardan localmente en `uploads/`, también ignorado por Git.
 
+## Base de datos en Neon
+
+La aplicacion admite una conexion administrada mediante `DATABASE_URL`. Cuando esta variable esta definida, tiene prioridad sobre las variables locales `DB_*`; la cadena debe incluir `sslmode=require`.
+
+Para migrar una base local hacia una base de Neon vacia, define temporalmente `NEON_DATABASE_URL` con la cadena de destino y ejecuta:
+
+```bash
+npm run db:migrate:neon
+```
+
+En Windows, si PostgreSQL no esta en el `PATH`, define tambien `PG_DUMP_PATH` y `PG_RESTORE_PATH` con las rutas de los ejecutables. La migracion crea un respaldo temporal, lo restaura sin propietarios ni privilegios locales y elimina el respaldo al finalizar.
+
 ## Actualizaciones de base de datos
 
 Las migraciones aplicadas se conservan en `database/`.
@@ -55,4 +67,10 @@ El flujo de Tutor se prueba de forma aislada y limpia sus propias cuentas, proye
 
 ```bash
 npm run qa:tutor
+```
+
+La administración general se valida con cuentas y proyectos temporales que se eliminan al finalizar. Comprueba usuarios, roles múltiples, perfiles de estudiante/docente, creación de proyecto y bajas lógicas:
+
+```bash
+npm run qa:admin-users
 ```
