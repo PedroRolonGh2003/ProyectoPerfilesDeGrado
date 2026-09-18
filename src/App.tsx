@@ -377,10 +377,55 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
 function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [registerEmail, setRegisterEmail] = useState('')
+  const [registerPassword, setRegisterPassword] = useState('')
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false)
+  const [showResetPassword, setShowResetPassword] = useState(false)
   const [remember, setRemember] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [view, setView] = useState<'login' | 'forgot' | 'reset' | 'register'>('login')
+
+  useEffect(() => {
+    const resetToken = new URLSearchParams(window.location.search).get('resetToken')
+    const confirmToken = new URLSearchParams(window.location.search).get('confirmToken')
+    if (resetToken) {
+      setView('reset')
+      setMessage('')
+    }
+    if (confirmToken) {
+      void api<{ message: string }>('/api/auth/confirm-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: confirmToken }),
+      }).then((result) => {
+        setView('login')
+        setMessage(result.message)
+        const url = new URL(window.location.href)
+        url.searchParams.delete('confirmToken')
+        window.history.replaceState({}, '', url)
+      }).catch((error) => {
+        setView('login')
+        setMessage(error instanceof Error ? error.message : 'El enlace de confirmación no es válido.')
+        const url = new URL(window.location.href)
+        url.searchParams.delete('confirmToken')
+        window.history.replaceState({}, '', url)
+      })
+    }
+  }, [])
+
+  function clearResetToken() {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('resetToken')
+    window.history.replaceState({}, '', url)
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -404,6 +449,112 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
       setIsSubmitting(false)
     }
   }
+
+  async function handleRegister(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!firstName.trim() || !lastName.trim()) {
+      setMessage('Ingresa tu nombre y apellidos.')
+      return
+    }
+    if (!registerEmail || !registerEmail.endsWith('@est.univalle.edu') || !/^[^\s@]+@est\.univalle\.edu$/i.test(registerEmail)) {
+      setMessage('Solo se aceptan correos institucionales con dominio @est.univalle.edu.')
+      return
+    }
+    if (!registerPassword || registerPassword.length < 8) {
+      setMessage('La contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (registerPassword !== registerConfirmPassword) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName, lastName, email: registerEmail, password: registerPassword, confirmPassword: registerConfirmPassword }),
+      })
+      setMessage(result.message)
+      setFirstName('')
+      setLastName('')
+      setRegisterEmail('')
+      setRegisterPassword('')
+      setRegisterConfirmPassword('')
+      setView('login')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible crear la cuenta.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleForgotPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!forgotEmail.trim()) {
+      setMessage('Ingresa tu correo institucional para continuar.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail }),
+      })
+      setMessage(result.message)
+      setForgotEmail('')
+      setView('login')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible procesar la solicitud.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleResetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const resetToken = new URLSearchParams(window.location.search).get('resetToken')
+    if (!resetToken) {
+      setMessage('El enlace de recuperación no es válido o ya no está activo.')
+      return
+    }
+    if (!newPassword || newPassword.length < 8) {
+      setMessage('La nueva contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, password: newPassword, confirmPassword }),
+      })
+      setMessage(result.message)
+      setNewPassword('')
+      setConfirmPassword('')
+      setView('login')
+      clearResetToken()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible restablecer la contraseña.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const isForgotFlow = view === 'forgot'
+  const isResetFlow = view === 'reset'
+  const isRegisterFlow = view === 'register'
 
   return (
     <main className="login-page">
@@ -437,19 +588,56 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>Bienvenido</h2>
-            <p>Ingresa con tus credenciales institucionales.</p>
+            <h2>{isForgotFlow ? 'Recupera tu acceso' : isResetFlow ? 'Crea tu nueva contraseña' : isRegisterFlow ? 'Registro de estudiante' : 'Bienvenido'}</h2>
+            <p>{isForgotFlow ? 'Te enviaremos un enlace para restablecer tu contraseña.' : isResetFlow ? 'Define una contraseña segura para continuar.' : isRegisterFlow ? 'Crea tu cuenta con correo institucional.' : 'Ingresa con tus credenciales institucionales.'}</p>
           </header>
 
-          <form onSubmit={handleSubmit} noValidate>
-            <label className="field-label" htmlFor="identifier">Correo institucional</label>
-            <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
-            <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => setMessage('Comunícate con Administración para recuperar tu acceso.')} type="button">¿Olvidaste tu contraseña?</button></div>
-            <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
-            <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
-            <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
-            <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
-          </form>
+          {isRegisterFlow ? (
+            <form onSubmit={handleRegister} noValidate>
+              <label className="field-label" htmlFor="first-name">Nombres</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="given-name" disabled={isSubmitting} id="first-name" name="first-name" onChange={(event) => setFirstName(event.target.value)} placeholder="Tu nombre" type="text" value={firstName} /></div>
+              <label className="field-label" htmlFor="last-name">Apellidos</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="family-name" disabled={isSubmitting} id="last-name" name="last-name" onChange={(event) => setLastName(event.target.value)} placeholder="Tus apellidos" type="text" value={lastName} /></div>
+              <label className="field-label" htmlFor="register-email">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="register-email" name="register-email" onChange={(event) => setRegisterEmail(event.target.value)} placeholder="nombre@est.univalle.edu" type="email" value={registerEmail} /></div>
+              <label className="field-label" htmlFor="register-password">Contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-password" name="register-password" onChange={(event) => setRegisterPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showRegisterPassword ? 'text' : 'password'} value={registerPassword} /><button aria-label={showRegisterPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowRegisterPassword((visible) => !visible)} type="button"><Icon name={showRegisterPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="field-label" htmlFor="register-confirm-password">Confirmar contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-confirm-password" name="register-confirm-password" onChange={(event) => setRegisterConfirmPassword(event.target.value)} placeholder="Repite tu contraseña" type={showRegisterPassword ? 'text' : 'password'} value={registerConfirmPassword} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Creando cuenta…' : 'Crear cuenta'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('login'); setMessage(''); setFirstName(''); setLastName(''); setRegisterEmail(''); setRegisterPassword(''); setRegisterConfirmPassword('') }} type="button">Volver al inicio</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : isForgotFlow ? (
+            <form onSubmit={handleForgotPassword} noValidate>
+              <label className="field-label" htmlFor="forgot-email">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="forgot-email" name="forgot-email" onChange={(event) => setForgotEmail(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={forgotEmail} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Enviando enlace…' : 'Enviar enlace'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('login'); setMessage(''); setForgotEmail('') }} type="button">Volver al inicio</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : isResetFlow ? (
+            <form onSubmit={handleResetPassword} noValidate>
+              <label className="field-label" htmlFor="new-password">Nueva contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="new-password" name="new-password" onChange={(event) => setNewPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showResetPassword ? 'text' : 'password'} value={newPassword} /><button aria-label={showResetPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowResetPassword((visible) => !visible)} type="button"><Icon name={showResetPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="field-label" htmlFor="confirm-password">Confirmar contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="confirm-password" name="confirm-password" onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repite tu nueva contraseña" type={showResetPassword ? 'text' : 'password'} value={confirmPassword} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Actualizando contraseña…' : 'Guardar nueva contraseña'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('login'); setMessage(''); clearResetToken(); setNewPassword(''); setConfirmPassword('') }} type="button">Cancelar</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit} noValidate>
+              <label className="field-label" htmlFor="identifier">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
+              <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => { setView('forgot'); setMessage(''); }} type="button">¿Olvidaste tu contraseña?</button></div>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('register'); setMessage(''); }} type="button">Crear cuenta de estudiante</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          )}
           <p className="help-text">Acceso protegido con sesiones registradas en el sistema académico.</p>
         </div>
       </section>

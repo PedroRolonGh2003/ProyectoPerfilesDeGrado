@@ -12,6 +12,9 @@ const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
 const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
+const passwordResetMinutes = Number(process.env.PASSWORD_RESET_MINUTES ?? 20)
+const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
+const appBaseUrl = (process.env.APP_BASE_URL ?? 'http://127.0.0.1:5173').replace(/\/$/, '')
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 const databaseUrl = process.env.DATABASE_URL?.trim()
 
@@ -323,6 +326,127 @@ async function createNotification(databaseClient, { userId, recipientEmail, proj
   return notification.rows[0].id
 }
 
+async function ensurePasswordResetSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.password_reset_tokens (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id) ON DELETE CASCADE,
+      token_hash varchar(128) NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      usado_en timestamptz,
+      creado_en timestamptz NOT NULL DEFAULT now()
+    );
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_usuario
+      ON titulacion.password_reset_tokens (usuario_id, creado_en DESC);
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_expiracion
+      ON titulacion.password_reset_tokens (expires_at);
+  `)
+}
+
+async function ensureEmailConfirmationSchema() {
+  await pool.query(`
+    ALTER TABLE titulacion.usuarios
+      ADD COLUMN IF NOT EXISTS email_confirmado_en timestamptz;
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.email_confirmation_tokens (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id) ON DELETE CASCADE,
+      token_hash varchar(128) NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      usado_en timestamptz,
+      creado_en timestamptz NOT NULL DEFAULT now()
+    );
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_usuario
+      ON titulacion.email_confirmation_tokens (usuario_id, creado_en DESC);
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_expiracion
+      ON titulacion.email_confirmation_tokens (expires_at);
+  `)
+}
+
+async function generatePasswordResetRequest(databaseClient, userId, userEmail) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + passwordResetMinutes * 60 * 1000)
+  const tokenHash = hashToken(token)
+
+  await databaseClient.query(
+    `UPDATE titulacion.password_reset_tokens
+     SET usado_en = now()
+     WHERE usuario_id = $1
+       AND usado_en IS NULL
+       AND expires_at > now()`,
+    [userId],
+  )
+
+  await databaseClient.query(
+    `INSERT INTO titulacion.password_reset_tokens (usuario_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, tokenHash, expiresAt],
+  )
+
+  const resetUrl = `${appBaseUrl}/?resetToken=${encodeURIComponent(token)}`
+  await createNotification(databaseClient, {
+    userId,
+    recipientEmail: userEmail,
+    type: 'PASSWORD_RESET',
+    title: 'Restablecer contraseña',
+    message: 'Haz clic en el enlace para crear una nueva contraseña segura.',
+    link: `/?resetToken=${encodeURIComponent(token)}`,
+    queueEmail: true,
+  })
+
+  console.log(`[password-reset] ${userEmail} -> ${resetUrl}`)
+  return resetUrl
+}
+
+async function generateEmailConfirmationRequest(databaseClient, userId, userEmail) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + confirmationHours * 60 * 60 * 1000)
+  const tokenHash = hashToken(token)
+
+  await databaseClient.query(
+    `UPDATE titulacion.email_confirmation_tokens
+     SET usado_en = now()
+     WHERE usuario_id = $1
+       AND usado_en IS NULL
+       AND expires_at > now()`,
+    [userId],
+  )
+
+  await databaseClient.query(
+    `INSERT INTO titulacion.email_confirmation_tokens (usuario_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, tokenHash, expiresAt],
+  )
+
+  const confirmationUrl = `${appBaseUrl}/?confirmToken=${encodeURIComponent(token)}`
+  await createNotification(databaseClient, {
+    userId,
+    recipientEmail: userEmail,
+    type: 'CONFIRMACION_CUENTA',
+    title: 'Confirma tu cuenta',
+    message: 'Haz clic en el enlace para activar tu cuenta de estudiante.',
+    link: `/?confirmToken=${encodeURIComponent(token)}`,
+    queueEmail: true,
+  })
+
+  console.log(`[email-confirmation] ${userEmail} -> ${confirmationUrl}`)
+  return confirmationUrl
+}
+
 function deadlineAtEndOfDay(value) {
   const date = text(value)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
@@ -451,6 +575,186 @@ app.get('/api/health', async (_request, response, next) => {
   }
 })
 
+app.post('/api/auth/register', async (request, response, next) => {
+  try {
+    const firstName = text(request.body?.firstName)
+    const lastName = text(request.body?.lastName)
+    const email = text(request.body?.email).toLowerCase()
+    const password = request.body?.password
+    const confirmPassword = request.body?.confirmPassword
+
+    if (firstName.length < 2 || lastName.length < 2) {
+      return response.status(422).json({ message: 'Ingresa tu nombre y apellidos completos.' })
+    }
+    if (!email || !email.endsWith('@est.univalle.edu') || !/^[^\s@]+@est\.univalle\.edu$/i.test(email)) {
+      return response.status(422).json({ message: 'Solo se aceptan correos institucionales con dominio @est.univalle.edu.' })
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return response.status(422).json({ message: 'La contraseña debe tener al menos 8 caracteres.' })
+    }
+    if (password !== confirmPassword) {
+      return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
+    }
+
+    const existingUser = await pool.query(
+      `SELECT id FROM titulacion.usuarios WHERE lower(correo) = lower($1) LIMIT 1`,
+      [email],
+    )
+    if (existingUser.rows[0]) {
+      return response.status(409).json({ message: 'Ya existe una cuenta registrada con ese correo institucional.' })
+    }
+
+    const databaseClient = await pool.connect()
+    try {
+      await databaseClient.query('BEGIN')
+
+      const studentRole = await databaseClient.query(
+        `SELECT id FROM titulacion.roles WHERE codigo = 'ESTUDIANTE' AND activo LIMIT 1`,
+      )
+      const defaultCareer = await databaseClient.query(
+        `SELECT id FROM titulacion.carreras WHERE activa ORDER BY nombre LIMIT 1`,
+      )
+      if (!studentRole.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(500).json({ message: 'El rol de estudiante no está disponible en este momento.' })
+      }
+      if (!defaultCareer.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(500).json({ message: 'No hay carreras activas disponibles para registrar la cuenta.' })
+      }
+
+      const user = await databaseClient.query(
+        `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo)
+         VALUES ($1, $2, $3, $4, false)
+         RETURNING id`,
+        [firstName, lastName, email, await bcrypt.hash(password, 10)],
+      )
+
+      const registrationCode = `EST-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+
+      await databaseClient.query(
+        `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo, asignado_por_usuario_id)
+         VALUES ($1, $2, true, $1)`,
+        [user.rows[0].id, studentRole.rows[0].id],
+      )
+
+      await databaseClient.query(
+        `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
+         VALUES ($1, $2, $3, true)`,
+        [user.rows[0].id, defaultCareer.rows[0].id, registrationCode],
+      )
+
+      await generateEmailConfirmationRequest(databaseClient, user.rows[0].id, email)
+      await databaseClient.query('COMMIT')
+
+      return response.status(201).json({
+        message: 'Tu cuenta fue creada correctamente. Revisa tu correo institucional para confirmar la cuenta.',
+        email,
+      })
+    } catch (error) {
+      await databaseClient.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      databaseClient.release()
+    }
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/resend-confirmation', async (request, response, next) => {
+  try {
+    const email = text(request.body?.email).toLowerCase()
+    const genericMessage = 'Si el correo está registrado y aún no está confirmado, recibirás un nuevo enlace de verificación.'
+
+    if (!email || !email.endsWith('@est.univalle.edu') || !/^[^\s@]+@est\.univalle\.edu$/i.test(email)) {
+      return response.status(200).json({ message: genericMessage })
+    }
+
+    const account = await pool.query(
+      `SELECT u.id, u.activo, u.correo
+       FROM titulacion.usuarios u
+       WHERE lower(u.correo) = lower($1)
+       LIMIT 1`,
+      [email],
+    )
+
+    if (!account.rows[0]) {
+      return response.status(200).json({ message: genericMessage })
+    }
+
+    if (account.rows[0].activo) {
+      return response.status(200).json({ message: 'Esta cuenta ya está activada y puede iniciar sesión normalmente.' })
+    }
+
+    const databaseClient = await pool.connect()
+    try {
+      await databaseClient.query('BEGIN')
+      await generateEmailConfirmationRequest(databaseClient, account.rows[0].id, account.rows[0].correo)
+      await databaseClient.query('COMMIT')
+    } catch (error) {
+      await databaseClient.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      databaseClient.release()
+    }
+
+    return response.status(200).json({ message: genericMessage })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/confirm-email', async (request, response, next) => {
+  try {
+    const token = text(request.body?.token)
+    if (!token) {
+      return response.status(400).json({ message: 'El enlace de confirmación no es válido.' })
+    }
+
+    const confirmationToken = await pool.query(
+      `SELECT ect.id, ect.usuario_id
+       FROM titulacion.email_confirmation_tokens ect
+       JOIN titulacion.usuarios u ON u.id = ect.usuario_id AND u.activo = false
+       WHERE ect.token_hash = $1
+         AND ect.usado_en IS NULL
+         AND ect.expires_at > now()
+       LIMIT 1`,
+      [hashToken(token)],
+    )
+
+    if (!confirmationToken.rows[0]) {
+      return response.status(410).json({ message: 'El enlace de confirmación ha vencido, ha sido utilizado o fue alterado.' })
+    }
+
+    await pool.query('BEGIN')
+    try {
+      await pool.query(
+        `UPDATE titulacion.usuarios
+         SET activo = true, email_confirmado_en = now(), actualizado_en = now()
+         WHERE id = $1`,
+        [confirmationToken.rows[0].usuario_id],
+      )
+
+      await pool.query(
+        `UPDATE titulacion.email_confirmation_tokens
+         SET usado_en = now()
+         WHERE id = $1`,
+        [confirmationToken.rows[0].id],
+      )
+
+      await pool.query('COMMIT')
+    } catch (error) {
+      await pool.query('ROLLBACK').catch(() => undefined)
+      throw error
+    }
+
+    return response.status(200).json({ message: 'Tu cuenta quedó activada correctamente. Ya puedes iniciar sesión.' })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 app.post('/api/auth/login', async (request, response, next) => {
   try {
     const identifier = text(request.body?.identifier).toLowerCase()
@@ -529,6 +833,115 @@ app.post('/api/auth/login', async (request, response, next) => {
 
     setSessionCookie(response, token, durationMs)
     return response.json({ user: sanitizeUser(account) })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/forgot-password', async (request, response, next) => {
+  try {
+    const email = text(request.body?.email).toLowerCase()
+    const genericMessage = 'Si el correo está registrado, recibirás un enlace para restablecer tu contraseña.'
+
+    if (!isEmail(email)) {
+      return response.status(200).json({ message: genericMessage })
+    }
+
+    const user = await pool.query(
+      `SELECT id, correo
+       FROM titulacion.usuarios
+       WHERE lower(correo) = lower($1)
+         AND activo
+       LIMIT 1`,
+      [email],
+    )
+
+    if (user.rows[0]) {
+      const databaseClient = await pool.connect()
+      try {
+        await databaseClient.query('BEGIN')
+        await generatePasswordResetRequest(databaseClient, user.rows[0].id, user.rows[0].correo)
+        await databaseClient.query('COMMIT')
+      } catch (error) {
+        await databaseClient.query('ROLLBACK').catch(() => undefined)
+        throw error
+      } finally {
+        databaseClient.release()
+      }
+    }
+
+    return response.status(200).json({ message: genericMessage })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/reset-password', async (request, response, next) => {
+  try {
+    const token = text(request.body?.token)
+    const password = request.body?.password
+    const confirmPassword = request.body?.confirmPassword
+
+    if (!token) {
+      return response.status(400).json({ message: 'El enlace de recuperación no es válido.' })
+    }
+
+    if (typeof password !== 'string' || typeof confirmPassword !== 'string' || password.length < 8) {
+      return response.status(422).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres.' })
+    }
+
+    if (password !== confirmPassword) {
+      return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
+    }
+
+    const resetToken = await pool.query(
+      `SELECT prt.id, prt.usuario_id, u.password_hash
+       FROM titulacion.password_reset_tokens prt
+       JOIN titulacion.usuarios u ON u.id = prt.usuario_id AND u.activo
+       WHERE prt.token_hash = $1
+         AND prt.usado_en IS NULL
+         AND prt.expires_at > now()
+       LIMIT 1`,
+      [hashToken(token)],
+    )
+
+    if (!resetToken.rows[0]) {
+      return response.status(410).json({ message: 'El enlace de recuperación ha expirado o ya fue utilizado.' })
+    }
+
+    const userId = resetToken.rows[0].usuario_id
+    const passwordHash = await bcrypt.hash(password, 10)
+
+    await pool.query('BEGIN')
+    try {
+      await pool.query(
+        `UPDATE titulacion.usuarios
+         SET password_hash = $1, actualizado_en = now()
+         WHERE id = $2`,
+        [passwordHash, userId],
+      )
+
+      await pool.query(
+        `UPDATE titulacion.password_reset_tokens
+         SET usado_en = now()
+         WHERE id = $1`,
+        [resetToken.rows[0].id],
+      )
+
+      await pool.query(
+        `UPDATE titulacion.sesiones_usuario
+         SET cerrada_en = now()
+         WHERE usuario_id = $1 AND cerrada_en IS NULL`,
+        [userId],
+      )
+
+      await pool.query('COMMIT')
+    } catch (error) {
+      await pool.query('ROLLBACK').catch(() => undefined)
+      throw error
+    }
+
+    return response.json({ message: 'Tu contraseña se actualizó correctamente. Ya puedes iniciar sesión con la nueva contraseña.' })
   } catch (error) {
     return next(error)
   }
@@ -3015,6 +3428,15 @@ app.use((error, _request, response, _next) => {
   return response.status(500).json({ message: 'Ocurrió un error al comunicarse con el sistema. Intenta nuevamente.' })
 })
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+async function startServer() {
+  await ensurePasswordResetSchema()
+  await ensureEmailConfirmationSchema()
+  app.listen(port, '127.0.0.1', () => {
+    console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+  })
+}
+
+startServer().catch((error) => {
+  console.error('No fue posible iniciar la API:', error)
+  process.exit(1)
 })
