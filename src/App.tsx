@@ -21,6 +21,23 @@ type IconName =
 
 type RoleCode = 'ESTUDIANTE' | 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR'
 
+const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
+
+function wordFileError(file: File | null) {
+  if (!file) return 'Selecciona un documento Word (.doc o .docx).'
+  const extension = file.name.split('.').pop()?.toLowerCase()
+  if (extension !== 'doc' && extension !== 'docx') return 'Solo se permiten documentos Word (.doc o .docx).'
+  if (file.size === 0 || file.size > MAX_DOCUMENT_BYTES) return 'El documento debe pesar como máximo 10 MB.'
+  return ''
+}
+
+function passwordPolicyError(password: string) {
+  if (password.length < 8 || password.length > 128 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
+    return 'La contraseña debe incluir 8 a 128 caracteres, una mayúscula, una minúscula, un número y un carácter especial.'
+  }
+  return ''
+}
+
 type UserBase = {
   id: string
   fullName: string
@@ -356,7 +373,7 @@ function RoleSwitcher({ user, isSwitching, onRoleChange }: { user: User; isSwitc
   </div>
 }
 
-function SessionActions({ user, notifications, isSwitching, onRoleChange, onNotificationClick }: { user: User; notifications: AppNotification[]; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void> }) {
+function SessionActions({ user, notifications, isSwitching, onRoleChange, onNotificationClick, onMarkAllNotificationsRead }: { user: User; notifications: AppNotification[]; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void>; onMarkAllNotificationsRead: () => Promise<void> }) {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false)
   const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'U'
   const unreadCount = notifications.filter((notification) => !notification.readAt).length
@@ -366,12 +383,103 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
       <button aria-expanded={isNotificationOpen} aria-haspopup="menu" aria-label="Ver notificaciones" className="notification-bell" onClick={() => setIsNotificationOpen((open) => !open)} type="button"><Icon name="bell" />{unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}</button>
       <div aria-label="Notificaciones" className="notification-popover">
         <div><strong>Notificaciones</strong><span>{unreadCount > 0 ? `${unreadCount} sin leer` : 'Todo al día'}</span></div>
-        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
+        {unreadCount > 0 && <button className="notification-mark-all" onClick={() => void onMarkAllNotificationsRead()} type="button">Marcar todas como leídas</button>}
+        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small><time dateTime={notification.createdAt}>{formatDate(notification.createdAt)}</time></button>)}
       </div>
     </div>
     <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
     <span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span>
   </div>
+}
+
+function PasswordRecoveryRequestForm({ onBack }: { onBack: () => void }) {
+  const [identifier, setIdentifier] = useState('')
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!identifier.trim()) {
+      setMessage('Ingresa tu correo institucional para continuar.')
+      return
+    }
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>('/api/auth/password-recovery', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identifier }),
+      })
+      setMessage(result.message)
+    } catch {
+      setMessage('No fue posible procesar la solicitud. Intenta nuevamente en unos minutos.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return <form onSubmit={submit} noValidate>
+    <label className="field-label" htmlFor="recovery-identifier">Correo institucional</label>
+    <div className="input-shell"><Icon name="user" /><input autoComplete="email" disabled={isSubmitting} id="recovery-identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
+    <p className="help-text">Te enviaremos un enlace de un solo uso. Por seguridad, el mensaje será el mismo aunque el correo no esté registrado.</p>
+    <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Enviando…' : 'Enviar enlace de recuperación'}</span><Icon name="arrow" /></button>
+    <button className="text-button" disabled={isSubmitting} onClick={onBack} type="button">Volver a iniciar sesión</button>
+    <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+  </form>
+}
+
+function PasswordResetForm({ initialToken, onBack }: { initialToken: string; onBack: () => void }) {
+  const [token, setToken] = useState(initialToken)
+  const [password, setPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const policyError = passwordPolicyError(password)
+    if (policyError) {
+      setMessage(policyError)
+      return
+    }
+    if (password !== confirmation) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+    if (!token.trim()) {
+      setMessage('El enlace de recuperación no es válido. Solicita uno nuevo.')
+      return
+    }
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>('/api/auth/password-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token.trim(), password }),
+      })
+      setMessage(result.message)
+      setPassword('')
+      setConfirmation('')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible restablecer la contraseña.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return <form onSubmit={submit} noValidate>
+    {!initialToken && <><label className="field-label" htmlFor="reset-token">Código de recuperación</label><div className="input-shell"><Icon name="lock" /><input autoComplete="one-time-code" disabled={isSubmitting} id="reset-token" onChange={(event) => setToken(event.target.value)} value={token} /></div></>}
+    <label className="field-label" htmlFor="reset-password">Nueva contraseña</label>
+    <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="reset-password" maxLength={128} onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></div>
+    <label className="field-label" htmlFor="reset-confirmation">Confirmar nueva contraseña</label>
+    <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="reset-confirmation" maxLength={128} onChange={(event) => setConfirmation(event.target.value)} type="password" value={confirmation} /></div>
+    <p className="help-text">Usa 8 a 128 caracteres, con mayúscula, minúscula, número y carácter especial.</p>
+    <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Actualizando…' : 'Restablecer contraseña'}</span><Icon name="arrow" /></button>
+    <button className="text-button" disabled={isSubmitting} onClick={onBack} type="button">Volver a iniciar sesión</button>
+    <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+  </form>
 }
 
 function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
@@ -381,6 +489,14 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
   const [remember, setRemember] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const resetToken = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('reset')?.trim() ?? '' : ''
+  const [authMode, setAuthMode] = useState<'login' | 'recovery' | 'reset'>(resetToken ? 'reset' : 'login')
+
+  function returnToLogin() {
+    if (typeof window !== 'undefined') window.history.replaceState({}, '', window.location.pathname)
+    setAuthMode('login')
+    setMessage('')
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -437,19 +553,19 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>Bienvenido</h2>
-            <p>Ingresa con tus credenciales institucionales.</p>
+            <h2>{authMode === 'login' ? 'Bienvenido' : authMode === 'recovery' ? 'Recupera tu acceso' : 'Crea una nueva contraseña'}</h2>
+            <p>{authMode === 'login' ? 'Ingresa con tus credenciales institucionales.' : authMode === 'recovery' ? 'Solicita un enlace seguro para restablecer tu contraseña.' : 'El enlace solo puede utilizarse una vez y tiene una vigencia limitada.'}</p>
           </header>
 
-          <form onSubmit={handleSubmit} noValidate>
+          {authMode === 'login' ? <form onSubmit={handleSubmit} noValidate>
             <label className="field-label" htmlFor="identifier">Correo institucional</label>
             <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
-            <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => setMessage('Comunícate con Administración para recuperar tu acceso.')} type="button">¿Olvidaste tu contraseña?</button></div>
+            <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => { setMessage(''); setAuthMode('recovery') }} type="button">¿Olvidaste tu contraseña?</button></div>
             <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
             <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
             <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
             <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
-          </form>
+          </form> : authMode === 'recovery' ? <PasswordRecoveryRequestForm onBack={returnToLogin} /> : <PasswordResetForm initialToken={resetToken} onBack={returnToLogin} />}
           <p className="help-text">Acceso protegido con sesiones registradas en el sistema académico.</p>
         </div>
       </section>
@@ -496,7 +612,16 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
   }
 
   function selectProfile(event: ChangeEvent<HTMLInputElement>) {
-    setProfileFile(event.target.files?.[0] ?? null)
+    const file = event.target.files?.[0] ?? null
+    const fileError = wordFileError(file)
+    if (fileError) {
+      setProfileFile(null)
+      setMessage(fileError)
+      event.target.value = ''
+      return
+    }
+    setMessage('')
+    setProfileFile(file)
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -507,9 +632,9 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
       return
     }
 
-    const extension = profileFile.name.split('.').pop()?.toLowerCase()
-    if (extension !== 'doc' && extension !== 'docx') {
-      setMessage('El perfil debe ser un documento Word (.doc o .docx).')
+    const fileError = wordFileError(profileFile)
+    if (fileError) {
+      setMessage(fileError)
       return
     }
 
@@ -724,9 +849,9 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
       setMessage('Selecciona el archivo Word de la nueva versión.')
       return
     }
-    const extension = versionFile.name.split('.').pop()?.toLowerCase()
-    if (extension !== 'doc' && extension !== 'docx') {
-      setMessage('Solo se permiten archivos Word (.doc o .docx).')
+    const fileError = wordFileError(versionFile)
+    if (fileError) {
+      setMessage(fileError)
       return
     }
 
@@ -1231,6 +1356,13 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!user || form.password) {
+      const passwordError = passwordPolicyError(form.password)
+      if (passwordError) {
+        setMessage(passwordError)
+        return
+      }
+    }
     setMessage('')
     setIsSubmitting(true)
     try {
@@ -1250,7 +1382,7 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
       <label className="form-field"><span>Apellidos <b>*</b></span><input disabled={isSubmitting} minLength={2} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} required value={form.lastName} /></label>
       <label className="form-field"><span>Correo institucional <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} required type="email" value={form.email} /></label>
       <label className="form-field"><span>Teléfono</span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} value={form.phone} /></label>
-      <label className="form-field"><span>{user ? 'Nueva contraseña' : 'Contraseña'} {!user && <b>*</b>}</span><input autoComplete="new-password" disabled={isSubmitting} minLength={user ? undefined : 8} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder={user ? 'Déjala vacía para conservarla' : 'Mínimo 8 caracteres'} required={!user} type="password" value={form.password} /></label>
+      <label className="form-field"><span>{user ? 'Nueva contraseña' : 'Contraseña'} {!user && <b>*</b>}</span><input autoComplete="new-password" disabled={isSubmitting} maxLength={128} minLength={user ? undefined : 8} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder={user ? 'Déjala vacía para conservarla' : '8+ caracteres, mayús., minús., número y especial'} required={!user} type="password" value={form.password} /><small>8 a 128 caracteres, con mayúscula, minúscula, número y carácter especial.</small></label>
       <label className="form-field admin-toggle-field"><span>Estado</span><span className="admin-switch"><input checked={form.active} disabled={isSubmitting || user?.id === undefined} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />{form.active ? 'Activo' : 'Inactivo'}</span></label>
     </div>
     <fieldset className="admin-role-fields"><legend>Roles <b>*</b></legend><div>{roles.map((role) => <label className={`admin-role-check role-${role.code.toLowerCase()}`} key={role.code}><input checked={form.roles.includes(role.code)} disabled={isSubmitting} onChange={() => toggleRole(role.code)} type="checkbox" /><span>{role.name}</span></label>)}</div></fieldset>
@@ -1283,10 +1415,27 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
     setModalityId('')
   }
 
+  function chooseProfile(file: File | null) {
+    const fileError = wordFileError(file)
+    if (fileError) {
+      setProfile(null)
+      setMessage(fileError)
+      return false
+    }
+    setMessage('')
+    setProfile(file)
+    return true
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!profile) {
       setMessage('Adjunta el perfil inicial en formato Word para crear el proyecto.')
+      return
+    }
+    const fileError = wordFileError(profile)
+    if (fileError) {
+      setMessage(fileError)
       return
     }
     setMessage('')
@@ -1318,7 +1467,7 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
     <label className="form-field"><span>Descripción <b>*</b></span><textarea disabled={isSubmitting} minLength={20} onChange={(event) => setDescription(event.target.value)} required rows={3} value={description} /></label>
     <label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} minLength={10} onChange={(event) => setGeneralObjective(event.target.value)} required rows={3} value={generalObjective} /></label>
     <div className="admin-objectives"><strong>Objetivos específicos <b>*</b></strong>{objectives.map((objective, index) => <div key={index}><textarea aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} minLength={10} onChange={(event) => setObjectives((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} required rows={2} value={objective} />{objectives.length > 1 && <button aria-label={`Eliminar objetivo ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => setObjectives((current) => current.filter((_item, itemIndex) => itemIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || objectives.length >= 10} onClick={() => setObjectives((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir objetivo</button></div>
-    <label className="form-field"><span>Perfil inicial Word (.doc o .docx) <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => setProfile(event.target.files?.[0] ?? null)} required type="file" /></label>
+    <label className="form-field"><span>Perfil inicial Word (.doc o .docx) <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => { if (!chooseProfile(event.target.files?.[0] ?? null)) event.target.value = '' }} required type="file" /></label>
     {message && <p className="student-message is-visible tutor-message">{message}</p>}
     <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={onCancel} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Registrando…' : 'Registrar proyecto'}</button></div>
   </form>
@@ -1549,18 +1698,27 @@ function App() {
 
   async function handleNotificationClick(notification: AppNotification) {
     if (!notification.readAt) {
-      await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
-      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item))
+      const marked = await api<{ id: string; readAt: string }>(`/api/notifications/${notification.id}/read`, { method: 'POST' })
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: marked.readAt } : item))
     }
     if (data && notification.role !== data.user.role) {
       await handleRoleChange(notification.role)
       return
     }
+    if (data && data.user.role === 'ESTUDIANTE') {
+      setView(notification.link === '/documentos' ? 'documents' : 'project')
+    }
+    await loadPortal()
+  }
+
+  async function handleMarkAllNotificationsRead() {
+    const marked = await api<{ readAt: string }>('/api/notifications/read-all', { method: 'POST' })
+    setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt: marked.readAt }))
     await loadPortal()
   }
 
   function sessionActions(user: User) {
-    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
+    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
   }
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
