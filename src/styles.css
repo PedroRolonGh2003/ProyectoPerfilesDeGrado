@@ -347,11 +347,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .notification-popover > div { align-items: baseline; display: flex; justify-content: space-between; padding: 3px 7px 7px; }
 .notification-popover > div strong { color: #4b3e42; font-size: 12px; }
 .notification-popover > div span { color: #998a8f; font-size: 10px; }
+.notification-mark-all { align-self: start; background: transparent; border: 0; color: #8d163c; cursor: pointer; font: inherit; font-size: 11px; font-weight: 700; padding: 2px 7px 7px; text-align: left; }
+.notification-mark-all:hover { color: #5f0f2a; text-decoration: underline; }
 .notification-popover-item { background: #fff; border: 1px solid transparent; border-radius: 10px; color: #514449; display: grid; gap: 4px; padding: 9px 10px; text-align: left; transition: background .18s ease, border-color .18s ease; }
 .notification-popover-item:hover { background: #fbf5f7; border-color: #ecd8e0; }
 .notification-popover-item.is-unread { background: #fff8fa; border-color: #f0dbe3; }
 .notification-popover-item strong { font-size: 11px; }
 .notification-popover-item small { color: #897c81; font-size: 10px; line-height: 1.4; }
+.notification-popover-item time { color: #a8999e; font-size: 9px; }
 .notification-role-badge { border-radius: 99px; font-size: 8px; font-weight: 700; justify-self: start; letter-spacing: .06em; padding: 3px 6px; text-transform: uppercase; }
 .notification-role-badge.role-tutor { background: #f7e3eb; color: #8d003c; }
 .notification-role-badge.role-revisor { background: #faedf3; color: #8b2150; }

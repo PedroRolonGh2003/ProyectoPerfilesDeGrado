@@ -43,7 +43,18 @@ En Windows, si PostgreSQL no esta en el `PATH`, define tambien `PG_DUMP_PATH` y 
 Las migraciones aplicadas se conservan en `database/`.
 
 - `20260908_catalogo_modalidad_y_funciones.sql`: incorpora la modalidad Trabajo dirigido para Sistemas y corrige funciones para usar el esquema `titulacion` de forma explícita.
-- `20260908_solicitudes_tutoria_y_cola_correos.sql`: agrega trazabilidad de respuesta a solicitudes de tutoría, índices de notificación y una cola persistente para los correos futuros. La aplicación no envía correos mientras no se configure un proveedor SMTP; solo registra los eventos pendientes de entrega.
+- `20260908_solicitudes_tutoria_y_cola_correos.sql`: agrega trazabilidad de respuesta a solicitudes de tutoría, índices de notificación y una cola persistente para los correos futuros. La entrega permanece en cola mientras no se configure un proveedor de correo.
+- `20260918_eventos_seguridad.sql`: registra intentos de inicio de sesión fallidos sin almacenar contraseñas ni identificadores en texto plano.
+- `20260918_recuperacion_contrasena.sql`: agrega tokens de recuperación de un solo uso, con hash, vencimiento y trazabilidad.
+- `20260922_notificaciones_proyecto.sql`: incorpora una clave única por evento y destinatario para impedir notificaciones duplicadas de proyectos, revisiones y tutorías.
+
+## Seguridad
+
+- Las contraseñas creadas o modificadas deben tener entre 8 y 128 caracteres, incluyendo mayúscula, minúscula, número y carácter especial. Se guardan con bcrypt; `BCRYPT_ROUNDS=12` es el valor recomendado.
+- Las sesiones expiran entre 1 y 24 horas, y las sesiones recordadas entre 1 y 30 días. Las cookies de sesión son `HttpOnly`, `SameSite=Lax` y `Secure` en producción.
+- Los documentos solo aceptan Word `.doc` o `.docx` de hasta 10 MB; se validan extensión, tipo declarado y firma binaria en el servidor.
+- La recuperación de contraseña no revela si una cuenta existe. Sus enlaces expiran entre 10 y 60 minutos, son de un solo uso y cierran todas las sesiones al restablecer la clave. Configura `APP_URL` con la URL pública del frontend.
+- Si se configura `EMAIL_DELIVERY_WEBHOOK_URL`, la API envía los correos de recuperación y las notificaciones importantes de proyecto a ese servicio mediante `POST` con `{ to, subject, text }`; sin ese valor, cada correo se conserva de forma segura en `titulacion.cola_correos_notificacion` para que el proceso de entrega configurado lo envíe.
 
 ## Verificar compilación
 
