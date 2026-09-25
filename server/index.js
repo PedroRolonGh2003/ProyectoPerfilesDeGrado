@@ -6,7 +6,9 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import express from 'express'
 import multer from 'multer'
+import nodemailer from 'nodemailer'
 import pg from 'pg'
+import { isInstitutionalEmail, normalizeEmail } from './email-utils.js'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
@@ -15,8 +17,23 @@ const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
 const passwordResetMinutes = Number(process.env.PASSWORD_RESET_MINUTES ?? 20)
 const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
 const appBaseUrl = (process.env.APP_BASE_URL ?? 'http://127.0.0.1:5173').replace(/\/$/, '')
+const smtpHost = process.env.SMTP_HOST?.trim()
+const smtpPort = Number(process.env.SMTP_PORT ?? 587)
+const smtpUser = process.env.SMTP_USER?.trim()
+const smtpPassword = process.env.SMTP_PASSWORD
+const smtpFrom = process.env.SMTP_FROM?.trim() || smtpUser
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 const databaseUrl = process.env.DATABASE_URL?.trim()
+
+const mailTransport = smtpHost && smtpUser && smtpPassword && smtpFrom
+  ? nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: { user: smtpUser, pass: smtpPassword },
+    })
+  : null
 
 const pool = new Pool(databaseUrl
   ? { connectionString: databaseUrl, options: '-c search_path=titulacion,public' }
@@ -326,6 +343,72 @@ async function createNotification(databaseClient, { userId, recipientEmail, proj
   return notification.rows[0].id
 }
 
+async function processEmailQueue() {
+  if (!mailTransport) return
+
+  const databaseClient = await pool.connect()
+  try {
+    await databaseClient.query('BEGIN')
+    const pending = await databaseClient.query(
+      `SELECT q.id, q.destinatario, q.asunto, q.cuerpo, n.enlace
+       FROM titulacion.cola_correos_notificacion q
+       JOIN titulacion.notificaciones n ON n.id = q.notificacion_id
+       WHERE q.estado = 'PENDIENTE'
+         AND (q.ultimo_intento_en IS NULL OR q.ultimo_intento_en < now() - interval '5 minutes')
+       ORDER BY q.creado_en
+       FOR UPDATE SKIP LOCKED
+       LIMIT 10`,
+    )
+
+    if (pending.rows.length === 0) {
+      await databaseClient.query('COMMIT')
+      return
+    }
+
+    await Promise.all(pending.rows.map((item) => databaseClient.query(
+      `UPDATE titulacion.cola_correos_notificacion
+       SET intentos = intentos + 1, ultimo_intento_en = now(), error_ultimo_intento = NULL
+       WHERE id = $1`,
+      [item.id],
+    )))
+    await databaseClient.query('COMMIT')
+
+    for (const item of pending.rows) {
+      try {
+        const link = item.enlace ? new URL(item.enlace, appBaseUrl).toString() : null
+        const body = link ? `${item.cuerpo}\n\nEnlace: ${link}` : item.cuerpo
+        await mailTransport.sendMail({
+          from: smtpFrom,
+          to: item.destinatario,
+          subject: item.asunto,
+          text: body,
+          html: `<p>${item.cuerpo}</p>${link ? `<p><a href="${link}">Abrir enlace</a></p>` : ''}`,
+        })
+        await pool.query(
+          `UPDATE titulacion.cola_correos_notificacion
+           SET estado = 'ENVIADO', enviado_en = now(), error_ultimo_intento = NULL
+           WHERE id = $1`,
+          [item.id],
+        )
+      } catch (error) {
+        await pool.query(
+          `UPDATE titulacion.cola_correos_notificacion
+           SET estado = CASE WHEN intentos >= 5 THEN 'ERROR' ELSE 'PENDIENTE' END,
+               error_ultimo_intento = $2
+           WHERE id = $1`,
+          [item.id, error instanceof Error ? error.message.slice(0, 1000) : 'Error SMTP desconocido'],
+        )
+        console.error(`[email] No fue posible enviar el correo ${item.id}:`, error instanceof Error ? error.message : error)
+      }
+    }
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    console.error('[email] No fue posible procesar la cola:', error instanceof Error ? error.message : error)
+  } finally {
+    databaseClient.release()
+  }
+}
+
 async function ensurePasswordResetSchema() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS titulacion.password_reset_tokens (
@@ -398,7 +481,7 @@ async function generatePasswordResetRequest(databaseClient, userId, userEmail) {
   )
 
   const resetUrl = `${appBaseUrl}/?resetToken=${encodeURIComponent(token)}`
-  await createNotification(databaseClient, {
+  const notificationId = await createNotification(databaseClient, {
     userId,
     recipientEmail: userEmail,
     type: 'PASSWORD_RESET',
@@ -408,7 +491,28 @@ async function generatePasswordResetRequest(databaseClient, userId, userEmail) {
     queueEmail: true,
   })
 
-  console.log(`[password-reset] ${userEmail} -> ${resetUrl}`)
+  if (mailTransport && userEmail) {
+    try {
+      const link = new URL(`/?resetToken=${encodeURIComponent(token)}`, appBaseUrl).toString()
+      await mailTransport.sendMail({
+        from: smtpFrom,
+        to: userEmail,
+        subject: 'Restablecer contraseña',
+        text: `Haz clic en este enlace para restablecer tu contraseña:\n\n${link}`,
+        html: `<p>Haz clic en el siguiente enlace para restablecer tu contraseña.</p><p><a href="${link}">Restablecer contraseña</a></p>`,
+      })
+      await databaseClient.query(
+        `UPDATE titulacion.cola_correos_notificacion
+         SET estado = 'ENVIADO', enviado_en = now(), error_ultimo_intento = NULL
+         WHERE notificacion_id = $1`,
+        [notificationId],
+      )
+      console.log(`[password-reset] ${userEmail} -> ${resetUrl}`)
+    } catch (error) {
+      console.error('[password-reset] No fue posible enviar el correo:', error instanceof Error ? error.message : error)
+    }
+  }
+
   return resetUrl
 }
 
@@ -433,7 +537,7 @@ async function generateEmailConfirmationRequest(databaseClient, userId, userEmai
   )
 
   const confirmationUrl = `${appBaseUrl}/?confirmToken=${encodeURIComponent(token)}`
-  await createNotification(databaseClient, {
+  const notificationId = await createNotification(databaseClient, {
     userId,
     recipientEmail: userEmail,
     type: 'CONFIRMACION_CUENTA',
@@ -443,7 +547,28 @@ async function generateEmailConfirmationRequest(databaseClient, userId, userEmai
     queueEmail: true,
   })
 
-  console.log(`[email-confirmation] ${userEmail} -> ${confirmationUrl}`)
+  if (mailTransport && userEmail) {
+    try {
+      const link = new URL(`/?confirmToken=${encodeURIComponent(token)}`, appBaseUrl).toString()
+      await mailTransport.sendMail({
+        from: smtpFrom,
+        to: userEmail,
+        subject: 'Confirma tu cuenta',
+        text: `Haz clic en este enlace para confirmar tu cuenta:\n\n${link}`,
+        html: `<p>Haz clic en el siguiente enlace para activar tu cuenta.</p><p><a href="${link}">Confirmar cuenta</a></p>`,
+      })
+      await databaseClient.query(
+        `UPDATE titulacion.cola_correos_notificacion
+         SET estado = 'ENVIADO', enviado_en = now(), error_ultimo_intento = NULL
+         WHERE notificacion_id = $1`,
+        [notificationId],
+      )
+      console.log(`[email-confirmation] ${userEmail} -> ${confirmationUrl}`)
+    } catch (error) {
+      console.error('[email-confirmation] No fue posible enviar el correo:', error instanceof Error ? error.message : error)
+    }
+  }
+
   return confirmationUrl
 }
 
@@ -835,6 +960,36 @@ app.post('/api/auth/login', async (request, response, next) => {
     return response.json({ user: sanitizeUser(account) })
   } catch (error) {
     return next(error)
+  }
+})
+
+app.post('/api/auth/test-email', async (request, response, next) => {
+  try {
+    const email = normalizeEmail(request.body?.email)
+    const subject = 'Prueba de correo institucional'
+
+    if (!isInstitutionalEmail(email)) {
+      return response.status(422).json({ message: 'Ingresa un correo institucional válido para probar el envío.' })
+    }
+
+    if (!mailTransport) {
+      return response.status(503).json({
+        message: 'El SMTP de Outlook aún no está configurado. Agrega SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD y SMTP_FROM en tu archivo .env.',
+      })
+    }
+
+    await mailTransport.sendMail({
+      from: smtpFrom,
+      to: email,
+      subject,
+      text: 'Este es un correo de prueba del sistema de titulación. Si recibes este mensaje, la configuración de Outlook está funcionando correctamente.',
+      html: '<p>Este es un correo de prueba del sistema de titulación.</p><p>Si recibes este mensaje, la configuración de Outlook está funcionando correctamente.</p>',
+    })
+
+    return response.status(200).json({ message: `Se envió correctamente un correo de prueba a ${email}.` })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'No fue posible enviar el correo de prueba.'
+    return next(new Error(message))
   }
 })
 
@@ -3434,6 +3589,18 @@ async function startServer() {
   app.listen(port, '127.0.0.1', () => {
     console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
   })
+  if (mailTransport) {
+    try {
+      await mailTransport.verify()
+      console.log(`[email] SMTP listo: ${smtpHost}:${smtpPort}`)
+      void processEmailQueue()
+      setInterval(() => void processEmailQueue(), 30_000)
+    } catch (error) {
+      console.error('[email] No fue posible conectar con SMTP. Los correos permanecerán en la cola PENDIENTE:', error instanceof Error ? error.message : error)
+    }
+  } else {
+    console.warn('[email] SMTP no configurado. Los correos permanecerán en la cola PENDIENTE.')
+  }
 }
 
 startServer().catch((error) => {

@@ -552,6 +552,33 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
     }
   }
 
+  async function handleTestEmail() {
+    const email = (identifier || registerEmail || forgotEmail).trim().toLowerCase()
+    if (!email) {
+      setMessage('Escribe un correo institucional para probar el envío de mensajes.')
+      return
+    }
+    if (!/^[^\s@]+@est\.univalle\.edu$/i.test(email)) {
+      setMessage('Solo se puede probar con un correo institucional del dominio @est.univalle.edu.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible enviar el correo de prueba.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   const isForgotFlow = view === 'forgot'
   const isResetFlow = view === 'reset'
   const isRegisterFlow = view === 'register'
@@ -635,6 +662,7 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
               <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
               <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
               <button className="text-button" disabled={isSubmitting} onClick={() => { setView('register'); setMessage(''); }} type="button">Crear cuenta de estudiante</button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { void handleTestEmail() }} type="button">Probar envío de mensaje</button>
               <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
             </form>
           )}
