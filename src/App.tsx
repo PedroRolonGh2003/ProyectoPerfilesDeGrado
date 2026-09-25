@@ -21,23 +21,6 @@ type IconName =
 
 type RoleCode = 'ESTUDIANTE' | 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR'
 
-const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024
-
-function wordFileError(file: File | null) {
-  if (!file) return 'Selecciona un documento Word (.doc o .docx).'
-  const extension = file.name.split('.').pop()?.toLowerCase()
-  if (extension !== 'doc' && extension !== 'docx') return 'Solo se permiten documentos Word (.doc o .docx).'
-  if (file.size === 0 || file.size > MAX_DOCUMENT_BYTES) return 'El documento debe pesar como máximo 10 MB.'
-  return ''
-}
-
-function passwordPolicyError(password: string) {
-  if (password.length < 8 || password.length > 128 || !/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/\d/.test(password) || !/[^A-Za-z0-9]/.test(password)) {
-    return 'La contraseña debe incluir 8 a 128 caracteres, una mayúscula, una minúscula, un número y un carácter especial.'
-  }
-  return ''
-}
-
 type UserBase = {
   id: string
   fullName: string
@@ -373,7 +356,7 @@ function RoleSwitcher({ user, isSwitching, onRoleChange }: { user: User; isSwitc
   </div>
 }
 
-function SessionActions({ user, notifications, isSwitching, onRoleChange, onNotificationClick, onMarkAllNotificationsRead }: { user: User; notifications: AppNotification[]; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void>; onMarkAllNotificationsRead: () => Promise<void> }) {
+function SessionActions({ user, notifications, isSwitching, onRoleChange, onNotificationClick }: { user: User; notifications: AppNotification[]; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void> }) {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false)
   const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'U'
   const unreadCount = notifications.filter((notification) => !notification.readAt).length
@@ -383,8 +366,7 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
       <button aria-expanded={isNotificationOpen} aria-haspopup="menu" aria-label="Ver notificaciones" className="notification-bell" onClick={() => setIsNotificationOpen((open) => !open)} type="button"><Icon name="bell" />{unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}</button>
       <div aria-label="Notificaciones" className="notification-popover">
         <div><strong>Notificaciones</strong><span>{unreadCount > 0 ? `${unreadCount} sin leer` : 'Todo al día'}</span></div>
-        {unreadCount > 0 && <button className="notification-mark-all" onClick={() => void onMarkAllNotificationsRead()} type="button">Marcar todas como leídas</button>}
-        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small><time dateTime={notification.createdAt}>{formatDate(notification.createdAt)}</time></button>)}
+        {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
       </div>
     </div>
     <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
@@ -392,110 +374,57 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
   </div>
 }
 
-function PasswordRecoveryRequestForm({ onBack }: { onBack: () => void }) {
-  const [identifier, setIdentifier] = useState('')
-  const [message, setMessage] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!identifier.trim()) {
-      setMessage('Ingresa tu correo institucional para continuar.')
-      return
-    }
-    setIsSubmitting(true)
-    setMessage('')
-    try {
-      const result = await api<{ message: string }>('/api/auth/password-recovery', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier }),
-      })
-      setMessage(result.message)
-    } catch {
-      setMessage('No fue posible procesar la solicitud. Intenta nuevamente en unos minutos.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  return <form onSubmit={submit} noValidate>
-    <label className="field-label" htmlFor="recovery-identifier">Correo institucional</label>
-    <div className="input-shell"><Icon name="user" /><input autoComplete="email" disabled={isSubmitting} id="recovery-identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
-    <p className="help-text">Te enviaremos un enlace de un solo uso. Por seguridad, el mensaje será el mismo aunque el correo no esté registrado.</p>
-    <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Enviando…' : 'Enviar enlace de recuperación'}</span><Icon name="arrow" /></button>
-    <button className="text-button" disabled={isSubmitting} onClick={onBack} type="button">Volver a iniciar sesión</button>
-    <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
-  </form>
-}
-
-function PasswordResetForm({ initialToken, onBack }: { initialToken: string; onBack: () => void }) {
-  const [token, setToken] = useState(initialToken)
-  const [password, setPassword] = useState('')
-  const [confirmation, setConfirmation] = useState('')
-  const [message, setMessage] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const policyError = passwordPolicyError(password)
-    if (policyError) {
-      setMessage(policyError)
-      return
-    }
-    if (password !== confirmation) {
-      setMessage('Las contraseñas no coinciden.')
-      return
-    }
-    if (!token.trim()) {
-      setMessage('El enlace de recuperación no es válido. Solicita uno nuevo.')
-      return
-    }
-    setIsSubmitting(true)
-    setMessage('')
-    try {
-      const result = await api<{ message: string }>('/api/auth/password-reset', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token.trim(), password }),
-      })
-      setMessage(result.message)
-      setPassword('')
-      setConfirmation('')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'No fue posible restablecer la contraseña.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  return <form onSubmit={submit} noValidate>
-    {!initialToken && <><label className="field-label" htmlFor="reset-token">Código de recuperación</label><div className="input-shell"><Icon name="lock" /><input autoComplete="one-time-code" disabled={isSubmitting} id="reset-token" onChange={(event) => setToken(event.target.value)} value={token} /></div></>}
-    <label className="field-label" htmlFor="reset-password">Nueva contraseña</label>
-    <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="reset-password" maxLength={128} onChange={(event) => setPassword(event.target.value)} type="password" value={password} /></div>
-    <label className="field-label" htmlFor="reset-confirmation">Confirmar nueva contraseña</label>
-    <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="reset-confirmation" maxLength={128} onChange={(event) => setConfirmation(event.target.value)} type="password" value={confirmation} /></div>
-    <p className="help-text">Usa 8 a 128 caracteres, con mayúscula, minúscula, número y carácter especial.</p>
-    <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Actualizando…' : 'Restablecer contraseña'}</span><Icon name="arrow" /></button>
-    <button className="text-button" disabled={isSubmitting} onClick={onBack} type="button">Volver a iniciar sesión</button>
-    <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
-  </form>
-}
-
 function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [registerEmail, setRegisterEmail] = useState('')
+  const [registerPassword, setRegisterPassword] = useState('')
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
+  const [forgotEmail, setForgotEmail] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false)
+  const [showResetPassword, setShowResetPassword] = useState(false)
   const [remember, setRemember] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const resetToken = typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('reset')?.trim() ?? '' : ''
-  const [authMode, setAuthMode] = useState<'login' | 'recovery' | 'reset'>(resetToken ? 'reset' : 'login')
+  const [view, setView] = useState<'login' | 'forgot' | 'reset' | 'register'>('login')
 
-  function returnToLogin() {
-    if (typeof window !== 'undefined') window.history.replaceState({}, '', window.location.pathname)
-    setAuthMode('login')
-    setMessage('')
+  useEffect(() => {
+    const resetToken = new URLSearchParams(window.location.search).get('resetToken')
+    const confirmToken = new URLSearchParams(window.location.search).get('confirmToken')
+    if (resetToken) {
+      setView('reset')
+      setMessage('')
+    }
+    if (confirmToken) {
+      void api<{ message: string }>('/api/auth/confirm-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: confirmToken }),
+      }).then((result) => {
+        setView('login')
+        setMessage(result.message)
+        const url = new URL(window.location.href)
+        url.searchParams.delete('confirmToken')
+        window.history.replaceState({}, '', url)
+      }).catch((error) => {
+        setView('login')
+        setMessage(error instanceof Error ? error.message : 'El enlace de confirmación no es válido.')
+        const url = new URL(window.location.href)
+        url.searchParams.delete('confirmToken')
+        window.history.replaceState({}, '', url)
+      })
+    }
+  }, [])
+
+  function clearResetToken() {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('resetToken')
+    window.history.replaceState({}, '', url)
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -520,6 +449,139 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
       setIsSubmitting(false)
     }
   }
+
+  async function handleRegister(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!firstName.trim() || !lastName.trim()) {
+      setMessage('Ingresa tu nombre y apellidos.')
+      return
+    }
+    if (!registerEmail || !registerEmail.endsWith('@est.univalle.edu') || !/^[^\s@]+@est\.univalle\.edu$/i.test(registerEmail)) {
+      setMessage('Solo se aceptan correos institucionales con dominio @est.univalle.edu.')
+      return
+    }
+    if (!registerPassword || registerPassword.length < 8) {
+      setMessage('La contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (registerPassword !== registerConfirmPassword) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ firstName, lastName, email: registerEmail, password: registerPassword, confirmPassword: registerConfirmPassword }),
+      })
+      setMessage(result.message)
+      setFirstName('')
+      setLastName('')
+      setRegisterEmail('')
+      setRegisterPassword('')
+      setRegisterConfirmPassword('')
+      setView('login')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible crear la cuenta.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleForgotPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!forgotEmail.trim()) {
+      setMessage('Ingresa tu correo institucional para continuar.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail }),
+      })
+      setMessage(result.message)
+      setForgotEmail('')
+      setView('login')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible procesar la solicitud.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleResetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const resetToken = new URLSearchParams(window.location.search).get('resetToken')
+    if (!resetToken) {
+      setMessage('El enlace de recuperación no es válido o ya no está activo.')
+      return
+    }
+    if (!newPassword || newPassword.length < 8) {
+      setMessage('La nueva contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (newPassword !== confirmPassword) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken, password: newPassword, confirmPassword }),
+      })
+      setMessage(result.message)
+      setNewPassword('')
+      setConfirmPassword('')
+      setView('login')
+      clearResetToken()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible restablecer la contraseña.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleTestEmail() {
+    const email = (identifier || registerEmail || forgotEmail).trim().toLowerCase()
+    if (!email) {
+      setMessage('Escribe un correo institucional para probar el envío de mensajes.')
+      return
+    }
+    if (!/^[^\s@]+@est\.univalle\.edu$/i.test(email)) {
+      setMessage('Solo se puede probar con un correo institucional del dominio @est.univalle.edu.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible enviar el correo de prueba.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  const isForgotFlow = view === 'forgot'
+  const isResetFlow = view === 'reset'
+  const isRegisterFlow = view === 'register'
 
   return (
     <main className="login-page">
@@ -553,19 +615,57 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>{authMode === 'login' ? 'Bienvenido' : authMode === 'recovery' ? 'Recupera tu acceso' : 'Crea una nueva contraseña'}</h2>
-            <p>{authMode === 'login' ? 'Ingresa con tus credenciales institucionales.' : authMode === 'recovery' ? 'Solicita un enlace seguro para restablecer tu contraseña.' : 'El enlace solo puede utilizarse una vez y tiene una vigencia limitada.'}</p>
+            <h2>{isForgotFlow ? 'Recupera tu acceso' : isResetFlow ? 'Crea tu nueva contraseña' : isRegisterFlow ? 'Registro de estudiante' : 'Bienvenido'}</h2>
+            <p>{isForgotFlow ? 'Te enviaremos un enlace para restablecer tu contraseña.' : isResetFlow ? 'Define una contraseña segura para continuar.' : isRegisterFlow ? 'Crea tu cuenta con correo institucional.' : 'Ingresa con tus credenciales institucionales.'}</p>
           </header>
 
-          {authMode === 'login' ? <form onSubmit={handleSubmit} noValidate>
-            <label className="field-label" htmlFor="identifier">Correo institucional</label>
-            <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
-            <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => { setMessage(''); setAuthMode('recovery') }} type="button">¿Olvidaste tu contraseña?</button></div>
-            <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
-            <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
-            <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
-            <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
-          </form> : authMode === 'recovery' ? <PasswordRecoveryRequestForm onBack={returnToLogin} /> : <PasswordResetForm initialToken={resetToken} onBack={returnToLogin} />}
+          {isRegisterFlow ? (
+            <form onSubmit={handleRegister} noValidate>
+              <label className="field-label" htmlFor="first-name">Nombres</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="given-name" disabled={isSubmitting} id="first-name" name="first-name" onChange={(event) => setFirstName(event.target.value)} placeholder="Tu nombre" type="text" value={firstName} /></div>
+              <label className="field-label" htmlFor="last-name">Apellidos</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="family-name" disabled={isSubmitting} id="last-name" name="last-name" onChange={(event) => setLastName(event.target.value)} placeholder="Tus apellidos" type="text" value={lastName} /></div>
+              <label className="field-label" htmlFor="register-email">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="register-email" name="register-email" onChange={(event) => setRegisterEmail(event.target.value)} placeholder="nombre@est.univalle.edu" type="email" value={registerEmail} /></div>
+              <label className="field-label" htmlFor="register-password">Contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-password" name="register-password" onChange={(event) => setRegisterPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showRegisterPassword ? 'text' : 'password'} value={registerPassword} /><button aria-label={showRegisterPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowRegisterPassword((visible) => !visible)} type="button"><Icon name={showRegisterPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="field-label" htmlFor="register-confirm-password">Confirmar contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-confirm-password" name="register-confirm-password" onChange={(event) => setRegisterConfirmPassword(event.target.value)} placeholder="Repite tu contraseña" type={showRegisterPassword ? 'text' : 'password'} value={registerConfirmPassword} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Creando cuenta…' : 'Crear cuenta'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('login'); setMessage(''); setFirstName(''); setLastName(''); setRegisterEmail(''); setRegisterPassword(''); setRegisterConfirmPassword('') }} type="button">Volver al inicio</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : isForgotFlow ? (
+            <form onSubmit={handleForgotPassword} noValidate>
+              <label className="field-label" htmlFor="forgot-email">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="forgot-email" name="forgot-email" onChange={(event) => setForgotEmail(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={forgotEmail} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Enviando enlace…' : 'Enviar enlace'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('login'); setMessage(''); setForgotEmail('') }} type="button">Volver al inicio</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : isResetFlow ? (
+            <form onSubmit={handleResetPassword} noValidate>
+              <label className="field-label" htmlFor="new-password">Nueva contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="new-password" name="new-password" onChange={(event) => setNewPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showResetPassword ? 'text' : 'password'} value={newPassword} /><button aria-label={showResetPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowResetPassword((visible) => !visible)} type="button"><Icon name={showResetPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="field-label" htmlFor="confirm-password">Confirmar contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="confirm-password" name="confirm-password" onChange={(event) => setConfirmPassword(event.target.value)} placeholder="Repite tu nueva contraseña" type={showResetPassword ? 'text' : 'password'} value={confirmPassword} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Actualizando contraseña…' : 'Guardar nueva contraseña'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('login'); setMessage(''); clearResetToken(); setNewPassword(''); setConfirmPassword('') }} type="button">Cancelar</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : (
+            <form onSubmit={handleSubmit} noValidate>
+              <label className="field-label" htmlFor="identifier">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
+              <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => { setView('forgot'); setMessage(''); }} type="button">¿Olvidaste tu contraseña?</button></div>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setView('register'); setMessage(''); }} type="button">Crear cuenta de estudiante</button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { void handleTestEmail() }} type="button">Probar envío de mensaje</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          )}
           <p className="help-text">Acceso protegido con sesiones registradas en el sistema académico.</p>
         </div>
       </section>
@@ -612,16 +712,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
   }
 
   function selectProfile(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0] ?? null
-    const fileError = wordFileError(file)
-    if (fileError) {
-      setProfileFile(null)
-      setMessage(fileError)
-      event.target.value = ''
-      return
-    }
-    setMessage('')
-    setProfileFile(file)
+    setProfileFile(event.target.files?.[0] ?? null)
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -632,9 +723,9 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
       return
     }
 
-    const fileError = wordFileError(profileFile)
-    if (fileError) {
-      setMessage(fileError)
+    const extension = profileFile.name.split('.').pop()?.toLowerCase()
+    if (extension !== 'doc' && extension !== 'docx') {
+      setMessage('El perfil debe ser un documento Word (.doc o .docx).')
       return
     }
 
@@ -849,9 +940,9 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
       setMessage('Selecciona el archivo Word de la nueva versión.')
       return
     }
-    const fileError = wordFileError(versionFile)
-    if (fileError) {
-      setMessage(fileError)
+    const extension = versionFile.name.split('.').pop()?.toLowerCase()
+    if (extension !== 'doc' && extension !== 'docx') {
+      setMessage('Solo se permiten archivos Word (.doc o .docx).')
       return
     }
 
@@ -1356,13 +1447,6 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!user || form.password) {
-      const passwordError = passwordPolicyError(form.password)
-      if (passwordError) {
-        setMessage(passwordError)
-        return
-      }
-    }
     setMessage('')
     setIsSubmitting(true)
     try {
@@ -1382,7 +1466,7 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
       <label className="form-field"><span>Apellidos <b>*</b></span><input disabled={isSubmitting} minLength={2} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} required value={form.lastName} /></label>
       <label className="form-field"><span>Correo institucional <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} required type="email" value={form.email} /></label>
       <label className="form-field"><span>Teléfono</span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} value={form.phone} /></label>
-      <label className="form-field"><span>{user ? 'Nueva contraseña' : 'Contraseña'} {!user && <b>*</b>}</span><input autoComplete="new-password" disabled={isSubmitting} maxLength={128} minLength={user ? undefined : 8} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder={user ? 'Déjala vacía para conservarla' : '8+ caracteres, mayús., minús., número y especial'} required={!user} type="password" value={form.password} /><small>8 a 128 caracteres, con mayúscula, minúscula, número y carácter especial.</small></label>
+      <label className="form-field"><span>{user ? 'Nueva contraseña' : 'Contraseña'} {!user && <b>*</b>}</span><input autoComplete="new-password" disabled={isSubmitting} minLength={user ? undefined : 8} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder={user ? 'Déjala vacía para conservarla' : 'Mínimo 8 caracteres'} required={!user} type="password" value={form.password} /></label>
       <label className="form-field admin-toggle-field"><span>Estado</span><span className="admin-switch"><input checked={form.active} disabled={isSubmitting || user?.id === undefined} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />{form.active ? 'Activo' : 'Inactivo'}</span></label>
     </div>
     <fieldset className="admin-role-fields"><legend>Roles <b>*</b></legend><div>{roles.map((role) => <label className={`admin-role-check role-${role.code.toLowerCase()}`} key={role.code}><input checked={form.roles.includes(role.code)} disabled={isSubmitting} onChange={() => toggleRole(role.code)} type="checkbox" /><span>{role.name}</span></label>)}</div></fieldset>
@@ -1415,27 +1499,10 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
     setModalityId('')
   }
 
-  function chooseProfile(file: File | null) {
-    const fileError = wordFileError(file)
-    if (fileError) {
-      setProfile(null)
-      setMessage(fileError)
-      return false
-    }
-    setMessage('')
-    setProfile(file)
-    return true
-  }
-
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!profile) {
       setMessage('Adjunta el perfil inicial en formato Word para crear el proyecto.')
-      return
-    }
-    const fileError = wordFileError(profile)
-    if (fileError) {
-      setMessage(fileError)
       return
     }
     setMessage('')
@@ -1467,7 +1534,7 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
     <label className="form-field"><span>Descripción <b>*</b></span><textarea disabled={isSubmitting} minLength={20} onChange={(event) => setDescription(event.target.value)} required rows={3} value={description} /></label>
     <label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} minLength={10} onChange={(event) => setGeneralObjective(event.target.value)} required rows={3} value={generalObjective} /></label>
     <div className="admin-objectives"><strong>Objetivos específicos <b>*</b></strong>{objectives.map((objective, index) => <div key={index}><textarea aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} minLength={10} onChange={(event) => setObjectives((current) => current.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} required rows={2} value={objective} />{objectives.length > 1 && <button aria-label={`Eliminar objetivo ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => setObjectives((current) => current.filter((_item, itemIndex) => itemIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || objectives.length >= 10} onClick={() => setObjectives((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir objetivo</button></div>
-    <label className="form-field"><span>Perfil inicial Word (.doc o .docx) <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => { if (!chooseProfile(event.target.files?.[0] ?? null)) event.target.value = '' }} required type="file" /></label>
+    <label className="form-field"><span>Perfil inicial Word (.doc o .docx) <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => setProfile(event.target.files?.[0] ?? null)} required type="file" /></label>
     {message && <p className="student-message is-visible tutor-message">{message}</p>}
     <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={onCancel} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Registrando…' : 'Registrar proyecto'}</button></div>
   </form>
@@ -1698,27 +1765,18 @@ function App() {
 
   async function handleNotificationClick(notification: AppNotification) {
     if (!notification.readAt) {
-      const marked = await api<{ id: string; readAt: string }>(`/api/notifications/${notification.id}/read`, { method: 'POST' })
-      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: marked.readAt } : item))
+      await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item))
     }
     if (data && notification.role !== data.user.role) {
       await handleRoleChange(notification.role)
       return
     }
-    if (data && data.user.role === 'ESTUDIANTE') {
-      setView(notification.link === '/documentos' ? 'documents' : 'project')
-    }
-    await loadPortal()
-  }
-
-  async function handleMarkAllNotificationsRead() {
-    const marked = await api<{ readAt: string }>('/api/notifications/read-all', { method: 'POST' })
-    setNotifications((current) => current.map((item) => item.readAt ? item : { ...item, readAt: marked.readAt }))
     await loadPortal()
   }
 
   function sessionActions(user: User) {
-    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onMarkAllNotificationsRead={handleMarkAllNotificationsRead} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
+    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
   }
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>

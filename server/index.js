@@ -6,25 +6,34 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import express from 'express'
 import multer from 'multer'
+import nodemailer from 'nodemailer'
 import pg from 'pg'
+import { isInstitutionalEmail, normalizeEmail } from './email-utils.js'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
-const sessionHours = boundedInteger(process.env.SESSION_HOURS, 12, 1, 24)
-const rememberSessionDays = boundedInteger(process.env.REMEMBER_SESSION_DAYS, 30, 1, 30)
-const passwordHashRounds = boundedInteger(process.env.BCRYPT_ROUNDS, 12, 10, 14)
-const passwordResetMinutes = boundedInteger(process.env.PASSWORD_RESET_MINUTES, 30, 10, 60)
-const passwordResetRequestLimit = boundedInteger(process.env.PASSWORD_RESET_REQUEST_LIMIT, 3, 1, 10)
-const maxDocumentBytes = 10 * 1024 * 1024
+const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
+const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
+const passwordResetMinutes = Number(process.env.PASSWORD_RESET_MINUTES ?? 20)
+const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
+const appBaseUrl = (process.env.APP_BASE_URL ?? 'http://127.0.0.1:5173').replace(/\/$/, '')
+const smtpHost = process.env.SMTP_HOST?.trim()
+const smtpPort = Number(process.env.SMTP_PORT ?? 587)
+const smtpUser = process.env.SMTP_USER?.trim()
+const smtpPassword = process.env.SMTP_PASSWORD
+const smtpFrom = process.env.SMTP_FROM?.trim() || smtpUser
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 const databaseUrl = process.env.DATABASE_URL?.trim()
-const publicAppUrl = publicBaseUrl(process.env.APP_URL)
-const emailDeliveryWebhookUrl = process.env.EMAIL_DELIVERY_WEBHOOK_URL?.trim() ?? ''
-const emailDeliveryWebhookToken = process.env.EMAIL_DELIVERY_WEBHOOK_TOKEN?.trim() ?? ''
-const wordMimeTypes = new Set([
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-])
+
+const mailTransport = smtpHost && smtpUser && smtpPassword && smtpFrom
+  ? nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: { user: smtpUser, pass: smtpPassword },
+    })
+  : null
 
 const pool = new Pool(databaseUrl
   ? { connectionString: databaseUrl, options: '-c search_path=titulacion,public' }
@@ -40,50 +49,11 @@ const pool = new Pool(databaseUrl
 const app = express()
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: maxDocumentBytes, files: 1, fields: 30, fieldSize: 64 * 1024 },
-  fileFilter: (_request, file, callback) => {
-    const extension = path.extname(file.originalname).toLowerCase()
-    const declaredType = (file.mimetype ?? '').toLowerCase()
-    const hasAllowedExtension = extension === '.doc' || extension === '.docx'
-    const hasAllowedType = !declaredType || declaredType === 'application/octet-stream' || wordMimeTypes.has(declaredType)
-    if (!hasAllowedExtension || !hasAllowedType) {
-      const error = new Error('INVALID_DOCUMENT_TYPE')
-      error.code = 'INVALID_DOCUMENT_TYPE'
-      return callback(error)
-    }
-    return callback(null, true)
-  },
+  limits: { fileSize: 10 * 1024 * 1024 },
 })
 
 app.disable('x-powered-by')
 app.use(express.json({ limit: '1mb' }))
-app.use((_request, response, next) => {
-  response.set({
-    'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-    'Referrer-Policy': 'same-origin',
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
-    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-  })
-  next()
-})
-
-function boundedInteger(value, fallback, minimum, maximum) {
-  const parsed = Number(value)
-  if (!Number.isInteger(parsed)) return fallback
-  return Math.min(Math.max(parsed, minimum), maximum)
-}
-
-function publicBaseUrl(value) {
-  const fallback = 'http://localhost:5173'
-  try {
-    const parsed = new URL(value?.trim() || fallback)
-    if (!['http:', 'https:'].includes(parsed.protocol)) return fallback
-    return parsed.toString().replace(/\/$/, '')
-  } catch {
-    return fallback
-  }
-}
 
 function cookieValue(request, name) {
   const cookie = request.headers.cookie
@@ -261,14 +231,8 @@ async function requireAdministrator(request, response, next) {
   }
 }
 
-function text(value, maximumLength = 5000) {
-  if (typeof value !== 'string') return ''
-  return value
-    .normalize('NFKC')
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
-    .replace(/<\s*\/?\s*script\b[^>]*>/gi, '')
-    .trim()
-    .slice(0, maximumLength)
+function text(value) {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 function normalizedRoles(value) {
@@ -281,20 +245,6 @@ function normalizedRoles(value) {
 
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-}
-
-function isStrongPassword(value) {
-  return typeof value === 'string'
-    && value.length >= 8
-    && value.length <= 128
-    && /[A-Z]/.test(value)
-    && /[a-z]/.test(value)
-    && /\d/.test(value)
-    && /[^A-Za-z0-9]/.test(value)
-}
-
-function passwordPolicyMessage() {
-  return 'La contraseña debe tener entre 8 y 128 caracteres, incluyendo una mayúscula, una minúscula, un número y un carácter especial.'
 }
 
 function administratorUserPayload(row) {
@@ -323,10 +273,6 @@ function administratorUserPayload(row) {
 function isWordDocument(file) {
   if (!file) return false
   const extension = path.extname(file.originalname).toLowerCase()
-  const declaredType = (file.mimetype ?? '').toLowerCase()
-  if (file.size <= 0 || file.size > maxDocumentBytes) return false
-  if (!['.doc', '.docx'].includes(extension)) return false
-  if (declaredType && declaredType !== 'application/octet-stream' && !wordMimeTypes.has(declaredType)) return false
   const signature = file.buffer?.subarray(0, 8)
   if (extension === '.docx') {
     return signature?.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])) ?? false
@@ -357,27 +303,6 @@ function isUuid(value) {
   return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }
 
-function validProjectText({ title, description, generalObjective }) {
-  return title.length >= 10 && title.length <= 200
-    && description.length >= 20 && description.length <= 5000
-    && generalObjective.length >= 10 && generalObjective.length <= 2000
-}
-
-function validProjectContent({ title, description, generalObjective, objectives }) {
-  return validProjectText({ title, description, generalObjective })
-    && objectives.length > 0 && objectives.length <= 10
-    && objectives.every((item) => item.length >= 10 && item.length <= 1000)
-}
-
-function safeFilename(value) {
-  const filename = path.basename(typeof value === 'string' ? value : '')
-    .normalize('NFKC')
-    .replace(/[^\p{L}\p{N}._ -]/gu, '_')
-    .replace(/^\.+/, '')
-    .slice(0, 180)
-  return filename || 'documento'
-}
-
 function storedFilePath(relativePath, projectId) {
   const expectedPrefix = `uploads/proyectos/${projectId}/`
   if (typeof relativePath !== 'string' || !relativePath.startsWith(expectedPrefix)) return null
@@ -399,57 +324,252 @@ function versionPayload(row) {
   }
 }
 
-async function createNotification(databaseClient, {
-  userId,
-  recipientEmail,
-  projectId = null,
-  type,
-  title,
-  message,
-  link = null,
-  queueEmail = false,
-  eventKey = null,
-}) {
+async function createNotification(databaseClient, { userId, recipientEmail, projectId = null, type, title, message, link = null, queueEmail = false }) {
   const notification = await databaseClient.query(
-    `INSERT INTO titulacion.notificaciones (usuario_id, proyecto_id, tipo, titulo, mensaje, enlace, evento_clave)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (usuario_id, evento_clave) WHERE evento_clave IS NOT NULL DO NOTHING
+    `INSERT INTO titulacion.notificaciones (usuario_id, proyecto_id, tipo, titulo, mensaje, enlace)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
-    [userId, projectId, type, title, message, link, eventKey],
+    [userId, projectId, type, title, message, link],
   )
-
-  const notificationId = notification.rows[0]?.id
-  if (!notificationId) return { created: false, notificationId: null, queuedEmailId: null }
 
   if (queueEmail && recipientEmail) {
-    const queued = await databaseClient.query(
+    await databaseClient.query(
       `INSERT INTO titulacion.cola_correos_notificacion
         (notificacion_id, destinatario, tipo, asunto, cuerpo)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id`,
-      [notificationId, recipientEmail, type, title, message],
+       VALUES ($1, $2, $3, $4, $5)`,
+      [notification.rows[0].id, recipientEmail, type, title, message],
     )
-    return { created: true, notificationId, queuedEmailId: queued.rows[0]?.id ?? null }
   }
-  return { created: true, notificationId, queuedEmailId: null }
+  return notification.rows[0].id
 }
 
-function deliverQueuedEmails(queueIds) {
-  for (const queueId of queueIds.filter(Boolean)) {
-    void deliverQueuedEmail(queueId)
+async function processEmailQueue() {
+  if (!mailTransport) return
+
+  const databaseClient = await pool.connect()
+  try {
+    await databaseClient.query('BEGIN')
+    const pending = await databaseClient.query(
+      `SELECT q.id, q.destinatario, q.asunto, q.cuerpo, n.enlace
+       FROM titulacion.cola_correos_notificacion q
+       JOIN titulacion.notificaciones n ON n.id = q.notificacion_id
+       WHERE q.estado = 'PENDIENTE'
+         AND (q.ultimo_intento_en IS NULL OR q.ultimo_intento_en < now() - interval '5 minutes')
+       ORDER BY q.creado_en
+       FOR UPDATE SKIP LOCKED
+       LIMIT 10`,
+    )
+
+    if (pending.rows.length === 0) {
+      await databaseClient.query('COMMIT')
+      return
+    }
+
+    await Promise.all(pending.rows.map((item) => databaseClient.query(
+      `UPDATE titulacion.cola_correos_notificacion
+       SET intentos = intentos + 1, ultimo_intento_en = now(), error_ultimo_intento = NULL
+       WHERE id = $1`,
+      [item.id],
+    )))
+    await databaseClient.query('COMMIT')
+
+    for (const item of pending.rows) {
+      try {
+        const link = item.enlace ? new URL(item.enlace, appBaseUrl).toString() : null
+        const body = link ? `${item.cuerpo}\n\nEnlace: ${link}` : item.cuerpo
+        await mailTransport.sendMail({
+          from: smtpFrom,
+          to: item.destinatario,
+          subject: item.asunto,
+          text: body,
+          html: `<p>${item.cuerpo}</p>${link ? `<p><a href="${link}">Abrir enlace</a></p>` : ''}`,
+        })
+        await pool.query(
+          `UPDATE titulacion.cola_correos_notificacion
+           SET estado = 'ENVIADO', enviado_en = now(), error_ultimo_intento = NULL
+           WHERE id = $1`,
+          [item.id],
+        )
+      } catch (error) {
+        await pool.query(
+          `UPDATE titulacion.cola_correos_notificacion
+           SET estado = CASE WHEN intentos >= 5 THEN 'ERROR' ELSE 'PENDIENTE' END,
+               error_ultimo_intento = $2
+           WHERE id = $1`,
+          [item.id, error instanceof Error ? error.message.slice(0, 1000) : 'Error SMTP desconocido'],
+        )
+        console.error(`[email] No fue posible enviar el correo ${item.id}:`, error instanceof Error ? error.message : error)
+      }
+    }
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    console.error('[email] No fue posible procesar la cola:', error instanceof Error ? error.message : error)
+  } finally {
+    databaseClient.release()
   }
 }
 
-async function projectStudents(databaseClient, projectId) {
-  const students = await databaseClient.query(
-    `SELECT u.id AS usuario_id, u.correo
-     FROM titulacion.proyecto_estudiantes pe
-     JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
-     JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
-     WHERE pe.proyecto_id = $1 AND pe.activo`,
-    [projectId],
+async function ensurePasswordResetSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.password_reset_tokens (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id) ON DELETE CASCADE,
+      token_hash varchar(128) NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      usado_en timestamptz,
+      creado_en timestamptz NOT NULL DEFAULT now()
+    );
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_usuario
+      ON titulacion.password_reset_tokens (usuario_id, creado_en DESC);
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_expiracion
+      ON titulacion.password_reset_tokens (expires_at);
+  `)
+}
+
+async function ensureEmailConfirmationSchema() {
+  await pool.query(`
+    ALTER TABLE titulacion.usuarios
+      ADD COLUMN IF NOT EXISTS email_confirmado_en timestamptz;
+  `)
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.email_confirmation_tokens (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id) ON DELETE CASCADE,
+      token_hash varchar(128) NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      usado_en timestamptz,
+      creado_en timestamptz NOT NULL DEFAULT now()
+    );
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_usuario
+      ON titulacion.email_confirmation_tokens (usuario_id, creado_en DESC);
+  `)
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_expiracion
+      ON titulacion.email_confirmation_tokens (expires_at);
+  `)
+}
+
+async function generatePasswordResetRequest(databaseClient, userId, userEmail) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + passwordResetMinutes * 60 * 1000)
+  const tokenHash = hashToken(token)
+
+  await databaseClient.query(
+    `UPDATE titulacion.password_reset_tokens
+     SET usado_en = now()
+     WHERE usuario_id = $1
+       AND usado_en IS NULL
+       AND expires_at > now()`,
+    [userId],
   )
-  return students.rows
+
+  await databaseClient.query(
+    `INSERT INTO titulacion.password_reset_tokens (usuario_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, tokenHash, expiresAt],
+  )
+
+  const resetUrl = `${appBaseUrl}/?resetToken=${encodeURIComponent(token)}`
+  const notificationId = await createNotification(databaseClient, {
+    userId,
+    recipientEmail: userEmail,
+    type: 'PASSWORD_RESET',
+    title: 'Restablecer contraseña',
+    message: 'Haz clic en el enlace para crear una nueva contraseña segura.',
+    link: `/?resetToken=${encodeURIComponent(token)}`,
+    queueEmail: true,
+  })
+
+  if (mailTransport && userEmail) {
+    try {
+      const link = new URL(`/?resetToken=${encodeURIComponent(token)}`, appBaseUrl).toString()
+      await mailTransport.sendMail({
+        from: smtpFrom,
+        to: userEmail,
+        subject: 'Restablecer contraseña',
+        text: `Haz clic en este enlace para restablecer tu contraseña:\n\n${link}`,
+        html: `<p>Haz clic en el siguiente enlace para restablecer tu contraseña.</p><p><a href="${link}">Restablecer contraseña</a></p>`,
+      })
+      await databaseClient.query(
+        `UPDATE titulacion.cola_correos_notificacion
+         SET estado = 'ENVIADO', enviado_en = now(), error_ultimo_intento = NULL
+         WHERE notificacion_id = $1`,
+        [notificationId],
+      )
+      console.log(`[password-reset] ${userEmail} -> ${resetUrl}`)
+    } catch (error) {
+      console.error('[password-reset] No fue posible enviar el correo:', error instanceof Error ? error.message : error)
+    }
+  }
+
+  return resetUrl
+}
+
+async function generateEmailConfirmationRequest(databaseClient, userId, userEmail) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + confirmationHours * 60 * 60 * 1000)
+  const tokenHash = hashToken(token)
+
+  await databaseClient.query(
+    `UPDATE titulacion.email_confirmation_tokens
+     SET usado_en = now()
+     WHERE usuario_id = $1
+       AND usado_en IS NULL
+       AND expires_at > now()`,
+    [userId],
+  )
+
+  await databaseClient.query(
+    `INSERT INTO titulacion.email_confirmation_tokens (usuario_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, tokenHash, expiresAt],
+  )
+
+  const confirmationUrl = `${appBaseUrl}/?confirmToken=${encodeURIComponent(token)}`
+  const notificationId = await createNotification(databaseClient, {
+    userId,
+    recipientEmail: userEmail,
+    type: 'CONFIRMACION_CUENTA',
+    title: 'Confirma tu cuenta',
+    message: 'Haz clic en el enlace para activar tu cuenta de estudiante.',
+    link: `/?confirmToken=${encodeURIComponent(token)}`,
+    queueEmail: true,
+  })
+
+  if (mailTransport && userEmail) {
+    try {
+      const link = new URL(`/?confirmToken=${encodeURIComponent(token)}`, appBaseUrl).toString()
+      await mailTransport.sendMail({
+        from: smtpFrom,
+        to: userEmail,
+        subject: 'Confirma tu cuenta',
+        text: `Haz clic en este enlace para confirmar tu cuenta:\n\n${link}`,
+        html: `<p>Haz clic en el siguiente enlace para activar tu cuenta.</p><p><a href="${link}">Confirmar cuenta</a></p>`,
+      })
+      await databaseClient.query(
+        `UPDATE titulacion.cola_correos_notificacion
+         SET estado = 'ENVIADO', enviado_en = now(), error_ultimo_intento = NULL
+         WHERE notificacion_id = $1`,
+        [notificationId],
+      )
+      console.log(`[email-confirmation] ${userEmail} -> ${confirmationUrl}`)
+    } catch (error) {
+      console.error('[email-confirmation] No fue posible enviar el correo:', error instanceof Error ? error.message : error)
+    }
+  }
+
+  return confirmationUrl
 }
 
 function deadlineAtEndOfDay(value) {
@@ -466,84 +586,6 @@ async function recordAudit(databaseClient, session, { projectId = null, action, 
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
     [session.usuario_id, session.rol_id, session.sesion_id, projectId, action, entity, entityId, JSON.stringify(detail)],
   )
-}
-
-async function recordSecurityEvent({ request, type, identifier = null, userId = null, databaseClient = pool }) {
-  const identifierHash = identifier ? hashToken(identifier.toLowerCase()) : null
-  const ipAddress = request.socket.remoteAddress ?? null
-  try {
-    await databaseClient.query(
-      `INSERT INTO titulacion.eventos_seguridad (usuario_id, tipo, identificador_hash, ip_origen, agente_usuario)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [userId, type, identifierHash, ipAddress, text(request.get('user-agent'), 1000) || null],
-    )
-  } catch {
-    // The migration may not yet be applied in a local database. Never log credentials or tokens.
-    console.warn(`[security] ${type}`, JSON.stringify({ identifierHash, ipAddress }))
-  }
-}
-
-function passwordResetUrl(token) {
-  return `${publicAppUrl}/?reset=${encodeURIComponent(token)}`
-}
-
-async function queuePasswordResetEmail(databaseClient, { user, token }) {
-  const notification = await databaseClient.query(
-    `INSERT INTO titulacion.notificaciones (usuario_id, tipo, titulo, mensaje, enlace)
-     VALUES ($1, 'RECUPERACION_CONTRASENA', 'Solicitud de recuperación de contraseña', $2, '/?reset')
-     RETURNING id`,
-    [user.id, 'Solicitaste recuperar tu contraseña. Revisa tu correo institucional para continuar.'],
-  )
-  const resetUrl = passwordResetUrl(token)
-  const queued = await databaseClient.query(
-    `INSERT INTO titulacion.cola_correos_notificacion
-       (notificacion_id, destinatario, tipo, asunto, cuerpo)
-     VALUES ($1, $2, 'RECUPERACION_CONTRASENA', $3, $4)
-     RETURNING id`,
-    [
-      notification.rows[0].id,
-      user.correo,
-      'Restablece tu contraseña',
-      `Recibimos una solicitud para restablecer la contraseña de tu cuenta. Usa este enlace una sola vez dentro de ${passwordResetMinutes} minutos: ${resetUrl}. Si no solicitaste el cambio, ignora este correo.`,
-    ],
-  )
-  return queued.rows[0].id
-}
-
-async function deliverQueuedEmail(queueId) {
-  if (!emailDeliveryWebhookUrl || typeof fetch !== 'function') return
-  try {
-    const queued = await pool.query(
-      `SELECT id, destinatario, asunto, cuerpo
-       FROM titulacion.cola_correos_notificacion
-       WHERE id = $1 AND estado = 'PENDIENTE'`,
-      [queueId],
-    )
-    const email = queued.rows[0]
-    if (!email) return
-    const response = await fetch(emailDeliveryWebhookUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(emailDeliveryWebhookToken ? { Authorization: `Bearer ${emailDeliveryWebhookToken}` } : {}),
-      },
-      body: JSON.stringify({ to: email.destinatario, subject: email.asunto, text: email.cuerpo }),
-    })
-    if (!response.ok) throw new Error('Proveedor de correo no confirmó la entrega.')
-    await pool.query(
-      `UPDATE titulacion.cola_correos_notificacion
-       SET estado = 'ENVIADO', intentos = intentos + 1, ultimo_intento_en = now(), enviado_en = now(), error_ultimo_intento = NULL
-       WHERE id = $1`,
-      [queueId],
-    )
-  } catch {
-    await pool.query(
-      `UPDATE titulacion.cola_correos_notificacion
-       SET estado = 'PENDIENTE', intentos = intentos + 1, ultimo_intento_en = now(), error_ultimo_intento = 'No se confirmó la entrega del correo; se reintentará desde la cola.'
-       WHERE id = $1 AND estado = 'PENDIENTE'`,
-      [queueId],
-    ).catch(() => undefined)
-  }
 }
 
 async function recordProjectStatus(databaseClient, { projectId, previousStateId, nextStateId, previousPhaseId, nextPhaseId, userId, reason }) {
@@ -585,18 +627,14 @@ async function staffWithRole(databaseClient, { teacherId, careerId, roleCode }) 
 
 async function replaceProjectAssignment(databaseClient, { project, type, staff, assignedByUserId }) {
   const current = await databaseClient.query(
-    `SELECT a.id, a.docente_id, a.activo, d.usuario_id, u.correo
-     FROM titulacion.asignaciones_proyecto a
-     JOIN titulacion.docentes d ON d.id = a.docente_id
-     JOIN titulacion.usuarios u ON u.id = d.usuario_id
+    `SELECT id, docente_id, activo
+     FROM titulacion.asignaciones_proyecto
      WHERE proyecto_id = $1 AND tipo = $2
        AND (activo OR ($2 = 'TUTOR' AND NOT activo AND fecha_fin IS NULL))
      FOR UPDATE`,
     [project.id, type],
   )
-  if (current.rows.length === 1 && current.rows[0].docente_id === staff.id) return { changed: false, assignmentId: current.rows[0].id, queuedEmailIds: [] }
-
-  const queuedEmailIds = []
+  if (current.rows.length === 1 && current.rows[0].docente_id === staff.id) return { changed: false, assignmentId: current.rows[0].id }
 
   if (current.rows.length > 0) {
     await databaseClient.query(
@@ -610,42 +648,6 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
         `${type === 'TUTOR' ? 'Tutoría' : 'Revisión'} reasignada por Administración.`,
       ],
     )
-
-    if (type === 'TUTOR') {
-      const students = await projectStudents(databaseClient, project.id)
-      for (const previousTutor of current.rows) {
-        const cancellation = await createNotification(databaseClient, {
-          userId: previousTutor.usuario_id,
-          recipientEmail: previousTutor.correo,
-          projectId: project.id,
-          type: previousTutor.activo ? 'TUTORIA_REASIGNADA' : 'SOLICITUD_TUTORIA_CANCELADA',
-          title: previousTutor.activo ? 'Tutoría reasignada' : 'Solicitud de tutoría cancelada',
-          message: previousTutor.activo
-            ? `Tu asignación como tutor del proyecto ${project.codigo_seguimiento} fue reasignada por Administración.`
-            : `La solicitud para acompañar el proyecto ${project.codigo_seguimiento} fue cancelada por Administración.`,
-          link: '/tutor/invitaciones',
-          queueEmail: true,
-          eventKey: `tutor-request-cancelled:${previousTutor.id}`,
-        })
-        if (cancellation.queuedEmailId) queuedEmailIds.push(cancellation.queuedEmailId)
-        for (const student of students) {
-          const notice = await createNotification(databaseClient, {
-            userId: student.usuario_id,
-            recipientEmail: student.correo,
-            projectId: project.id,
-            type: previousTutor.activo ? 'TUTORIA_REASIGNADA' : 'SOLICITUD_TUTORIA_CANCELADA',
-            title: previousTutor.activo ? 'Tutor reasignado' : 'Solicitud de tutoría actualizada',
-            message: previousTutor.activo
-              ? `El tutor de tu proyecto ${project.codigo_seguimiento} fue reasignado. Recibirás una nueva solicitud de tutor.`
-              : `La solicitud anterior de tutor para el proyecto ${project.codigo_seguimiento} fue cancelada. Recibirás una nueva asignación.`,
-            link: '/student',
-            queueEmail: true,
-            eventKey: `student-tutor-request-cancelled:${previousTutor.id}`,
-          })
-          if (notice.queuedEmailId) queuedEmailIds.push(notice.queuedEmailId)
-        }
-      }
-    }
   }
 
   const assignment = await databaseClient.query(
@@ -666,7 +668,7 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
   )
 
   if (type === 'TUTOR') {
-    const invitation = await createNotification(databaseClient, {
+    await createNotification(databaseClient, {
       userId: staff.usuario_id,
       recipientEmail: staff.correo,
       projectId: project.id,
@@ -675,24 +677,7 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
       message: `Administración te invita a acompañar el proyecto ${project.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
       link: '/tutor/invitaciones',
       queueEmail: true,
-      eventKey: `tutor-request:${assignment.rows[0].id}`,
     })
-    if (invitation.queuedEmailId) queuedEmailIds.push(invitation.queuedEmailId)
-    const students = await projectStudents(databaseClient, project.id)
-    for (const student of students) {
-      const notice = await createNotification(databaseClient, {
-        userId: student.usuario_id,
-        recipientEmail: student.correo,
-        projectId: project.id,
-        type: 'SOLICITUD_TUTORIA_ENVIADA',
-        title: 'Solicitud de tutor enviada',
-        message: `Se envió una solicitud a ${staff.name} para acompañar tu proyecto ${project.codigo_seguimiento}.`,
-        link: '/student',
-        queueEmail: true,
-        eventKey: `student-tutor-request:${assignment.rows[0].id}`,
-      })
-      if (notice.queuedEmailId) queuedEmailIds.push(notice.queuedEmailId)
-    }
   } else {
     await createNotification(databaseClient, {
       userId: staff.usuario_id,
@@ -701,10 +686,9 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
       title: 'Nueva asignación de revisión',
       message: `Administración te asignó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}.`,
       link: '/revisor',
-      eventKey: `reviewer-assignment:${assignment.rows[0].id}`,
     })
   }
-  return { changed: true, assignmentId: assignment.rows[0].id, queuedEmailIds }
+  return { changed: true, assignmentId: assignment.rows[0].id }
 }
 
 app.get('/api/health', async (_request, response, next) => {
@@ -716,13 +700,193 @@ app.get('/api/health', async (_request, response, next) => {
   }
 })
 
+app.post('/api/auth/register', async (request, response, next) => {
+  try {
+    const firstName = text(request.body?.firstName)
+    const lastName = text(request.body?.lastName)
+    const email = text(request.body?.email).toLowerCase()
+    const password = request.body?.password
+    const confirmPassword = request.body?.confirmPassword
+
+    if (firstName.length < 2 || lastName.length < 2) {
+      return response.status(422).json({ message: 'Ingresa tu nombre y apellidos completos.' })
+    }
+    if (!email || !email.endsWith('@est.univalle.edu') || !/^[^\s@]+@est\.univalle\.edu$/i.test(email)) {
+      return response.status(422).json({ message: 'Solo se aceptan correos institucionales con dominio @est.univalle.edu.' })
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return response.status(422).json({ message: 'La contraseña debe tener al menos 8 caracteres.' })
+    }
+    if (password !== confirmPassword) {
+      return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
+    }
+
+    const existingUser = await pool.query(
+      `SELECT id FROM titulacion.usuarios WHERE lower(correo) = lower($1) LIMIT 1`,
+      [email],
+    )
+    if (existingUser.rows[0]) {
+      return response.status(409).json({ message: 'Ya existe una cuenta registrada con ese correo institucional.' })
+    }
+
+    const databaseClient = await pool.connect()
+    try {
+      await databaseClient.query('BEGIN')
+
+      const studentRole = await databaseClient.query(
+        `SELECT id FROM titulacion.roles WHERE codigo = 'ESTUDIANTE' AND activo LIMIT 1`,
+      )
+      const defaultCareer = await databaseClient.query(
+        `SELECT id FROM titulacion.carreras WHERE activa ORDER BY nombre LIMIT 1`,
+      )
+      if (!studentRole.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(500).json({ message: 'El rol de estudiante no está disponible en este momento.' })
+      }
+      if (!defaultCareer.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(500).json({ message: 'No hay carreras activas disponibles para registrar la cuenta.' })
+      }
+
+      const user = await databaseClient.query(
+        `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo)
+         VALUES ($1, $2, $3, $4, false)
+         RETURNING id`,
+        [firstName, lastName, email, await bcrypt.hash(password, 10)],
+      )
+
+      const registrationCode = `EST-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+
+      await databaseClient.query(
+        `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo, asignado_por_usuario_id)
+         VALUES ($1, $2, true, $1)`,
+        [user.rows[0].id, studentRole.rows[0].id],
+      )
+
+      await databaseClient.query(
+        `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
+         VALUES ($1, $2, $3, true)`,
+        [user.rows[0].id, defaultCareer.rows[0].id, registrationCode],
+      )
+
+      await generateEmailConfirmationRequest(databaseClient, user.rows[0].id, email)
+      await databaseClient.query('COMMIT')
+
+      return response.status(201).json({
+        message: 'Tu cuenta fue creada correctamente. Revisa tu correo institucional para confirmar la cuenta.',
+        email,
+      })
+    } catch (error) {
+      await databaseClient.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      databaseClient.release()
+    }
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/resend-confirmation', async (request, response, next) => {
+  try {
+    const email = text(request.body?.email).toLowerCase()
+    const genericMessage = 'Si el correo está registrado y aún no está confirmado, recibirás un nuevo enlace de verificación.'
+
+    if (!email || !email.endsWith('@est.univalle.edu') || !/^[^\s@]+@est\.univalle\.edu$/i.test(email)) {
+      return response.status(200).json({ message: genericMessage })
+    }
+
+    const account = await pool.query(
+      `SELECT u.id, u.activo, u.correo
+       FROM titulacion.usuarios u
+       WHERE lower(u.correo) = lower($1)
+       LIMIT 1`,
+      [email],
+    )
+
+    if (!account.rows[0]) {
+      return response.status(200).json({ message: genericMessage })
+    }
+
+    if (account.rows[0].activo) {
+      return response.status(200).json({ message: 'Esta cuenta ya está activada y puede iniciar sesión normalmente.' })
+    }
+
+    const databaseClient = await pool.connect()
+    try {
+      await databaseClient.query('BEGIN')
+      await generateEmailConfirmationRequest(databaseClient, account.rows[0].id, account.rows[0].correo)
+      await databaseClient.query('COMMIT')
+    } catch (error) {
+      await databaseClient.query('ROLLBACK').catch(() => undefined)
+      throw error
+    } finally {
+      databaseClient.release()
+    }
+
+    return response.status(200).json({ message: genericMessage })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/confirm-email', async (request, response, next) => {
+  try {
+    const token = text(request.body?.token)
+    if (!token) {
+      return response.status(400).json({ message: 'El enlace de confirmación no es válido.' })
+    }
+
+    const confirmationToken = await pool.query(
+      `SELECT ect.id, ect.usuario_id
+       FROM titulacion.email_confirmation_tokens ect
+       JOIN titulacion.usuarios u ON u.id = ect.usuario_id AND u.activo = false
+       WHERE ect.token_hash = $1
+         AND ect.usado_en IS NULL
+         AND ect.expires_at > now()
+       LIMIT 1`,
+      [hashToken(token)],
+    )
+
+    if (!confirmationToken.rows[0]) {
+      return response.status(410).json({ message: 'El enlace de confirmación ha vencido, ha sido utilizado o fue alterado.' })
+    }
+
+    await pool.query('BEGIN')
+    try {
+      await pool.query(
+        `UPDATE titulacion.usuarios
+         SET activo = true, email_confirmado_en = now(), actualizado_en = now()
+         WHERE id = $1`,
+        [confirmationToken.rows[0].usuario_id],
+      )
+
+      await pool.query(
+        `UPDATE titulacion.email_confirmation_tokens
+         SET usado_en = now()
+         WHERE id = $1`,
+        [confirmationToken.rows[0].id],
+      )
+
+      await pool.query('COMMIT')
+    } catch (error) {
+      await pool.query('ROLLBACK').catch(() => undefined)
+      throw error
+    }
+
+    return response.status(200).json({ message: 'Tu cuenta quedó activada correctamente. Ya puedes iniciar sesión.' })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 app.post('/api/auth/login', async (request, response, next) => {
   try {
     const identifier = text(request.body?.identifier).toLowerCase()
     const password = request.body?.password
     const remember = Boolean(request.body?.remember)
 
-    if (!identifier || typeof password !== 'string' || !password || password.length > 128) {
+    if (!identifier || typeof password !== 'string' || !password) {
       return response.status(422).json({ message: 'Ingresa tu correo institucional y tu contraseña.' })
     }
 
@@ -769,7 +933,6 @@ app.post('/api/auth/login', async (request, response, next) => {
 
     const account = result.rows[0]
     if (!account || !(await bcrypt.compare(password, account.password_hash))) {
-      await recordSecurityEvent({ request, type: 'INICIO_SESION_FALLIDO', identifier })
       return response.status(401).json({ message: 'Correo o contraseña incorrectos.' })
     }
 
@@ -779,11 +942,10 @@ app.post('/api/auth/login', async (request, response, next) => {
       : sessionHours * 60 * 60 * 1000
     const expiration = new Date(Date.now() + durationMs)
 
-    const createdSession = await pool.query(
+    await pool.query(
       `INSERT INTO titulacion.sesiones_usuario
         (usuario_id, rol_activo_id, token_hash, ip_origen, agente_usuario, expira_en)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id AS sesion_id`,
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [
         account.usuario_id,
         account.rol_id,
@@ -794,13 +956,6 @@ app.post('/api/auth/login', async (request, response, next) => {
       ],
     )
 
-    const auditSession = { ...account, sesion_id: createdSession.rows[0].sesion_id }
-    await recordAudit(pool, auditSession, {
-      action: 'INICIAR_SESION',
-      entity: 'sesiones_usuario',
-      entityId: createdSession.rows[0].sesion_id,
-      detail: { remember, expiration: expiration.toISOString() },
-    })
     setSessionCookie(response, token, durationMs)
     return response.json({ user: sanitizeUser(account) })
   } catch (error) {
@@ -808,117 +963,142 @@ app.post('/api/auth/login', async (request, response, next) => {
   }
 })
 
-app.post('/api/auth/password-recovery', async (request, response, next) => {
-  let databaseClient = null
-  let queuedEmailId = null
-  const identifier = text(request.body?.identifier, 255).toLowerCase()
-  const acceptedMessage = 'Si existe una cuenta activa con ese correo, recibirás instrucciones para restablecer tu contraseña.'
+app.post('/api/auth/test-email', async (request, response, next) => {
   try {
-    if (!identifier || !isEmail(identifier)) {
-      return response.status(202).json({ message: acceptedMessage })
+    const email = normalizeEmail(request.body?.email)
+    const subject = 'Prueba de correo institucional'
+
+    if (!isInstitutionalEmail(email)) {
+      return response.status(422).json({ message: 'Ingresa un correo institucional válido para probar el envío.' })
     }
 
-    databaseClient = await pool.connect()
-    await databaseClient.query('BEGIN')
-    const userResult = await databaseClient.query(
-      `SELECT id, correo
-       FROM titulacion.usuarios
-       WHERE lower(correo) = $1 AND activo
-       FOR UPDATE`,
-      [identifier],
-    )
-    const user = userResult.rows[0]
-    if (user) {
-      const recent = await databaseClient.query(
-        `SELECT count(*)::int AS total
-         FROM titulacion.tokens_recuperacion_contrasena
-         WHERE usuario_id = $1 AND solicitado_en > now() - interval '15 minutes'`,
-        [user.id],
-      )
-      if (recent.rows[0].total < passwordResetRequestLimit) {
-        const token = crypto.randomBytes(32).toString('base64url')
-        const expiration = new Date(Date.now() + passwordResetMinutes * 60 * 1000)
-        await databaseClient.query(
-          `UPDATE titulacion.tokens_recuperacion_contrasena
-           SET usado_en = COALESCE(usado_en, now())
-           WHERE usuario_id = $1 AND usado_en IS NULL`,
-          [user.id],
-        )
-        await databaseClient.query(
-          `INSERT INTO titulacion.tokens_recuperacion_contrasena
-             (usuario_id, token_hash, expira_en, ip_origen, agente_usuario)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [user.id, hashToken(token), expiration, request.socket.remoteAddress ?? null, text(request.get('user-agent'), 1000) || null],
-        )
-        queuedEmailId = await queuePasswordResetEmail(databaseClient, { user, token })
-        await recordSecurityEvent({ request, type: 'SOLICITAR_RECUPERACION_CONTRASENA', identifier, userId: user.id })
-      } else {
-        await recordSecurityEvent({ request, type: 'RECUPERACION_CONTRASENA_LIMITADA', identifier, userId: user.id })
-      }
-    } else {
-      await recordSecurityEvent({ request, type: 'RECUPERACION_CONTRASENA_CUENTA_NO_ENCONTRADA', identifier })
+    if (!mailTransport) {
+      return response.status(503).json({
+        message: 'El SMTP de Outlook aún no está configurado. Agrega SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD y SMTP_FROM en tu archivo .env.',
+      })
     }
-    await databaseClient.query('COMMIT')
-    if (queuedEmailId) void deliverQueuedEmail(queuedEmailId)
-    return response.status(202).json({ message: acceptedMessage })
+
+    await mailTransport.sendMail({
+      from: smtpFrom,
+      to: email,
+      subject,
+      text: 'Este es un correo de prueba del sistema de titulación. Si recibes este mensaje, la configuración de Outlook está funcionando correctamente.',
+      html: '<p>Este es un correo de prueba del sistema de titulación.</p><p>Si recibes este mensaje, la configuración de Outlook está funcionando correctamente.</p>',
+    })
+
+    return response.status(200).json({ message: `Se envió correctamente un correo de prueba a ${email}.` })
   } catch (error) {
-    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
-    return next(error)
-  } finally {
-    databaseClient?.release()
+    const message = error instanceof Error ? error.message : 'No fue posible enviar el correo de prueba.'
+    return next(new Error(message))
   }
 })
 
-app.post('/api/auth/password-reset', async (request, response, next) => {
-  let databaseClient = null
+app.post('/api/auth/forgot-password', async (request, response, next) => {
   try {
-    const token = request.body?.token
-    const password = request.body?.password
-    if (typeof token !== 'string' || token.length < 40 || token.length > 128 || !isStrongPassword(password)) {
-      return response.status(422).json({ message: 'El enlace de recuperación o la nueva contraseña no son válidos.' })
+    const email = text(request.body?.email).toLowerCase()
+    const genericMessage = 'Si el correo está registrado, recibirás un enlace para restablecer tu contraseña.'
+
+    if (!isEmail(email)) {
+      return response.status(200).json({ message: genericMessage })
     }
 
-    databaseClient = await pool.connect()
-    await databaseClient.query('BEGIN')
-    const reset = await databaseClient.query(
-      `SELECT t.id, t.usuario_id, u.correo
-       FROM titulacion.tokens_recuperacion_contrasena t
-       JOIN titulacion.usuarios u ON u.id = t.usuario_id AND u.activo
-       WHERE t.token_hash = $1 AND t.usado_en IS NULL AND t.expira_en > now()
-       FOR UPDATE OF t, u`,
+    const user = await pool.query(
+      `SELECT id, correo
+       FROM titulacion.usuarios
+       WHERE lower(correo) = lower($1)
+         AND activo
+       LIMIT 1`,
+      [email],
+    )
+
+    if (user.rows[0]) {
+      const databaseClient = await pool.connect()
+      try {
+        await databaseClient.query('BEGIN')
+        await generatePasswordResetRequest(databaseClient, user.rows[0].id, user.rows[0].correo)
+        await databaseClient.query('COMMIT')
+      } catch (error) {
+        await databaseClient.query('ROLLBACK').catch(() => undefined)
+        throw error
+      } finally {
+        databaseClient.release()
+      }
+    }
+
+    return response.status(200).json({ message: genericMessage })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/reset-password', async (request, response, next) => {
+  try {
+    const token = text(request.body?.token)
+    const password = request.body?.password
+    const confirmPassword = request.body?.confirmPassword
+
+    if (!token) {
+      return response.status(400).json({ message: 'El enlace de recuperación no es válido.' })
+    }
+
+    if (typeof password !== 'string' || typeof confirmPassword !== 'string' || password.length < 8) {
+      return response.status(422).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres.' })
+    }
+
+    if (password !== confirmPassword) {
+      return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
+    }
+
+    const resetToken = await pool.query(
+      `SELECT prt.id, prt.usuario_id, u.password_hash
+       FROM titulacion.password_reset_tokens prt
+       JOIN titulacion.usuarios u ON u.id = prt.usuario_id AND u.activo
+       WHERE prt.token_hash = $1
+         AND prt.usado_en IS NULL
+         AND prt.expires_at > now()
+       LIMIT 1`,
       [hashToken(token)],
     )
-    const selected = reset.rows[0]
-    if (!selected) {
-      await databaseClient.query('ROLLBACK')
-      return response.status(422).json({ message: 'El enlace de recuperación no es válido o ya expiró. Solicita uno nuevo.' })
+
+    if (!resetToken.rows[0]) {
+      return response.status(410).json({ message: 'El enlace de recuperación ha expirado o ya fue utilizado.' })
     }
-    await databaseClient.query(
-      `UPDATE titulacion.usuarios
-       SET password_hash = $2, actualizado_en = now()
-       WHERE id = $1`,
-      [selected.usuario_id, await bcrypt.hash(password, passwordHashRounds)],
-    )
-    await databaseClient.query(
-      `UPDATE titulacion.tokens_recuperacion_contrasena
-       SET usado_en = now()
-       WHERE id = $1`,
-      [selected.id],
-    )
-    await databaseClient.query(
-      `UPDATE titulacion.sesiones_usuario
-       SET cerrada_en = COALESCE(cerrada_en, now())
-       WHERE usuario_id = $1`,
-      [selected.usuario_id],
-    )
-    await databaseClient.query('COMMIT')
-    await recordSecurityEvent({ request, type: 'RESTABLECER_CONTRASENA', identifier: selected.correo, userId: selected.usuario_id })
-    return response.json({ message: 'Tu contraseña fue actualizada. Inicia sesión con la nueva contraseña.' })
+
+    const userId = resetToken.rows[0].usuario_id
+    const passwordHash = await bcrypt.hash(password, 10)
+
+    await pool.query('BEGIN')
+    try {
+      await pool.query(
+        `UPDATE titulacion.usuarios
+         SET password_hash = $1, actualizado_en = now()
+         WHERE id = $2`,
+        [passwordHash, userId],
+      )
+
+      await pool.query(
+        `UPDATE titulacion.password_reset_tokens
+         SET usado_en = now()
+         WHERE id = $1`,
+        [resetToken.rows[0].id],
+      )
+
+      await pool.query(
+        `UPDATE titulacion.sesiones_usuario
+         SET cerrada_en = now()
+         WHERE usuario_id = $1 AND cerrada_en IS NULL`,
+        [userId],
+      )
+
+      await pool.query('COMMIT')
+    } catch (error) {
+      await pool.query('ROLLBACK').catch(() => undefined)
+      throw error
+    }
+
+    return response.json({ message: 'Tu contraseña se actualizó correctamente. Ya puedes iniciar sesión con la nueva contraseña.' })
   } catch (error) {
-    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
-  } finally {
-    databaseClient?.release()
   }
 })
 
@@ -1022,21 +1202,6 @@ app.post('/api/notifications/:notificationId/read', requireSession, async (reque
     )
     if (!result.rows[0]) return response.status(404).json({ message: 'La notificación no está disponible.' })
     return response.json({ id: result.rows[0].id, readAt: result.rows[0].leida_en })
-  } catch (error) {
-    return next(error)
-  }
-})
-
-app.post('/api/notifications/read-all', requireSession, async (request, response, next) => {
-  try {
-    const result = await pool.query(
-      `UPDATE titulacion.notificaciones
-       SET leida_en = now()
-       WHERE usuario_id = $1 AND leida_en IS NULL
-       RETURNING id, leida_en`,
-      [request.session.usuario_id],
-    )
-    return response.json({ updated: result.rowCount, readAt: result.rows[0]?.leida_en ?? new Date().toISOString() })
   } catch (error) {
     return next(error)
   }
@@ -1161,8 +1326,8 @@ app.post('/api/admin/users', requireAdministrator, async (request, response, nex
     const needsStudent = roles.includes('ESTUDIANTE')
     const needsTeacher = roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
 
-    if (firstName.length < 2 || lastName.length < 2 || !isEmail(email) || !isStrongPassword(password) || roles.length === 0) {
-      return response.status(422).json({ message: `Completa nombres, apellidos, correo válido, ${passwordPolicyMessage()} y al menos un rol.` })
+    if (firstName.length < 2 || lastName.length < 2 || !isEmail(email) || typeof password !== 'string' || password.length < 8 || roles.length === 0) {
+      return response.status(422).json({ message: 'Completa nombres, apellidos, correo válido, contraseña de al menos 8 caracteres y al menos un rol.' })
     }
     if ((needsStudent || needsTeacher) && !isUuid(careerId)) {
       return response.status(422).json({ message: 'Selecciona la carrera para el perfil de estudiante o docente.' })
@@ -1202,7 +1367,7 @@ app.post('/api/admin/users', requireAdministrator, async (request, response, nex
       `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, telefono)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
-      [firstName, lastName, email, await bcrypt.hash(password, passwordHashRounds), phone || null],
+      [firstName, lastName, email, await bcrypt.hash(password, 10), phone || null],
     )
     const roleRows = await databaseClient.query(`SELECT id, codigo FROM titulacion.roles WHERE activo AND codigo = ANY($1::text[])`, [roles])
     if (roleRows.rows.length !== roles.length) throw new Error('No fue posible validar todos los roles seleccionados.')
@@ -1256,7 +1421,6 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
     const teacherCode = text(request.body?.teacherCode)
     const specialty = text(request.body?.specialty)
     const active = typeof request.body?.active === 'boolean' ? request.body.active : null
-    const passwordChanged = typeof password === 'string' && password.length > 0
     const needsStudent = roles.includes('ESTUDIANTE')
     const needsTeacher = roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
 
@@ -1264,7 +1428,7 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
       return response.status(422).json({ message: 'Completa los datos básicos, selecciona al menos un rol y define el estado del usuario.' })
     }
     if (typeof password !== 'undefined' && typeof password !== 'string') return response.status(422).json({ message: 'La contraseña no es válida.' })
-    if (typeof password === 'string' && password.length > 0 && !isStrongPassword(password)) return response.status(422).json({ message: passwordPolicyMessage() })
+    if (typeof password === 'string' && password.length > 0 && password.length < 8) return response.status(422).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres.' })
     if ((needsStudent || needsTeacher) && !isUuid(careerId)) return response.status(422).json({ message: 'Selecciona la carrera para el perfil de estudiante o docente.' })
     if (needsStudent && registration.length < 4) return response.status(422).json({ message: 'Registra el número de matrícula del estudiante.' })
     if (needsTeacher && teacherCode.length < 4) return response.status(422).json({ message: 'Registra el código docente.' })
@@ -1342,7 +1506,7 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
            password_hash = CASE WHEN $7::text = '' THEN password_hash ELSE $8 END,
            actualizado_en = now()
        WHERE id = $1`,
-      [userId, firstName, lastName, email, phone || null, active, typeof password === 'string' ? password : '', typeof password === 'string' && password ? await bcrypt.hash(password, passwordHashRounds) : null],
+      [userId, firstName, lastName, email, phone || null, active, typeof password === 'string' ? password : '', typeof password === 'string' && password ? await bcrypt.hash(password, 10) : null],
     )
     const [allRoleRows, targetRoleRows] = await Promise.all([
       databaseClient.query(
@@ -1421,19 +1585,12 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
     }
     if (!active) {
       await databaseClient.query(`UPDATE titulacion.sesiones_usuario SET cerrada_en = COALESCE(cerrada_en, now()) WHERE usuario_id = $1`, [userId])
-    } else if (passwordChanged) {
-      await databaseClient.query(
-        `UPDATE titulacion.sesiones_usuario
-         SET cerrada_en = COALESCE(cerrada_en, now())
-         WHERE usuario_id = $1 AND id <> $2`,
-        [userId, request.session.sesion_id],
-      )
     }
     await recordAudit(databaseClient, request.session, {
-      action: !active ? 'DESACTIVAR_USUARIO' : passwordChanged ? 'CAMBIAR_CONTRASENA' : 'ACTUALIZAR_USUARIO',
+      action: active ? 'ACTUALIZAR_USUARIO' : 'DESACTIVAR_USUARIO',
       entity: 'usuarios',
       entityId: userId,
-      detail: { email, roles, active, passwordChanged },
+      detail: { email, roles, active },
     })
     await databaseClient.query('COMMIT')
     return response.json({ message: active ? 'El usuario fue actualizado correctamente.' : 'El usuario fue desactivado sin eliminar su historial.' })
@@ -1506,7 +1663,7 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
       return response.status(422).json({ message: 'Los objetivos específicos no tienen un formato válido.' })
     }
     const cleanObjectives = Array.isArray(objectives) ? objectives.map(text).filter(Boolean) : []
-    if (!isUuid(studentId) || !isUuid(managementId) || !isUuid(modalityId) || !validProjectContent({ title, description, generalObjective, objectives: cleanObjectives })) {
+    if (!isUuid(studentId) || !isUuid(managementId) || !isUuid(modalityId) || title.length < 10 || description.length < 20 || generalObjective.length < 10 || cleanObjectives.length === 0 || cleanObjectives.some((item) => item.length < 10)) {
       return response.status(422).json({ message: 'Completa estudiante, gestión, modalidad, título, descripción, objetivo general y al menos un objetivo específico válido.' })
     }
     if (!isWordDocument(request.file)) return response.status(422).json({ message: 'Adjunta el perfil inicial en formato Word (.doc o .docx).' })
@@ -1514,7 +1671,7 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
     databaseClient = await pool.connect()
     await databaseClient.query('BEGIN')
     const student = await databaseClient.query(
-      `SELECT e.id, e.carrera_id, u.id AS usuario_id, u.correo
+      `SELECT e.id, e.carrera_id, u.id AS usuario_id
        FROM titulacion.estudiantes e
        JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
        WHERE e.id = $1 AND e.activo
@@ -1590,7 +1747,7 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
        VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         document.rows[0].id,
-        safeFilename(request.file.originalname),
+        path.basename(request.file.originalname),
         relativePath,
         request.file.mimetype || 'application/octet-stream',
         request.file.size,
@@ -1605,26 +1762,14 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
        VALUES ($1, $2, $3, $4, 'Registro inicial creado por Administración.')`,
       [createdProject.id, values.estado_id, values.fase_id, request.session.usuario_id],
     )
-    const registrationNotification = await createNotification(databaseClient, {
-      userId: student.rows[0].usuario_id,
-      recipientEmail: student.rows[0].correo,
-      projectId: createdProject.id,
-      type: 'PROYECTO_REGISTRADO',
-      title: 'Proyecto registrado',
-      message: `Administración registró correctamente tu proyecto ${createdProject.codigo_seguimiento}.`,
-      link: '/student',
-      queueEmail: true,
-      eventKey: `project-registered:${createdProject.id}`,
-    })
     await recordAudit(databaseClient, request.session, {
       projectId: createdProject.id,
-      action: 'CREAR_PROYECTO_ADMINISTRACION_Y_CARGAR_PERFIL',
+      action: 'CREAR_PROYECTO_ADMINISTRACION',
       entity: 'proyectos',
       entityId: createdProject.id,
-      detail: { studentId, title, documentId: document.rows[0].id, filename: safeFilename(request.file.originalname) },
+      detail: { studentId, title },
     })
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(registrationNotification.queuedEmailId ? [registrationNotification.queuedEmailId] : [])
     return response.status(201).json({
       message: `El proyecto fue registrado con el código ${createdProject.codigo_seguimiento}.`,
       project: { id: createdProject.id, code: createdProject.codigo_seguimiento },
@@ -1934,7 +2079,7 @@ app.patch('/api/admin/projects/:projectId', requireAdministrator, async (request
     const title = text(request.body?.title)
     const description = text(request.body?.description)
     const generalObjective = text(request.body?.generalObjective)
-    if (!isUuid(projectId) || !validProjectText({ title, description, generalObjective })) {
+    if (!isUuid(projectId) || title.length < 10 || description.length < 20 || generalObjective.length < 10) {
       return response.status(422).json({ message: 'Completa el título, la descripción y el objetivo general con la información mínima requerida.' })
     }
     await databaseClient.query('BEGIN')
@@ -2015,7 +2160,6 @@ app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, asyn
       detail: { tutorId, reviewer1Id, reviewer2Id, changed: changes.filter((item) => item.changed).length },
     })
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(changes.flatMap((item) => item.queuedEmailIds))
     return response.json({ message: 'Los responsables del proyecto fueron actualizados.', changed: changes.filter((item) => item.changed).length })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
@@ -2117,7 +2261,6 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
        WHERE id = ANY($1::uuid[])`,
       [reviewers.rows.map((item) => item.id), deadline],
     )
-    const queuedEmailIds = []
     for (const reviewer of reviewers.rows) {
       await createNotification(databaseClient, {
         userId: reviewer.usuario_id,
@@ -2126,7 +2269,6 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
         title: 'Perfil pendiente de revisión',
         message: `El perfil ${project.codigo_seguimiento} fue enviado a revisión. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
         link: '/revisor',
-        eventKey: `review-round:${round.rows[0].id}:reviewer:${reviewer.id}`,
       })
     }
     await recordProjectStatus(databaseClient, {
@@ -2138,20 +2280,6 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
       userId: request.session.usuario_id,
       reason: `Ronda ${roundNumber.rows[0].next_number} de revisión del perfil programada por Administración.`,
     })
-    for (const student of await projectStudents(databaseClient, projectId)) {
-      const notice = await createNotification(databaseClient, {
-        userId: student.usuario_id,
-        recipientEmail: student.correo,
-        projectId,
-        type: 'PROYECTO_ENVIADO_REVISION',
-        title: 'Proyecto enviado a revisión',
-        message: `Tu proyecto ${project.codigo_seguimiento} fue enviado a revisión. Te avisaremos cuando los revisores emitan su dictamen.`,
-        link: '/documentos',
-        queueEmail: true,
-        eventKey: `review-round:${round.rows[0].id}:student`,
-      })
-      if (notice.queuedEmailId) queuedEmailIds.push(notice.queuedEmailId)
-    }
     await recordAudit(databaseClient, request.session, {
       projectId,
       action: 'INICIAR_RONDA_REVISION',
@@ -2160,7 +2288,6 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
       detail: { versionId, deadline: deadline.toISOString(), reviewers: reviewers.rows.map((item) => item.id) },
     })
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(queuedEmailIds)
     return response.status(201).json({ message: 'La ronda de revisión fue creada y notificada a los revisores.', roundId: round.rows[0].id })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
@@ -2212,32 +2339,6 @@ app.patch('/api/admin/projects/:projectId/status', requireAdministrator, async (
       userId: request.session.usuario_id,
       reason,
     })
-    const queuedEmailIds = []
-    const stateChanged = project.estado_actual_id !== catalog.rows[0].state_id
-      || project.fase_actual_id !== catalog.rows[0].phase_id
-    if (stateChanged) {
-      const finalised = statusCode === 'FINALIZADO'
-      const approved = statusCode === 'APROBADO'
-      const statusLabel = statusCode.toLowerCase().replaceAll('_', ' ')
-      for (const student of await projectStudents(databaseClient, projectId)) {
-        const notice = await createNotification(databaseClient, {
-          userId: student.usuario_id,
-          recipientEmail: student.correo,
-          projectId,
-          type: finalised ? 'PROYECTO_FINALIZADO' : approved ? 'PROYECTO_APROBADO' : 'CAMBIO_ESTADO_PROYECTO',
-          title: finalised ? 'Proyecto finalizado' : approved ? 'Proyecto aprobado' : 'Estado del proyecto actualizado',
-          message: finalised
-            ? `Tu proyecto ${project.codigo_seguimiento} fue finalizado.`
-            : approved
-              ? `Tu proyecto ${project.codigo_seguimiento} fue aprobado.`
-              : `El estado de tu proyecto ${project.codigo_seguimiento} cambió a ${statusLabel}.`,
-          link: '/student',
-          queueEmail: true,
-          eventKey: `project-status:${statusCode}:${phaseCode}`,
-        })
-        if (notice.queuedEmailId) queuedEmailIds.push(notice.queuedEmailId)
-      }
-    }
     await recordAudit(databaseClient, request.session, {
       projectId,
       action: 'CAMBIAR_ESTADO_PROYECTO',
@@ -2246,7 +2347,6 @@ app.patch('/api/admin/projects/:projectId/status', requireAdministrator, async (
       detail: { previousStatus: project.estado_codigo, statusCode, phaseCode, reason },
     })
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(queuedEmailIds)
     return response.json({ message: 'La fase y el estado del proyecto fueron actualizados.' })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
@@ -2472,13 +2572,10 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
     await databaseClient.query('BEGIN')
     const invitation = await databaseClient.query(
       `SELECT a.id, a.proyecto_id, p.codigo_seguimiento, p.titulo_tentativo,
-              trim(concat(tutor_user.nombres, ' ', tutor_user.apellidos)) AS tutor_nombre,
               student.usuario_id AS estudiante_usuario_id, student.correo AS estudiante_correo,
               student.nombre AS estudiante_nombre
        FROM titulacion.asignaciones_proyecto a
        JOIN titulacion.proyectos p ON p.id = a.proyecto_id
-       JOIN titulacion.docentes tutor_docente ON tutor_docente.id = a.docente_id
-       JOIN titulacion.usuarios tutor_user ON tutor_user.id = tutor_docente.usuario_id
        JOIN LATERAL (
          SELECT u.id AS usuario_id, u.correo, trim(concat(u.nombres, ' ', u.apellidos)) AS nombre
          FROM titulacion.proyecto_estudiantes pe
@@ -2523,29 +2620,18 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
          AND leida_en IS NULL`,
       [request.session.usuario_id, selected.proyecto_id],
     )
-    const notification = await createNotification(databaseClient, {
+    await createNotification(databaseClient, {
       userId: selected.estudiante_usuario_id,
       recipientEmail: selected.estudiante_correo,
       projectId: selected.proyecto_id,
-      type: accepted ? 'TUTOR_ACEPTADO' : 'TUTOR_RECHAZADO',
+      type: accepted ? 'TUTORIA_ACEPTADA' : 'TUTORIA_DECLINADA',
       title: accepted ? 'Tutoría aceptada' : 'Tutoría declinada',
       message: accepted
-        ? `Tu solicitud de tutor fue aceptada. El docente ${selected.tutor_nombre} ha sido asignado oficialmente al proyecto “${selected.titulo_tentativo}”.`
-        : `El docente ${selected.tutor_nombre} rechazó la tutoría de tu proyecto ${selected.codigo_seguimiento}. Motivo: ${reason}`,
+        ? `El tutor aceptó acompañar tu proyecto ${selected.codigo_seguimiento}.`
+        : `El tutor declinó la tutoría de tu proyecto ${selected.codigo_seguimiento}. Motivo: ${reason}`,
       link: '/student',
-      queueEmail: true,
-      eventKey: `tutor-response:${selected.id}:${decision.toLowerCase()}`,
-    })
-    const queuedEmailIds = notification.queuedEmailId ? [notification.queuedEmailId] : []
-    await recordAudit(databaseClient, request.session, {
-      projectId: selected.proyecto_id,
-      action: accepted ? 'ACEPTAR_TUTORIA' : 'DECLINAR_TUTORIA',
-      entity: 'asignaciones_proyecto',
-      entityId: selected.id,
-      detail: { decision, reason: accepted ? null : reason },
     })
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(queuedEmailIds)
     return response.json({
       message: accepted ? 'Aceptaste la tutoría. El proyecto ya está disponible en Mis proyectos.' : 'Declinaste la tutoría. Administración podrá reasignar el proyecto.',
       decision,
@@ -2806,7 +2892,6 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
       [review.round_id],
     )
     const roundCompleted = roundReviews.rows.length > 0 && roundReviews.rows.every((item) => item.decision !== 'PENDIENTE')
-    const queuedEmailIds = []
     let roundResult = null
     if (roundCompleted) {
       const hasObservations = roundReviews.rows.some((item) => item.decision === 'OBSERVADO' || item.decision === 'RECHAZADO')
@@ -2841,20 +2926,18 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
         [review.project_id],
       )
       for (const student of students.rows) {
-        const notification = await createNotification(databaseClient, {
+        await createNotification(databaseClient, {
           userId: student.usuario_id,
           recipientEmail: student.correo,
           projectId: review.project_id,
-          type: hasObservations ? 'DOCUMENTO_DEVUELTO_CORRECCION' : 'DOCUMENTO_APROBADO',
-          title: hasObservations ? 'Proyecto observado: documento devuelto' : 'Documento aprobado en revisión',
+          type: hasObservations ? 'REVISION_DEVUELTA' : 'PERFIL_APROBADO_REVISION',
+          title: hasObservations ? 'Perfil devuelto con observaciones' : 'Perfil aprobado en revisión',
           message: hasObservations
-            ? `El perfil ${review.codigo_seguimiento} fue observado y su documento fue devuelto para corrección. Revísalo y adjunta una nueva versión.`
+            ? `El perfil ${review.codigo_seguimiento} recibió observaciones. Revísalas y adjunta una nueva versión del documento.`
             : `El perfil ${review.codigo_seguimiento} fue aprobado por ambos revisores y pasa a aprobación institucional.`,
           link: hasObservations ? '/documentos' : '/student',
-          queueEmail: true,
-          eventKey: `review-round-result:${review.round_id}:student`,
+          queueEmail: hasObservations,
         })
-        if (notification.queuedEmailId) queuedEmailIds.push(notification.queuedEmailId)
       }
       roundResult = hasObservations ? 'observed' : 'approved'
     }
@@ -2866,7 +2949,6 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
       detail: { decision, observationCount: observations.length, roundCompleted, roundResult },
     })
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(queuedEmailIds)
     return response.json({
       message: roundCompleted
         ? roundResult === 'observed'
@@ -3267,7 +3349,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
       [
         selected.id,
         number.rows[0].siguiente,
-        safeFilename(request.file.originalname),
+        path.basename(request.file.originalname),
         relativePath,
         request.file.mimetype || 'application/octet-stream',
         request.file.size,
@@ -3276,13 +3358,6 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
         text(request.body?.comment) || null,
       ],
     )
-    await recordAudit(databaseClient, request.session, {
-      projectId: selected.proyecto_id,
-      action: 'CARGAR_VERSION_DOCUMENTO',
-      entity: 'versiones_documento',
-      entityId: inserted.rows[0].version_id,
-      detail: { documentId: selected.id, version: inserted.rows[0].numero_version, filename: safeFilename(request.file.originalname) },
-    })
     await databaseClient.query('COMMIT')
     return response.status(201).json({
       message: `Se registró la versión ${inserted.rows[0].numero_version} del perfil.`,
@@ -3320,7 +3395,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       ? objectives.map(text).filter(Boolean)
       : []
 
-    if (!managementId || !modalityId || !tutorId || !validProjectContent({ title, description, generalObjective, objectives: cleanObjectives })) {
+    if (title.length < 10 || description.length < 20 || generalObjective.length < 10 || !managementId || !modalityId || !tutorId || cleanObjectives.length === 0 || cleanObjectives.some((item) => item.length < 10)) {
       return response.status(422).json({ message: 'Revisa los campos: título (10), descripción (20) y cada objetivo (10) requieren la longitud mínima indicada.' })
     }
 
@@ -3419,12 +3494,10 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       )
     }
 
-    const queuedEmailIds = []
-    const tutorAssignment = await databaseClient.query(
+    await databaseClient.query(
       `INSERT INTO titulacion.asignaciones_proyecto
         (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
-       VALUES ($1, $2, 'TUTOR', $3, false, $4)
-       RETURNING id`,
+       VALUES ($1, $2, 'TUTOR', $3, false, $4)`,
       [
         createdProject.id,
         tutor.rows[0].id,
@@ -3433,7 +3506,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       ],
     )
 
-    const tutorInvitation = await createNotification(databaseClient, {
+    await createNotification(databaseClient, {
       userId: tutor.rows[0].usuario_id,
       recipientEmail: tutor.rows[0].correo,
       projectId: createdProject.id,
@@ -3442,9 +3515,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       message: `Tienes una invitación para acompañar el proyecto ${createdProject.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
       link: '/tutor/invitaciones',
       queueEmail: true,
-      eventKey: `tutor-request:${tutorAssignment.rows[0].id}`,
     })
-    if (tutorInvitation.queuedEmailId) queuedEmailIds.push(tutorInvitation.queuedEmailId)
 
     const extension = path.extname(request.file.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
@@ -3466,7 +3537,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
        VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         document.rows[0].id,
-        safeFilename(request.file.originalname),
+        path.basename(request.file.originalname),
         relativePath,
         request.file.mimetype || 'application/octet-stream',
         request.file.size,
@@ -3476,49 +3547,14 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       ],
     )
 
-    for (const projectStudent of await projectStudents(databaseClient, createdProject.id)) {
-      const registered = await createNotification(databaseClient, {
-        userId: projectStudent.usuario_id,
-        recipientEmail: projectStudent.correo,
-        projectId: createdProject.id,
-        type: 'PROYECTO_REGISTRADO',
-        title: 'Proyecto registrado',
-        message: `Tu proyecto ${createdProject.codigo_seguimiento} fue registrado correctamente.`,
-        link: '/student',
-        queueEmail: true,
-        eventKey: `project-registered:${createdProject.id}`,
-      })
-      if (registered.queuedEmailId) queuedEmailIds.push(registered.queuedEmailId)
-      const tutorRequest = await createNotification(databaseClient, {
-        userId: projectStudent.usuario_id,
-        recipientEmail: projectStudent.correo,
-        projectId: createdProject.id,
-        type: 'SOLICITUD_TUTORIA_ENVIADA',
-        title: 'Solicitud de tutor enviada',
-        message: `Se envió una solicitud de tutor para tu proyecto ${createdProject.codigo_seguimiento}.`,
-        link: '/student',
-        queueEmail: true,
-        eventKey: `student-tutor-request:${tutorAssignment.rows[0].id}`,
-      })
-      if (tutorRequest.queuedEmailId) queuedEmailIds.push(tutorRequest.queuedEmailId)
-    }
-
     await databaseClient.query(
       `INSERT INTO titulacion.historial_estados
         (proyecto_id, estado_nuevo_id, fase_nueva_id, cambiado_por_usuario_id, motivo)
        VALUES ($1, $2, $3, $4, 'Registro inicial del Formulario 1 por el estudiante.')`,
       [createdProject.id, values.estado_id, values.fase_id, request.session.usuario_id],
     )
-    await recordAudit(databaseClient, request.session, {
-      projectId: createdProject.id,
-      action: 'REGISTRAR_PROYECTO_Y_CARGAR_PERFIL',
-      entity: 'proyectos',
-      entityId: createdProject.id,
-      detail: { documentId: document.rows[0].id, filename: safeFilename(request.file.originalname) },
-    })
 
     await databaseClient.query('COMMIT')
-    deliverQueuedEmails(queuedEmailIds)
     return response.status(201).json({
       message: `Proyecto registrado correctamente con el código ${createdProject.codigo_seguimiento}.`,
       project: { id: createdProject.id, code: createdProject.codigo_seguimiento },
@@ -3536,20 +3572,38 @@ app.use((error, _request, response, _next) => {
   if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
     return response.status(422).json({ message: 'El archivo Word no puede superar los 10 MB.' })
   }
-  if (error?.code === 'INVALID_DOCUMENT_TYPE') {
-    return response.status(422).json({ message: 'Solo se permiten documentos Word (.doc o .docx) válidos.' })
-  }
   if (error instanceof multer.MulterError) {
     return response.status(422).json({ message: 'No fue posible procesar el archivo adjunto.' })
   }
 
-  console.error('Error interno de API:', error?.name ?? 'Error', error?.code ?? '')
+  console.error(error)
   if (error?.code === '23505') {
     return response.status(409).json({ message: 'El registro ya existe o fue enviado anteriormente.' })
   }
   return response.status(500).json({ message: 'Ocurrió un error al comunicarse con el sistema. Intenta nuevamente.' })
 })
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+async function startServer() {
+  await ensurePasswordResetSchema()
+  await ensureEmailConfirmationSchema()
+  app.listen(port, '127.0.0.1', () => {
+    console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+  })
+  if (mailTransport) {
+    try {
+      await mailTransport.verify()
+      console.log(`[email] SMTP listo: ${smtpHost}:${smtpPort}`)
+      void processEmailQueue()
+      setInterval(() => void processEmailQueue(), 30_000)
+    } catch (error) {
+      console.error('[email] No fue posible conectar con SMTP. Los correos permanecerán en la cola PENDIENTE:', error instanceof Error ? error.message : error)
+    }
+  } else {
+    console.warn('[email] SMTP no configurado. Los correos permanecerán en la cola PENDIENTE.')
+  }
+}
+
+startServer().catch((error) => {
+  console.error('No fue posible iniciar la API:', error)
+  process.exit(1)
 })

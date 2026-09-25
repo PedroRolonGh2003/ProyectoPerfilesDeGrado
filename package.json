@@ -8,6 +8,7 @@
     "dev:api": "node --watch server/index.js",
     "dev:web": "vite",
     "build": "tsc -b && vite build",
+    "test": "node --test server/*.test.js",
     "qa": "node server/qa.mjs",
     "qa:flow": "node server/qa-fullflow.mjs",
     "qa:admin": "node server/qa-admin-dashboard.mjs",
@@ -29,6 +30,7 @@
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
     "multer": "^2.0.1",
+    "nodemailer": "^10.0.10",
     "pg": "^8.16.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

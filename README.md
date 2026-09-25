@@ -26,6 +26,8 @@ El comando inicia la aplicación web en `http://localhost:5173` y la API en `htt
 
 La conexión se toma de `.env`, que está ignorado por Git. Usa `.env.example` como referencia para otra instalación. No subas contraseñas ni archivos adjuntos: los perfiles se guardan localmente en `uploads/`, también ignorado por Git.
 
+Para enviar los correos de confirmación de cuenta y recuperación de contraseña, configura en `.env` `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM`. La API procesa automáticamente la cola de correos cada 30 segundos. Si SMTP no está configurado, los mensajes se conservan como pendientes y no se envían.
+
 ## Base de datos en Neon
 
 La aplicacion admite una conexion administrada mediante `DATABASE_URL`. Cuando esta variable esta definida, tiene prioridad sobre las variables locales `DB_*`; la cadena debe incluir `sslmode=require`.
