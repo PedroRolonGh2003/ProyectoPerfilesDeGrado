@@ -2,12 +2,14 @@ import 'dotenv/config'
 
 import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
-import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { Readable } from 'node:stream'
+import { access as localFileAccess, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import express from 'express'
 import multer from 'multer'
 import nodemailer from 'nodemailer'
 import pg from 'pg'
+import { del as deleteBlob, get as getBlob, put as putBlob } from '@vercel/blob'
 import { isInstitutionalEmail, normalizeEmail } from './email-utils.js'
 
 const { Pool } = pg
@@ -16,7 +18,9 @@ const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
 const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
 const passwordResetMinutes = Number(process.env.PASSWORD_RESET_MINUTES ?? 20)
 const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
-const appBaseUrl = (process.env.APP_BASE_URL ?? 'http://127.0.0.1:5173').replace(/\/$/, '')
+const appBaseUrl = (process.env.APP_BASE_URL
+  ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
+  ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://127.0.0.1:5173')).replace(/\/$/, '')
 const smtpHost = process.env.SMTP_HOST?.trim()
 const smtpPort = Number(process.env.SMTP_PORT ?? 587)
 const smtpUser = process.env.SMTP_USER?.trim()
@@ -25,6 +29,8 @@ const smtpFrom = process.env.SMTP_FROM?.trim() || smtpUser
 const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 const databaseUrl = process.env.DATABASE_URL?.trim()
+const onVercel = Boolean(process.env.VERCEL)
+const maxUploadBytes = onVercel ? 4 * 1024 * 1024 : 10 * 1024 * 1024
 
 const mailTransport = smtpHost && smtpUser && smtpPassword && smtpFrom
   ? nodemailer.createTransport({
@@ -47,13 +53,65 @@ const pool = new Pool(databaseUrl
     })
 
 const app = express()
+const initialization = { promise: null }
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: maxUploadBytes },
 })
 
 app.disable('x-powered-by')
 app.use(express.json({ limit: '1mb' }))
+app.use((request, response, next) => {
+  if (!onVercel) return next()
+
+  response.download = (filePath, filename, optionsOrCallback, maybeCallback) => {
+    const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback
+    const relativePath = path.relative(process.cwd(), path.resolve(filePath)).split(path.sep).join('/')
+    void getBlob(relativePath, { access: 'private' }).then((stored) => {
+      if (!stored || stored.statusCode !== 200 || !stored.stream) {
+        const error = new Error('El archivo no se encuentra en el almacenamiento privado.')
+        error.code = 'ENOENT'
+        if (callback) callback(error)
+        else if (!response.headersSent) response.status(404).end()
+        return
+      }
+      response.setHeader('Content-Type', stored.blob.contentType || 'application/octet-stream')
+      response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`)
+      response.setHeader('X-Content-Type-Options', 'nosniff')
+      response.setHeader('Cache-Control', 'private, no-store')
+      const stream = Readable.fromWeb(stored.stream)
+      stream.on('error', (error) => {
+        if (callback) callback(error)
+        else if (!response.headersSent) response.status(500).end()
+      })
+      stream.pipe(response)
+      stream.on('end', () => callback?.())
+    }).catch((error) => {
+      if (callback) callback(error)
+      else if (!response.headersSent) response.status(500).end()
+    })
+    return response
+  }
+  return next()
+})
+
+async function access(filePath) {
+  if (!onVercel) return localFileAccess(filePath)
+  const relativePath = path.relative(process.cwd(), path.resolve(filePath)).split(path.sep).join('/')
+  const stored = await getBlob(relativePath, { access: 'private' })
+  if (stored?.statusCode === 200) return
+  const error = new Error('El archivo no se encuentra en el almacenamiento privado.')
+  error.code = 'ENOENT'
+  throw error
+}
+
+export function initializeServerless() {
+  initialization.promise ??= Promise.all([
+    ensurePasswordResetSchema(),
+    ensureEmailConfirmationSchema(),
+  ])
+  return initialization.promise
+}
 
 function cookieValue(request, name) {
   const cookie = request.headers.cookie
@@ -310,6 +368,34 @@ function storedFilePath(relativePath, projectId) {
   const uploadsRoot = path.resolve(process.cwd(), 'uploads')
   const absolutePath = path.resolve(process.cwd(), ...relativePath.split('/'))
   return absolutePath.startsWith(`${uploadsRoot}${path.sep}`) ? absolutePath : null
+}
+
+async function persistUploadedFile(relativePath, projectId, file) {
+  const safePath = storedFilePath(relativePath, projectId)
+  if (!safePath) throw new Error('La ruta del archivo no es v\u00e1lida.')
+
+  if (onVercel) {
+    const stored = await putBlob(relativePath, file.buffer, {
+      access: 'private',
+      addRandomSuffix: false,
+      contentType: file.mimetype || 'application/octet-stream',
+    })
+    return stored.pathname
+  }
+
+  await mkdir(path.dirname(safePath), { recursive: true })
+  await writeFile(safePath, file.buffer, { flag: 'wx' })
+  return relativePath
+}
+
+async function removeStoredFile(relativePath, projectId) {
+  if (!relativePath) return
+  if (onVercel) {
+    await deleteBlob(relativePath, { access: 'private' })
+    return
+  }
+  const safePath = storedFilePath(relativePath, projectId)
+  if (safePath) await rm(safePath, { force: true })
 }
 
 function versionPayload(row) {
@@ -1647,6 +1733,7 @@ app.get('/api/admin/project-catalog', requireAdministrator, async (_request, res
 
 app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), async (request, response, next) => {
   let savedFilePath = null
+  let savedFileProjectId = null
   let databaseClient = null
   try {
     const studentId = text(request.body?.studentId)
@@ -1732,9 +1819,8 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
     const extension = path.extname(request.file.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
     const relativePath = path.posix.join('uploads', 'proyectos', createdProject.id, filename)
-    savedFilePath = path.join(process.cwd(), ...relativePath.split('/'))
-    await mkdir(path.dirname(savedFilePath), { recursive: true })
-    await writeFile(savedFilePath, request.file.buffer, { flag: 'wx' })
+    savedFileProjectId = createdProject.id
+    savedFilePath = await persistUploadedFile(relativePath, savedFileProjectId, request.file)
     const document = await databaseClient.query(
       `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
        VALUES ($1, $2, $3, 'PERFIL_PROYECTO', $4)
@@ -1776,7 +1862,7 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
     })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
-    if (savedFilePath) await rm(savedFilePath, { force: true }).catch(() => undefined)
+    if (savedFilePath) await removeStoredFile(savedFilePath, savedFileProjectId).catch(() => undefined)
     return next(error)
   } finally {
     databaseClient?.release()
@@ -3291,6 +3377,7 @@ app.get('/api/documents/:documentId/download', requireStudent, async (request, r
 
 app.post('/api/documents/:documentId/versions', requireStudent, upload.single('document'), async (request, response, next) => {
   let savedFilePath = null
+  let savedFileProjectId = null
   let databaseClient = null
 
   try {
@@ -3337,9 +3424,8 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     const extension = path.extname(request.file.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
     const relativePath = path.posix.join('uploads', 'proyectos', selected.proyecto_id, selected.id, filename)
-    savedFilePath = storedFilePath(relativePath, selected.proyecto_id)
-    await mkdir(path.dirname(savedFilePath), { recursive: true })
-    await writeFile(savedFilePath, request.file.buffer, { flag: 'wx' })
+    savedFileProjectId = selected.proyecto_id
+    savedFilePath = await persistUploadedFile(relativePath, savedFileProjectId, request.file)
 
     const inserted = await databaseClient.query(
       `INSERT INTO titulacion.versiones_documento
@@ -3365,7 +3451,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
-    if (savedFilePath) await rm(savedFilePath, { force: true }).catch(() => undefined)
+    if (savedFilePath) await removeStoredFile(savedFilePath, savedFileProjectId).catch(() => undefined)
     return next(error)
   } finally {
     databaseClient?.release()
@@ -3374,6 +3460,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
 
 app.post('/api/projects', requireStudent, upload.single('profile'), async (request, response, next) => {
   let savedFilePath = null
+  let savedFileProjectId = null
   let databaseClient = null
 
   try {
@@ -3520,9 +3607,8 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
     const extension = path.extname(request.file.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
     const relativePath = path.posix.join('uploads', 'proyectos', createdProject.id, filename)
-    savedFilePath = path.join(process.cwd(), ...relativePath.split('/'))
-    await mkdir(path.dirname(savedFilePath), { recursive: true })
-    await writeFile(savedFilePath, request.file.buffer, { flag: 'wx' })
+    savedFileProjectId = createdProject.id
+    savedFilePath = await persistUploadedFile(relativePath, savedFileProjectId, request.file)
 
     const document = await databaseClient.query(
       `INSERT INTO titulacion.documentos
@@ -3561,7 +3647,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
     })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
-    if (savedFilePath) await rm(savedFilePath, { force: true }).catch(() => undefined)
+    if (savedFilePath) await removeStoredFile(savedFilePath, savedFileProjectId).catch(() => undefined)
     return next(error)
   } finally {
     databaseClient?.release()
@@ -3570,7 +3656,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
 
 app.use((error, _request, response, _next) => {
   if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
-    return response.status(422).json({ message: 'El archivo Word no puede superar los 10 MB.' })
+    return response.status(422).json({ message: `El archivo Word no puede superar ${onVercel ? '4' : '10'} MB.` })
   }
   if (error instanceof multer.MulterError) {
     return response.status(422).json({ message: 'No fue posible procesar el archivo adjunto.' })
@@ -3603,7 +3689,11 @@ async function startServer() {
   }
 }
 
-startServer().catch((error) => {
-  console.error('No fue posible iniciar la API:', error)
-  process.exit(1)
-})
+if (!onVercel) {
+  startServer().catch((error) => {
+    console.error('No fue posible iniciar la API:', error)
+    process.exit(1)
+  })
+}
+
+export default app
