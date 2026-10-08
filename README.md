@@ -26,6 +26,15 @@ El comando inicia la aplicación web en `http://localhost:5173` y la API en `htt
 
 La conexión se toma de `.env`, que está ignorado por Git. Usa `.env.example` como referencia para otra instalación. No subas contraseñas ni archivos adjuntos: los perfiles se guardan localmente en `uploads/`, también ignorado por Git.
 
+## Registro y confirmación de cuentas
+
+La pantalla inicial permite crear cuentas institucionales. El dominio determina el tipo de cuenta:
+
+- `@est.univalle.edu`: crea un perfil de estudiante; tras confirmar el correo puede iniciar sesión.
+- `@univalle.edu`: crea una cuenta docente sin roles; tras confirmar el correo, Administración debe asignarle Tutor y/o Revisor desde el directorio de usuarios.
+
+Las cuentas nuevas permanecen inactivas hasta que se consume un enlace de un solo uso enviado por correo. Configura `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM`; en producción también define `APP_BASE_URL` si no deseas usar la URL de Vercel detectada automáticamente.
+
 ## Base de datos en Neon
 
 La aplicacion admite una conexion administrada mediante `DATABASE_URL`. Cuando esta variable esta definida, tiene prioridad sobre las variables locales `DB_*`; la cadena debe incluir `sslmode=require`.

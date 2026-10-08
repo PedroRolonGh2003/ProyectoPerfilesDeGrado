@@ -6,14 +6,35 @@ import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import express from 'express'
 import multer from 'multer'
+import nodemailer from 'nodemailer'
 import pg from 'pg'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
 const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
+const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
+const appBaseUrl = (process.env.APP_BASE_URL
+  ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
+  ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://127.0.0.1:5173')).replace(/\/$/, '')
+const smtpHost = process.env.SMTP_HOST?.trim()
+const smtpPort = Number(process.env.SMTP_PORT ?? 587)
+const smtpUser = process.env.SMTP_USER?.trim()
+const smtpPassword = process.env.SMTP_PASSWORD
+const smtpFrom = process.env.SMTP_FROM?.trim() || smtpUser
+const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 const databaseUrl = process.env.DATABASE_URL?.trim()
+const initialization = { promise: null }
+
+const mailTransport = smtpHost && smtpUser && smtpPassword && smtpFrom
+  ? nodemailer.createTransport({
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpSecure,
+      auth: { user: smtpUser, pass: smtpPassword },
+    })
+  : null
 
 const pool = new Pool(databaseUrl
   ? { connectionString: databaseUrl, options: '-c search_path=titulacion,public' }
@@ -225,6 +246,77 @@ function normalizedRoles(value) {
 
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+function accountKind(email) {
+  if (/^[^\s@]+@est\.univalle\.edu$/i.test(email)) return 'ESTUDIANTE'
+  if (/^[^\s@]+@univalle\.edu$/i.test(email)) return 'DOCENTE'
+  return null
+}
+
+export function initializeServerless() {
+  initialization.promise ??= ensureRegistrationSchema()
+  return initialization.promise
+}
+
+async function ensureRegistrationSchema() {
+  await pool.query(`
+    ALTER TABLE titulacion.usuarios
+      ADD COLUMN IF NOT EXISTS email_confirmado_en timestamptz;
+  `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.email_confirmation_tokens (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id) ON DELETE CASCADE,
+      token_hash varchar(128) NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      usado_en timestamptz,
+      creado_en timestamptz NOT NULL DEFAULT now()
+    );
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_usuario
+      ON titulacion.email_confirmation_tokens (usuario_id, creado_en DESC);
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_expiracion
+      ON titulacion.email_confirmation_tokens (expires_at);
+  `)
+}
+
+async function issueEmailConfirmation(databaseClient, userId) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + confirmationHours * 60 * 60 * 1000)
+
+  await databaseClient.query(
+    `UPDATE titulacion.email_confirmation_tokens
+     SET usado_en = now()
+     WHERE usuario_id = $1 AND usado_en IS NULL AND expires_at > now()`,
+    [userId],
+  )
+  await databaseClient.query(
+    `INSERT INTO titulacion.email_confirmation_tokens (usuario_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, hashToken(token), expiresAt],
+  )
+  return `${appBaseUrl}/?confirmToken=${encodeURIComponent(token)}`
+}
+
+async function sendEmailConfirmation({ email, name, confirmationUrl, kind }) {
+  if (!mailTransport) {
+    throw new Error('El envío de correo no está configurado. Configura SMTP antes de habilitar el registro público.')
+  }
+
+  const pendingRoleNote = kind === 'DOCENTE'
+    ? 'Cuando confirmes tu correo, Administración deberá asignarte los roles correspondientes antes de que puedas ingresar.'
+    : 'Cuando confirmes tu correo, podrás ingresar al Portal del Estudiante.'
+  await mailTransport.sendMail({
+    from: smtpFrom,
+    to: email,
+    subject: 'Confirma tu cuenta de Seguimiento de Titulación',
+    text: `Hola ${name}. Confirma tu correo institucional abriendo este enlace:\n\n${confirmationUrl}\n\n${pendingRoleNote}\n\nEl enlace vence en ${confirmationHours} horas.`,
+    html: `<p>Hola ${name}.</p><p>Confirma tu correo institucional para activar tu cuenta.</p><p><a href="${confirmationUrl}">Confirmar mi correo</a></p><p>${pendingRoleNote}</p><p>El enlace vence en ${confirmationHours} horas.</p>`,
+  })
 }
 
 function administratorUserPayload(row) {
@@ -451,6 +543,224 @@ app.get('/api/health', async (_request, response, next) => {
   }
 })
 
+app.get('/api/auth/register-options', async (_request, response, next) => {
+  try {
+    const careers = await pool.query(
+      `SELECT id, codigo, nombre
+       FROM titulacion.carreras
+       WHERE activa
+       ORDER BY nombre`,
+    )
+    return response.json({ careers: careers.rows.map((career) => ({ id: career.id, code: career.codigo, name: career.nombre })) })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.post('/api/auth/register', async (request, response, next) => {
+  let databaseClient = null
+  try {
+    await initializeServerless()
+    const firstName = text(request.body?.firstName)
+    const lastName = text(request.body?.lastName)
+    const email = text(request.body?.email).toLowerCase()
+    const password = request.body?.password
+    const confirmPassword = request.body?.confirmPassword
+    const careerId = text(request.body?.careerId)
+    const registration = text(request.body?.registration)
+    const kind = accountKind(email)
+
+    if (firstName.length < 2 || lastName.length < 2) {
+      return response.status(422).json({ message: 'Ingresa nombres y apellidos de al menos 2 caracteres.' })
+    }
+    if (!kind) {
+      return response.status(422).json({ message: 'Usa @est.univalle.edu para estudiantes o @univalle.edu para docentes.' })
+    }
+    if (typeof password !== 'string' || password.length < 8) {
+      return response.status(422).json({ message: 'La contraseña debe tener al menos 8 caracteres.' })
+    }
+    if (password !== confirmPassword) {
+      return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
+    }
+    if (kind === 'ESTUDIANTE' && (!isUuid(careerId) || registration.length < 4)) {
+      return response.status(422).json({ message: 'Selecciona tu carrera e ingresa tu registro universitario.' })
+    }
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const existing = await databaseClient.query(
+      `SELECT id, nombres, correo, activo
+       FROM titulacion.usuarios
+       WHERE lower(correo) = $1
+       FOR UPDATE`,
+      [email],
+    )
+    if (existing.rows[0]) {
+      if (!existing.rows[0].activo) {
+        const confirmationUrl = await issueEmailConfirmation(databaseClient, existing.rows[0].id)
+        await databaseClient.query('COMMIT')
+        try {
+          await sendEmailConfirmation({ email, name: existing.rows[0].nombres, confirmationUrl, kind })
+          return response.status(202).json({ message: 'Esta cuenta aún no fue confirmada. Enviamos un nuevo enlace a tu correo institucional.' })
+        } catch (error) {
+          console.error('[registration] No fue posible reenviar la confirmación:', error instanceof Error ? error.message : error)
+          return response.status(503).json({ message: 'La cuenta está pendiente de confirmación, pero no pudimos enviar el correo. Intenta nuevamente más tarde.' })
+        }
+      }
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Ya existe una cuenta registrada con ese correo institucional.' })
+    }
+
+    let studentRoleId = null
+    if (kind === 'ESTUDIANTE') {
+      const [career, studentRole, duplicateRegistration] = await Promise.all([
+        databaseClient.query(`SELECT id FROM titulacion.carreras WHERE id = $1 AND activa`, [careerId]),
+        databaseClient.query(`SELECT id FROM titulacion.roles WHERE codigo = 'ESTUDIANTE' AND activo`),
+        databaseClient.query(`SELECT id FROM titulacion.estudiantes WHERE lower(registro_universitario) = lower($1)`, [registration]),
+      ])
+      if (!career.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(422).json({ message: 'La carrera seleccionada no está disponible.' })
+      }
+      if (!studentRole.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(500).json({ message: 'El rol de estudiante no está disponible.' })
+      }
+      if (duplicateRegistration.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'Ya existe una cuenta con ese registro universitario.' })
+      }
+      studentRoleId = studentRole.rows[0].id
+    }
+
+    const user = await databaseClient.query(
+      `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo)
+       VALUES ($1, $2, $3, $4, false)
+       RETURNING id`,
+      [firstName, lastName, email, await bcrypt.hash(password, 12)],
+    )
+    const userId = user.rows[0].id
+
+    if (kind === 'ESTUDIANTE') {
+      await databaseClient.query(
+        `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo, asignado_por_usuario_id)
+         VALUES ($1, $2, true, $1)`,
+        [userId, studentRoleId],
+      )
+      await databaseClient.query(
+        `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
+         VALUES ($1, $2, $3, true)`,
+        [userId, careerId, registration],
+      )
+    }
+
+    const confirmationUrl = await issueEmailConfirmation(databaseClient, userId)
+    await databaseClient.query('COMMIT')
+
+    try {
+      await sendEmailConfirmation({ email, name: firstName, confirmationUrl, kind })
+    } catch (error) {
+      console.error('[registration] No fue posible enviar la confirmación:', error instanceof Error ? error.message : error)
+      return response.status(503).json({ message: 'La cuenta fue creada, pero no pudimos enviar el correo de confirmación. Intenta reenviarlo más tarde.' })
+    }
+
+    const message = kind === 'ESTUDIANTE'
+      ? 'Revisa tu correo institucional para confirmar tu cuenta. Luego podrás iniciar sesión como estudiante.'
+      : 'Revisa tu correo institucional para confirmar tu cuenta. Después, Administración deberá asignarte los roles correspondientes.'
+    return response.status(201).json({ message })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
+  }
+})
+
+app.post('/api/auth/resend-confirmation', async (request, response, next) => {
+  let databaseClient = null
+  const genericMessage = 'Si existe una cuenta pendiente para ese correo, recibirás un nuevo enlace de confirmación.'
+  try {
+    await initializeServerless()
+    const email = text(request.body?.email).toLowerCase()
+    if (!accountKind(email)) return response.json({ message: genericMessage })
+
+    const account = await pool.query(
+      `SELECT id, nombres, correo
+       FROM titulacion.usuarios
+       WHERE lower(correo) = $1 AND activo = false
+       LIMIT 1`,
+      [email],
+    )
+    if (!account.rows[0]) return response.json({ message: genericMessage })
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const confirmationUrl = await issueEmailConfirmation(databaseClient, account.rows[0].id)
+    await databaseClient.query('COMMIT')
+    await sendEmailConfirmation({
+      email: account.rows[0].correo,
+      name: account.rows[0].nombres,
+      confirmationUrl,
+      kind: accountKind(account.rows[0].correo),
+    })
+    return response.json({ message: genericMessage })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
+  }
+})
+
+app.post('/api/auth/confirm-email', async (request, response, next) => {
+  let databaseClient = null
+  try {
+    await initializeServerless()
+    const token = text(request.body?.token)
+    if (!token) return response.status(400).json({ message: 'El enlace de confirmación no es válido.' })
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const confirmation = await databaseClient.query(
+      `SELECT ect.id, ect.usuario_id, u.correo
+       FROM titulacion.email_confirmation_tokens ect
+       JOIN titulacion.usuarios u ON u.id = ect.usuario_id AND u.activo = false
+       WHERE ect.token_hash = $1 AND ect.usado_en IS NULL AND ect.expires_at > now()
+       FOR UPDATE OF ect, u`,
+      [hashToken(token)],
+    )
+    if (!confirmation.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(410).json({ message: 'El enlace de confirmación venció, ya fue utilizado o no es válido.' })
+    }
+
+    await databaseClient.query(
+      `UPDATE titulacion.usuarios
+       SET activo = true, email_confirmado_en = now(), actualizado_en = now()
+       WHERE id = $1`,
+      [confirmation.rows[0].usuario_id],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.email_confirmation_tokens
+       SET usado_en = now()
+       WHERE id = $1`,
+      [confirmation.rows[0].id],
+    )
+    await databaseClient.query('COMMIT')
+
+    const kind = accountKind(confirmation.rows[0].correo)
+    const message = kind === 'DOCENTE'
+      ? 'Correo confirmado. Administración debe asignarte uno o más roles antes de que puedas iniciar sesión.'
+      : 'Correo confirmado. Ya puedes iniciar sesión como estudiante.'
+    return response.json({ message })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
+  }
+})
+
 app.post('/api/auth/login', async (request, response, next) => {
   try {
     const identifier = text(request.body?.identifier).toLowerCase()
@@ -503,7 +813,23 @@ app.post('/api/auth/login', async (request, response, next) => {
     )
 
     const account = result.rows[0]
-    if (!account || !(await bcrypt.compare(password, account.password_hash))) {
+    if (!account) {
+      const restricted = await pool.query(
+        `SELECT password_hash, activo
+         FROM titulacion.usuarios
+         WHERE lower(correo) = $1
+         LIMIT 1`,
+        [identifier],
+      )
+      if (restricted.rows[0] && await bcrypt.compare(password, restricted.rows[0].password_hash)) {
+        const message = restricted.rows[0].activo
+          ? 'Tu correo fue confirmado. Administración debe asignarte un rol antes de que puedas ingresar.'
+          : 'Confirma el enlace enviado a tu correo institucional antes de iniciar sesión.'
+        return response.status(403).json({ message })
+      }
+      return response.status(401).json({ message: 'Correo o contraseña incorrectos.' })
+    }
+    if (!(await bcrypt.compare(password, account.password_hash))) {
       return response.status(401).json({ message: 'Correo o contraseña incorrectos.' })
     }
 
@@ -3018,8 +3344,13 @@ app.use((error, _request, response, _next) => {
 // Vercel carga la aplicación mediante api/[...path].js. En desarrollo local
 // mantenemos el servidor HTTP independiente para que npm run dev siga igual.
 if (!process.env.VERCEL) {
-  app.listen(port, '127.0.0.1', () => {
-    console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+  void initializeServerless().then(() => {
+    app.listen(port, '127.0.0.1', () => {
+      console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+    })
+  }).catch((error) => {
+    console.error('No fue posible inicializar el registro de cuentas:', error)
+    process.exitCode = 1
   })
 }
 

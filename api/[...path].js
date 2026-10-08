@@ -1,5 +1,6 @@
-import app from '../server/index.js'
+import app, { initializeServerless } from '../server/index.js'
 
-export default function handler(request, response) {
+export default async function handler(request, response) {
+  await initializeServerless()
   return app(request, response)
 }

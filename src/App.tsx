@@ -20,6 +20,7 @@ type IconName =
   | 'user'
 
 type RoleCode = 'ESTUDIANTE' | 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR'
+type RegistrationCareer = { id: string; code: string; name: string }
 
 type UserBase = {
   id: string
@@ -375,12 +376,51 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
 }
 
 function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
+  const [view, setView] = useState<'login' | 'signup'>('login')
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [registerEmail, setRegisterEmail] = useState('')
+  const [registerPassword, setRegisterPassword] = useState('')
+  const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
+  const [careerId, setCareerId] = useState('')
+  const [registration, setRegistration] = useState('')
+  const [careers, setCareers] = useState<RegistrationCareer[]>([])
   const [showPassword, setShowPassword] = useState(false)
+  const [showRegisterPassword, setShowRegisterPassword] = useState(false)
   const [remember, setRemember] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const isStudentRegistration = /^[^\s@]+@est\.univalle\.edu$/i.test(registerEmail.trim())
+
+  useEffect(() => {
+    const confirmToken = new URLSearchParams(window.location.search).get('confirmToken')
+    if (!confirmToken) return
+
+    void api<{ message: string }>('/api/auth/confirm-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: confirmToken }),
+    }).then((result) => {
+      setView('login')
+      setMessage(result.message)
+    }).catch((error) => {
+      setView('login')
+      setMessage(error instanceof Error ? error.message : 'El enlace de confirmación no es válido.')
+    }).finally(() => {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('confirmToken')
+      window.history.replaceState({}, '', url)
+    })
+  }, [])
+
+  useEffect(() => {
+    if (view !== 'signup' || careers.length > 0) return
+    void api<{ careers: RegistrationCareer[] }>('/api/auth/register-options')
+      .then((result) => setCareers(result.careers))
+      .catch(() => setMessage('No fue posible cargar las carreras disponibles. Intenta nuevamente.'))
+  }, [view, careers.length])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -400,6 +440,68 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
       await onAuthenticated()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible iniciar sesión.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  function resetRegistration() {
+    setFirstName('')
+    setLastName('')
+    setRegisterEmail('')
+    setRegisterPassword('')
+    setRegisterConfirmPassword('')
+    setCareerId('')
+    setRegistration('')
+  }
+
+  async function handleRegister(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const email = registerEmail.trim().toLowerCase()
+    const isStudent = /^[^\s@]+@est\.univalle\.edu$/i.test(email)
+    const isTeacher = /^[^\s@]+@univalle\.edu$/i.test(email)
+    if (firstName.trim().length < 2 || lastName.trim().length < 2) {
+      setMessage('Ingresa nombres y apellidos de al menos 2 caracteres.')
+      return
+    }
+    if (!isStudent && !isTeacher) {
+      setMessage('Usa @est.univalle.edu para estudiantes o @univalle.edu para docentes.')
+      return
+    }
+    if (isStudent && (!careerId || registration.trim().length < 4)) {
+      setMessage('Selecciona tu carrera e ingresa tu registro universitario.')
+      return
+    }
+    if (registerPassword.length < 8) {
+      setMessage('La contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (registerPassword !== registerConfirmPassword) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          email,
+          password: registerPassword,
+          confirmPassword: registerConfirmPassword,
+          careerId: isStudent ? careerId : undefined,
+          registration: isStudent ? registration.trim() : undefined,
+        }),
+      })
+      resetRegistration()
+      setView('login')
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible crear la cuenta.')
     } finally {
       setIsSubmitting(false)
     }
@@ -437,19 +539,38 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>Bienvenido</h2>
-            <p>Ingresa con tus credenciales institucionales.</p>
+            <h2>{view === 'signup' ? 'Crea tu cuenta' : 'Bienvenido'}</h2>
+            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : 'Ingresa con tus credenciales institucionales.'}</p>
           </header>
 
-          <form onSubmit={handleSubmit} noValidate>
-            <label className="field-label" htmlFor="identifier">Correo institucional</label>
-            <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
-            <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => setMessage('Comunícate con Administración para recuperar tu acceso.')} type="button">¿Olvidaste tu contraseña?</button></div>
-            <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
-            <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
-            <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
-            <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
-          </form>
+          {view === 'signup' ? (
+            <form onSubmit={handleRegister} noValidate>
+              <label className="field-label" htmlFor="first-name">Nombres</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="given-name" disabled={isSubmitting} id="first-name" onChange={(event) => setFirstName(event.target.value)} placeholder="Tus nombres" type="text" value={firstName} /></div>
+              <label className="field-label" htmlFor="last-name">Apellidos</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="family-name" disabled={isSubmitting} id="last-name" onChange={(event) => setLastName(event.target.value)} placeholder="Tus apellidos" type="text" value={lastName} /></div>
+              <label className="field-label" htmlFor="register-email">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="register-email" onChange={(event) => setRegisterEmail(event.target.value)} placeholder="nombre@est.univalle.edu o nombre@univalle.edu" type="email" value={registerEmail} /></div>
+              <p className="registration-note">Estudiantes: <b>@est.univalle.edu</b>. Docentes: <b>@univalle.edu</b>. Los docentes requieren asignación de rol por Administración.</p>
+              {isStudentRegistration && <><label className="field-label" htmlFor="register-career">Carrera</label><select disabled={isSubmitting} id="register-career" onChange={(event) => setCareerId(event.target.value)} value={careerId}><option value="">Selecciona tu carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.code} · {career.name}</option>)}</select><label className="field-label" htmlFor="registration">Registro universitario</label><div className="input-shell"><Icon name="user" /><input disabled={isSubmitting} id="registration" onChange={(event) => setRegistration(event.target.value)} placeholder="Tu matrícula" type="text" value={registration} /></div></>}
+              <label className="field-label" htmlFor="register-password">Contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-password" onChange={(event) => setRegisterPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showRegisterPassword ? 'text' : 'password'} value={registerPassword} /><button aria-label={showRegisterPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowRegisterPassword((visible) => !visible)} type="button"><Icon name={showRegisterPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="field-label" htmlFor="register-confirm-password">Confirmar contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-confirm-password" onChange={(event) => setRegisterConfirmPassword(event.target.value)} placeholder="Repite tu contraseña" type={showRegisterPassword ? 'text' : 'password'} value={registerConfirmPassword} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Creando cuenta…' : 'Crear cuenta'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { resetRegistration(); setMessage(''); setView('login') }} type="button">Ya tengo una cuenta</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : <form onSubmit={handleSubmit} noValidate>
+              <label className="field-label" htmlFor="identifier">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
+              <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => setMessage('Comunícate con Administración para recuperar tu acceso.')} type="button">¿Olvidaste tu contraseña?</button></div>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setMessage(''); setView('signup') }} type="button">Crear cuenta</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>}
           <p className="help-text">Acceso protegido con sesiones registradas en el sistema académico.</p>
         </div>
       </section>
