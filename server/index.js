@@ -3015,6 +3015,12 @@ app.use((error, _request, response, _next) => {
   return response.status(500).json({ message: 'Ocurrió un error al comunicarse con el sistema. Intenta nuevamente.' })
 })
 
-app.listen(port, '127.0.0.1', () => {
-  console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
-})
+// Vercel carga la aplicación mediante api/[...path].js. En desarrollo local
+// mantenemos el servidor HTTP independiente para que npm run dev siga igual.
+if (!process.env.VERCEL) {
+  app.listen(port, '127.0.0.1', () => {
+    console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
+  })
+}
+
+export default app
