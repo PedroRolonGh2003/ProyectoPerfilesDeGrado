@@ -376,7 +376,7 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
 }
 
 function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
-  const [view, setView] = useState<'login' | 'signup'>('login')
+  const [view, setView] = useState<'login' | 'signup' | 'confirmation-pending'>('login')
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [firstName, setFirstName] = useState('')
@@ -385,7 +385,7 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
   const [registerPassword, setRegisterPassword] = useState('')
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
   const [careerId, setCareerId] = useState('')
-  const [registration, setRegistration] = useState('')
+  const [pendingConfirmationEmail, setPendingConfirmationEmail] = useState('')
   const [careers, setCareers] = useState<RegistrationCareer[]>([])
   const [showPassword, setShowPassword] = useState(false)
   const [showRegisterPassword, setShowRegisterPassword] = useState(false)
@@ -452,7 +452,6 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
     setRegisterPassword('')
     setRegisterConfirmPassword('')
     setCareerId('')
-    setRegistration('')
   }
 
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
@@ -468,8 +467,8 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
       setMessage('Usa @est.univalle.edu para estudiantes o @univalle.edu para docentes.')
       return
     }
-    if (isStudent && (!careerId || registration.trim().length < 4)) {
-      setMessage('Selecciona tu carrera e ingresa tu registro universitario.')
+    if (isStudent && !careerId) {
+      setMessage('Selecciona tu carrera para crear tu perfil de estudiante.')
       return
     }
     if (registerPassword.length < 8) {
@@ -494,14 +493,31 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           password: registerPassword,
           confirmPassword: registerConfirmPassword,
           careerId: isStudent ? careerId : undefined,
-          registration: isStudent ? registration.trim() : undefined,
         }),
       })
       resetRegistration()
-      setView('login')
+      setPendingConfirmationEmail(email)
+      setView('confirmation-pending')
       setMessage(result.message)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible crear la cuenta.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function resendConfirmation() {
+    if (!pendingConfirmationEmail) return
+    setIsSubmitting(true)
+    try {
+      const result = await api<{ message: string }>('/api/auth/resend-confirmation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: pendingConfirmationEmail }),
+      })
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible reenviar el correo de confirmación.')
     } finally {
       setIsSubmitting(false)
     }
@@ -539,11 +555,21 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>{view === 'signup' ? 'Crea tu cuenta' : 'Bienvenido'}</h2>
-            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : 'Ingresa con tus credenciales institucionales.'}</p>
+            <h2>{view === 'signup' ? 'Crea tu cuenta' : view === 'confirmation-pending' ? 'Confirma tu correo' : 'Bienvenido'}</h2>
+            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : view === 'confirmation-pending' ? 'Tu cuenta se activará cuando confirmes el enlace enviado.' : 'Ingresa con tus credenciales institucionales.'}</p>
           </header>
 
-          {view === 'signup' ? (
+          {view === 'confirmation-pending' ? (
+            <section className="confirmation-pending" aria-live="polite">
+              <span className="confirmation-icon"><Icon name="check" /></span>
+              <h3>Esperando confirmación por email</h3>
+              <p>Enviamos un enlace a <strong>{pendingConfirmationEmail}</strong>. Revisa tu bandeja de entrada y la carpeta de correo no deseado.</p>
+              <p className="confirmation-tip">El enlace vence en 24 horas. Hasta confirmarlo, no podrás iniciar sesión.</p>
+              <button className="submit-button" disabled={isSubmitting} onClick={() => void resendConfirmation()} type="button"><span>{isSubmitting ? 'Reenviando…' : 'Reenviar correo'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setMessage(''); setView('login') }} type="button">Volver a iniciar sesión</button>
+              <p className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </section>
+          ) : view === 'signup' ? (
             <form onSubmit={handleRegister} noValidate>
               <label className="field-label" htmlFor="first-name">Nombres</label>
               <div className="input-shell"><Icon name="user" /><input autoComplete="given-name" disabled={isSubmitting} id="first-name" onChange={(event) => setFirstName(event.target.value)} placeholder="Tus nombres" type="text" value={firstName} /></div>
@@ -552,7 +578,7 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
               <label className="field-label" htmlFor="register-email">Correo institucional</label>
               <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="register-email" onChange={(event) => setRegisterEmail(event.target.value)} placeholder="nombre@est.univalle.edu o nombre@univalle.edu" type="email" value={registerEmail} /></div>
               <p className="registration-note">Estudiantes: <b>@est.univalle.edu</b>. Docentes: <b>@univalle.edu</b>. Los docentes requieren asignación de rol por Administración.</p>
-              {isStudentRegistration && <><label className="field-label" htmlFor="register-career">Carrera</label><select disabled={isSubmitting} id="register-career" onChange={(event) => setCareerId(event.target.value)} value={careerId}><option value="">Selecciona tu carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.code} · {career.name}</option>)}</select><label className="field-label" htmlFor="registration">Registro universitario</label><div className="input-shell"><Icon name="user" /><input disabled={isSubmitting} id="registration" onChange={(event) => setRegistration(event.target.value)} placeholder="Tu matrícula" type="text" value={registration} /></div></>}
+              {isStudentRegistration && <><label className="field-label" htmlFor="register-career">Carrera</label><select disabled={isSubmitting} id="register-career" onChange={(event) => setCareerId(event.target.value)} value={careerId}><option value="">Selecciona tu carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.code} · {career.name}</option>)}</select></>}
               <label className="field-label" htmlFor="register-password">Contraseña</label>
               <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-password" onChange={(event) => setRegisterPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showRegisterPassword ? 'text' : 'password'} value={registerPassword} /><button aria-label={showRegisterPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowRegisterPassword((visible) => !visible)} type="button"><Icon name={showRegisterPassword ? 'eyeOff' : 'eye'} /></button></div>
               <label className="field-label" htmlFor="register-confirm-password">Confirmar contraseña</label>

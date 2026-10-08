@@ -567,7 +567,6 @@ app.post('/api/auth/register', async (request, response, next) => {
     const password = request.body?.password
     const confirmPassword = request.body?.confirmPassword
     const careerId = text(request.body?.careerId)
-    const registration = text(request.body?.registration)
     const kind = accountKind(email)
 
     if (firstName.length < 2 || lastName.length < 2) {
@@ -582,8 +581,8 @@ app.post('/api/auth/register', async (request, response, next) => {
     if (password !== confirmPassword) {
       return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
     }
-    if (kind === 'ESTUDIANTE' && (!isUuid(careerId) || registration.length < 4)) {
-      return response.status(422).json({ message: 'Selecciona tu carrera e ingresa tu registro universitario.' })
+    if (kind === 'ESTUDIANTE' && !isUuid(careerId)) {
+      return response.status(422).json({ message: 'Selecciona tu carrera para crear tu perfil de estudiante.' })
     }
 
     databaseClient = await pool.connect()
@@ -613,10 +612,9 @@ app.post('/api/auth/register', async (request, response, next) => {
 
     let studentRoleId = null
     if (kind === 'ESTUDIANTE') {
-      const [career, studentRole, duplicateRegistration] = await Promise.all([
+      const [career, studentRole] = await Promise.all([
         databaseClient.query(`SELECT id FROM titulacion.carreras WHERE id = $1 AND activa`, [careerId]),
         databaseClient.query(`SELECT id FROM titulacion.roles WHERE codigo = 'ESTUDIANTE' AND activo`),
-        databaseClient.query(`SELECT id FROM titulacion.estudiantes WHERE lower(registro_universitario) = lower($1)`, [registration]),
       ])
       if (!career.rows[0]) {
         await databaseClient.query('ROLLBACK')
@@ -625,10 +623,6 @@ app.post('/api/auth/register', async (request, response, next) => {
       if (!studentRole.rows[0]) {
         await databaseClient.query('ROLLBACK')
         return response.status(500).json({ message: 'El rol de estudiante no está disponible.' })
-      }
-      if (duplicateRegistration.rows[0]) {
-        await databaseClient.query('ROLLBACK')
-        return response.status(409).json({ message: 'Ya existe una cuenta con ese registro universitario.' })
       }
       studentRoleId = studentRole.rows[0].id
     }
@@ -642,6 +636,7 @@ app.post('/api/auth/register', async (request, response, next) => {
     const userId = user.rows[0].id
 
     if (kind === 'ESTUDIANTE') {
+      const internalRegistration = `EST-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`
       await databaseClient.query(
         `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo, asignado_por_usuario_id)
          VALUES ($1, $2, true, $1)`,
@@ -650,7 +645,7 @@ app.post('/api/auth/register', async (request, response, next) => {
       await databaseClient.query(
         `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
          VALUES ($1, $2, $3, true)`,
-        [userId, careerId, registration],
+        [userId, careerId, internalRegistration],
       )
     }
 
