@@ -398,11 +398,16 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
     const confirmToken = new URLSearchParams(window.location.search).get('confirmToken')
     if (!confirmToken) return
 
-    void api<{ message: string }>('/api/auth/confirm-email', {
+    void api<{ message: string; autoLogin?: boolean }>('/api/auth/confirm-email', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: confirmToken }),
-    }).then((result) => {
+    }).then(async (result) => {
+      if (result.autoLogin) {
+        await onAuthenticated()
+        return
+      }
+
       setView('login')
       setMessage(result.message)
     }).catch((error) => {
@@ -413,7 +418,7 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
       url.searchParams.delete('confirmToken')
       window.history.replaceState({}, '', url)
     })
-  }, [])
+  }, [onAuthenticated])
 
   useEffect(() => {
     if (view !== 'signup' || careers.length > 0) return

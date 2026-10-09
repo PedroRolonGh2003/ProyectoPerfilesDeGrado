@@ -79,6 +79,30 @@ function setSessionCookie(response, token, maxAge) {
   })
 }
 
+async function createSession(response, request, account, { remember = false, databaseClient = pool } = {}) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const durationMs = remember
+    ? rememberSessionDays * 24 * 60 * 60 * 1000
+    : sessionHours * 60 * 60 * 1000
+  const expiration = new Date(Date.now() + durationMs)
+
+  await databaseClient.query(
+    `INSERT INTO titulacion.sesiones_usuario
+      (usuario_id, rol_activo_id, token_hash, ip_origen, agente_usuario, expira_en)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      account.usuario_id,
+      account.rol_id,
+      hashToken(token),
+      request.socket.remoteAddress ?? null,
+      text(request.get('user-agent')).slice(0, 1000) || null,
+      expiration,
+    ],
+  )
+
+  setSessionCookie(response, token, durationMs)
+}
+
 function sanitizeUser(row) {
   const roles = Array.isArray(row.roles)
     ? row.roles.filter((role) => supportedRoles.includes(role))
@@ -744,10 +768,45 @@ app.post('/api/auth/confirm-email', async (request, response, next) => {
     await databaseClient.query('COMMIT')
 
     const kind = accountKind(confirmation.rows[0].correo)
-    const message = kind === 'DOCENTE'
-      ? 'Correo confirmado. Administración debe asignarte uno o más roles antes de que puedas iniciar sesión.'
-      : 'Correo confirmado. Ya puedes iniciar sesión como estudiante.'
-    return response.json({ message })
+    if (kind === 'ESTUDIANTE') {
+      const student = await databaseClient.query(
+        `SELECT
+           u.id AS usuario_id,
+           u.nombres,
+           u.apellidos,
+           u.correo,
+           r.id AS rol_id,
+           r.codigo AS rol_codigo,
+           e.id AS estudiante_id,
+           e.registro_universitario,
+           NULL::uuid AS docente_id,
+           c.nombre AS carrera_nombre,
+           ARRAY['ESTUDIANTE']::text[] AS roles
+         FROM titulacion.usuarios u
+         JOIN titulacion.estudiantes e ON e.usuario_id = u.id AND e.activo
+         JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+         JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = 'ESTUDIANTE'
+         LEFT JOIN titulacion.carreras c ON c.id = e.carrera_id AND c.activa
+         WHERE u.id = $1 AND u.activo
+         LIMIT 1`,
+        [confirmation.rows[0].usuario_id],
+      )
+
+      if (!student.rows[0]) {
+        return response.status(500).json({ message: 'El correo fue confirmado, pero no se pudo iniciar tu sesión. Intenta ingresar normalmente.' })
+      }
+
+      await createSession(response, request, student.rows[0], { databaseClient })
+      return response.json({
+        message: 'Correo confirmado. Iniciamos tu sesión como estudiante.',
+        autoLogin: true,
+        user: sanitizeUser(student.rows[0]),
+      })
+    }
+
+    return response.json({
+      message: 'Correo confirmado. Administración debe asignarte uno o más roles antes de que puedas iniciar sesión.',
+    })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -828,27 +887,7 @@ app.post('/api/auth/login', async (request, response, next) => {
       return response.status(401).json({ message: 'Correo o contraseña incorrectos.' })
     }
 
-    const token = crypto.randomBytes(32).toString('base64url')
-    const durationMs = remember
-      ? rememberSessionDays * 24 * 60 * 60 * 1000
-      : sessionHours * 60 * 60 * 1000
-    const expiration = new Date(Date.now() + durationMs)
-
-    await pool.query(
-      `INSERT INTO titulacion.sesiones_usuario
-        (usuario_id, rol_activo_id, token_hash, ip_origen, agente_usuario, expira_en)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [
-        account.usuario_id,
-        account.rol_id,
-        hashToken(token),
-        request.socket.remoteAddress ?? null,
-        text(request.get('user-agent')).slice(0, 1000) || null,
-        expiration,
-      ],
-    )
-
-    setSessionCookie(response, token, durationMs)
+    await createSession(response, request, account, { remember })
     return response.json({ user: sanitizeUser(account) })
   } catch (error) {
     return next(error)
