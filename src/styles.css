@@ -71,6 +71,15 @@ button { cursor: pointer; }
 .input-shell > svg { color: #88797d; flex: 0 0 auto; height: 19px; margin-left: 16px; width: 19px; }
 .input-shell input { background: transparent; border: 0; color: #2c2124; height: 100%; min-width: 0; outline: 0; padding: 0 14px; width: 100%; }
 .input-shell input::placeholder { color: #aaa0a3; }
+.career-select { align-items: center; background: linear-gradient(135deg, #fff 0%, #fff6f9 100%); border: 1px solid #ded7d8; border-radius: 9px; display: flex; height: 52px; margin: 0 0 23px; overflow: hidden; position: relative; transition: border-color .18s, box-shadow .18s, background .18s; }
+.career-select:focus-within { background: #fff; border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(159, 0, 67, .1); }
+.career-select.is-selected { background: linear-gradient(135deg, #fff 0%, #fcebf2 100%); border-color: #c98aa5; }
+.career-select-badge { align-items: center; align-self: stretch; background: var(--univalle-wine); color: #fff; display: inline-flex; flex: 0 0 auto; font-size: 10px; font-weight: 700; justify-content: center; letter-spacing: .06em; max-width: 64px; min-width: 51px; overflow: hidden; padding: 0 8px; text-overflow: ellipsis; }
+.career-select select { appearance: none; background: transparent; border: 0; color: #37282d; cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; height: 100%; min-width: 0; outline: 0; padding: 0 42px 0 14px; text-overflow: ellipsis; width: 100%; }
+.career-select:not(.is-selected) select { color: #88797d; font-weight: 500; }
+.career-select select option { background: #fff; color: #37282d; font-weight: 500; }
+.career-select select option:checked { background: var(--univalle-wine); color: #fff; }
+.career-select > svg { color: var(--univalle-wine); height: 21px; pointer-events: none; position: absolute; right: 13px; top: 15px; width: 21px; }
 .password-heading { align-items: baseline; display: flex; justify-content: space-between; }
 .text-button { background: transparent; border: 0; color: var(--univalle-wine); font-size: 12px; padding: 0; }
 .text-button:hover { color: var(--univalle-wine-dark); text-decoration: underline; }
