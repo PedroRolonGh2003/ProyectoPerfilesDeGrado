@@ -262,6 +262,12 @@ try {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookies.student },
     body: JSON.stringify({ response: 'Se precisó el objetivo general y se documentó el ajuste en el perfil.' }),
   }), 200, 'Respuesta del estudiante a la observación')
+  for (const remainingObservation of studentDocument.observations.slice(1)) {
+    await expect(await fetch(`${apiUrl}/api/documents/${documentId}/observations/${remainingObservation.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookies.student },
+      body: JSON.stringify({ response: 'La corrección fue aplicada y queda documentada en la versión enviada.' }),
+    }), 200, 'Respuesta del estudiante a la observación restante')
+  }
   const correction = new FormData()
   correction.set('document', new Blob([Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'correccion-qa.docx')
   correction.set('comment', 'Corrección del objetivo general para QA.')
@@ -269,17 +275,40 @@ try {
     method: 'POST', headers: { Cookie: cookies.student }, body: correction,
   }), 201, 'Carga de versión corregida por estudiante')
   const correctionPayload = await uploadedCorrection.json()
-  assert.equal(correctionPayload.linkedObservations, 1, 'La versión corregida no se vinculó con la observación respondida')
-  const linkedObservation = await pool.query(
-    `SELECT o.estado, o.respuesta_estudiante, vd.numero_version AS version_respuesta
+  assert.equal(correctionPayload.linkedObservations, 2, 'La versión corregida no se vinculó con todas las observaciones respondidas')
+  assert.equal(correctionPayload.correctionReview?.scheduled, true, 'La corrección no abrió una nueva ronda de revisión')
+  const linkedObservations = await pool.query(
+    `SELECT o.estado, vd.numero_version AS version_respuesta
      FROM titulacion.observaciones o
      LEFT JOIN titulacion.versiones_documento vd ON vd.id = o.version_documento_respuesta_id
-     WHERE o.id = $1`,
-    [observation.id],
+     JOIN titulacion.revisiones r ON r.id = o.revision_id
+     WHERE r.ronda_revision_id = $1
+     ORDER BY o.numero`,
+    [review1.roundId],
   )
-  assert.equal(linkedObservation.rows[0].estado, 'RESPONDIDA', 'La respuesta del estudiante no cambió el estado de la observación')
-  assert.equal(linkedObservation.rows[0].respuesta_estudiante, 'Se precisó el objetivo general y se documentó el ajuste en el perfil.', 'La respuesta del estudiante no se conservó')
-  assert.equal(linkedObservation.rows[0].version_respuesta, 2, 'La observación no quedó vinculada a la versión 2')
+  assert.ok(linkedObservations.rows.every((item) => item.estado === 'RESPONDIDA' && item.version_respuesta === 2), 'Las respuestas no quedaron vinculadas a la versión 2')
+  const correctionReviewer1 = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer1 } }), 200, 'Nueva revisión para el primer revisor')
+  const correctionReview1 = (await correctionReviewer1.json()).pendingReviews.find((item) => item.profile.version === 2)
+  assert.ok(correctionReview1, 'El mismo primer revisor no recibió la versión corregida')
+  const correctionReviewer2 = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer2 } }), 200, 'Nueva revisión para el segundo revisor')
+  const correctionReview2 = (await correctionReviewer2.json()).pendingReviews.find((item) => item.profile.version === 2)
+  assert.ok(correctionReview2, 'El mismo segundo revisor no recibió la versión corregida')
+  await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${correctionReview1.id}/decision`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer1 },
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La corrección atiende las observaciones.', observations: [] }),
+  }), 200, 'Aprobación de la corrección por el primer revisor')
+  await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${correctionReview2.id}/decision`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer2 },
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La corrección fue validada.', observations: [] }),
+  }), 200, 'Aprobación de la corrección por el segundo revisor')
+  const closed = await pool.query(
+    `SELECT count(*)::int AS total
+     FROM titulacion.observaciones o
+     JOIN titulacion.revisiones r ON r.id = o.revision_id
+     WHERE r.ronda_revision_id = $1 AND o.estado = 'CERRADA'`,
+    [review1.roundId],
+  )
+  assert.equal(closed.rows[0].total, 2, 'Las observaciones no se cerraron tras aprobar la corrección')
   const completedDashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer1 } }), 200, 'Historial del primer revisor')
   assert.equal((await completedDashboard.json()).completedReviews.length, 1, 'El dictamen no pasó al historial del revisor')
   console.log('QA revisor aprobado: bandeja, descarga, dictamen, devolución, respuesta y versión corregida verificados.')

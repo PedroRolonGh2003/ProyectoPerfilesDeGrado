@@ -528,6 +528,124 @@ async function recordProjectStatus(databaseClient, { projectId, previousStateId,
   )
 }
 
+async function scheduleCorrectionReview(databaseClient, { project, documentId, versionId, versionNumber, session }) {
+  const previousRoundResult = await databaseClient.query(
+    `SELECT rr.id, rr.numero_ronda, rr.fecha_solicitud, rr.fecha_limite
+     FROM titulacion.rondas_revision rr
+     JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
+     WHERE source_version.documento_id = $1
+       AND rr.cerrada_en IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM titulacion.revisiones r
+         WHERE r.ronda_revision_id = rr.id AND r.decision IN ('OBSERVADO', 'RECHAZADO')
+       )
+     ORDER BY rr.numero_ronda DESC
+     LIMIT 1
+     FOR UPDATE OF rr`,
+    [documentId],
+  )
+  const previousRound = previousRoundResult.rows[0]
+  if (!previousRound) return { scheduled: false, reason: null }
+
+  const observations = await databaseClient.query(
+    `SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE o.version_documento_respuesta_id = $2)::int AS linked_to_version
+     FROM titulacion.observaciones o
+     JOIN titulacion.revisiones r ON r.id = o.revision_id
+     WHERE r.ronda_revision_id = $1`,
+    [previousRound.id, versionId],
+  )
+  const observationStatus = observations.rows[0]
+  if (observationStatus.total === 0 || observationStatus.total !== observationStatus.linked_to_version) {
+    return { scheduled: false, reason: 'pending-observations' }
+  }
+
+  const reviewers = await databaseClient.query(
+    `SELECT r.asignacion_proyecto_id, a.tipo, a.activo, a.fecha_fin,
+            teacher.usuario_id, user_account.correo
+     FROM titulacion.revisiones r
+     JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+     JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
+     JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id AND user_account.activo
+     WHERE r.ronda_revision_id = $1
+     ORDER BY a.tipo
+     FOR UPDATE OF r, a`,
+    [previousRound.id],
+  )
+  const activeReviewers = reviewers.rows.filter((reviewer) => reviewer.activo && !reviewer.fecha_fin)
+  if (activeReviewers.length !== 2 || new Set(activeReviewers.map((reviewer) => reviewer.tipo)).size !== 2) {
+    return { scheduled: false, reason: 'reviewers-unavailable' }
+  }
+
+  const openRound = await databaseClient.query(
+    `SELECT rr.id
+     FROM titulacion.rondas_revision rr
+     JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+     WHERE vd.documento_id = $1 AND rr.cerrada_en IS NULL
+     FOR UPDATE OF rr`,
+    [documentId],
+  )
+  if (openRound.rows[0]) return { scheduled: false, reason: 'open-round' }
+
+  const durationMilliseconds = new Date(previousRound.fecha_limite).getTime() - new Date(previousRound.fecha_solicitud).getTime()
+  const reviewWindow = Number.isFinite(durationMilliseconds) && durationMilliseconds > 0
+    ? durationMilliseconds
+    : 3 * 24 * 60 * 60 * 1000
+  const deadline = new Date(Date.now() + Math.max(reviewWindow, 24 * 60 * 60 * 1000))
+  const catalog = await databaseClient.query(
+    `SELECT
+       (SELECT id FROM titulacion.fases WHERE codigo = 'REVISION_PERFIL' AND activa) AS phase_id,
+       (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'EN_REVISION') AS state_id`,
+  )
+  if (!catalog.rows[0].phase_id || !catalog.rows[0].state_id) throw new Error('Faltan catálogos para reenviar la corrección a revisión.')
+
+  const round = await databaseClient.query(
+    `INSERT INTO titulacion.rondas_revision
+      (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [versionId, catalog.rows[0].phase_id, previousRound.numero_ronda + 1, session.usuario_id, deadline],
+  )
+  await databaseClient.query(
+    `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
+     SELECT $1, unnest($2::uuid[])`,
+    [round.rows[0].id, activeReviewers.map((reviewer) => reviewer.asignacion_proyecto_id)],
+  )
+  await databaseClient.query(
+    `UPDATE titulacion.asignaciones_proyecto
+     SET fecha_limite = $2
+     WHERE id = ANY($1::uuid[])`,
+    [activeReviewers.map((reviewer) => reviewer.asignacion_proyecto_id), deadline],
+  )
+  for (const reviewer of activeReviewers) {
+    await createNotification(databaseClient, {
+      userId: reviewer.usuario_id,
+      projectId: project.id,
+      type: 'CORRECCION_PENDIENTE_REVISION',
+      title: 'Corrección pendiente de revisión',
+      message: `El estudiante adjuntó la versión V${versionNumber} corregida del perfil ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+      link: '/revisor',
+    })
+  }
+  await recordProjectStatus(databaseClient, {
+    projectId: project.id,
+    previousStateId: project.estado_actual_id,
+    nextStateId: catalog.rows[0].state_id,
+    previousPhaseId: project.fase_actual_id,
+    nextPhaseId: catalog.rows[0].phase_id,
+    userId: session.usuario_id,
+    reason: `Ronda ${previousRound.numero_ronda + 1} iniciada con la versión V${versionNumber} corregida por el estudiante.`,
+  })
+  await recordAudit(databaseClient, session, {
+    projectId: project.id,
+    action: 'REENVIAR_CORRECCION_A_REVISION',
+    entity: 'rondas_revision',
+    entityId: round.rows[0].id,
+    detail: { previousRoundId: previousRound.id, versionId, deadline: deadline.toISOString(), reviewerAssignments: activeReviewers.map((reviewer) => reviewer.asignacion_proyecto_id) },
+  })
+  return { scheduled: true, roundId: round.rows[0].id, deadline }
+}
+
 async function lockedProject(databaseClient, projectId) {
   const project = await databaseClient.query(
     `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.estado_actual_id, p.fase_actual_id,
@@ -2841,6 +2959,7 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     )
     const roundCompleted = roundReviews.rows.length > 0 && roundReviews.rows.every((item) => item.decision !== 'PENDIENTE')
     let roundResult = null
+    let closedObservations = 0
     if (roundCompleted) {
       const hasObservations = roundReviews.rows.some((item) => item.decision === 'OBSERVADO' || item.decision === 'RECHAZADO')
       const catalog = await databaseClient.query(
@@ -2854,6 +2973,21 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
         `UPDATE titulacion.rondas_revision SET cerrada_en = now() WHERE id = $1`,
         [review.round_id],
       )
+      if (!hasObservations) {
+        const closed = await databaseClient.query(
+          `UPDATE titulacion.observaciones o
+           SET estado = 'CERRADA',
+               cerrada_por_usuario_id = $1,
+               cerrada_en = now()
+           WHERE o.version_documento_respuesta_id = (
+             SELECT version_documento_id FROM titulacion.rondas_revision WHERE id = $2
+           )
+             AND o.estado = 'RESPONDIDA'
+           RETURNING o.id`,
+          [request.session.usuario_id, review.round_id],
+        )
+        closedObservations = closed.rowCount
+      }
       await recordProjectStatus(databaseClient, {
         projectId: review.project_id,
         previousStateId: review.estado_actual_id,
@@ -2894,7 +3028,7 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
       action: 'EMITIR_DICTAMEN_REVISION',
       entity: 'revisiones',
       entityId: review.review_id,
-      detail: { decision, observationCount: observations.length, roundCompleted, roundResult },
+      detail: { decision, observationCount: observations.length, roundCompleted, roundResult, closedObservations },
     })
     await databaseClient.query('COMMIT')
     return response.json({
@@ -3399,13 +3533,47 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
        RETURNING o.id`,
       [inserted.rows[0].version_id, selected.id],
     )
+    const project = await lockedProject(databaseClient, selected.proyecto_id)
+    if (!project) throw new Error('No fue posible obtener el proyecto de la nueva versión.')
+    const tutors = await databaseClient.query(
+      `SELECT teacher.usuario_id
+       FROM titulacion.asignaciones_proyecto a
+       JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
+       JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id AND user_account.activo
+       WHERE a.proyecto_id = $1
+         AND a.tipo = 'TUTOR'
+         AND a.activo
+         AND a.fecha_fin IS NULL
+         AND a.respondida_en IS NOT NULL`,
+      [selected.proyecto_id],
+    )
+    for (const tutor of tutors.rows) {
+      await createNotification(databaseClient, {
+        userId: tutor.usuario_id,
+        projectId: selected.proyecto_id,
+        type: 'DOCUMENTO_ACTUALIZADO_TUTOR',
+        title: 'Nueva versión del perfil',
+        message: `El estudiante adjuntó la versión V${inserted.rows[0].numero_version} del perfil ${project.codigo_seguimiento}.`,
+        link: '/tutor/projects',
+      })
+    }
+    const correctionReview = await scheduleCorrectionReview(databaseClient, {
+      project,
+      documentId: selected.id,
+      versionId: inserted.rows[0].version_id,
+      versionNumber: inserted.rows[0].numero_version,
+      session: request.session,
+    })
     await databaseClient.query('COMMIT')
     return response.status(201).json({
-      message: linkedObservations.rowCount > 0
-        ? `Se registró la versión ${inserted.rows[0].numero_version} del perfil y se asociaron ${linkedObservations.rowCount} observación(es) respondida(s).`
-        : `Se registró la versión ${inserted.rows[0].numero_version} del perfil.`,
+      message: correctionReview.scheduled
+        ? `Se registró la versión ${inserted.rows[0].numero_version} y se reenviaron las correcciones a los mismos revisores.`
+        : linkedObservations.rowCount > 0
+          ? `Se registró la versión ${inserted.rows[0].numero_version} y se asociaron ${linkedObservations.rowCount} observación(es) respondida(s). Responde todas las observaciones de la última ronda para reenviar la corrección.`
+          : `Se registró la versión ${inserted.rows[0].numero_version} del perfil.`,
       version: versionPayload(inserted.rows[0]),
       linkedObservations: linkedObservations.rowCount,
+      correctionReview: { scheduled: correctionReview.scheduled, roundId: correctionReview.roundId ?? null },
     })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
