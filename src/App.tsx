@@ -1087,7 +1087,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
   )
 }
 
-function TutorPortal({ data, onLogout, onRefresh, sessionActions }: { data: TutorDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
+function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'notifications'>('home')
   const [decliningId, setDecliningId] = useState('')
   const [declineReason, setDeclineReason] = useState('')
@@ -1184,13 +1184,13 @@ function TutorPortal({ data, onLogout, onRefresh, sessionActions }: { data: Tuto
 
         {view === 'invitations' && (data.invitations.length > 0 ? <div className="tutor-cards">{data.invitations.map(invitationCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>Ya respondiste todas las invitaciones.</strong><span>Las nuevas solicitudes se mostrarán automáticamente en esta sección.</span></section>)}
         {view === 'projects' && (data.projects.length > 0 ? <div className="tutor-cards">{data.projects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no tienes proyectos confirmados.</strong><span>Cuando aceptes una tutoría, el proyecto aparecerá aquí.</span></section>)}
-        {view === 'notifications' && <section className="notification-list">{data.notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las solicitudes y avisos del proceso aparecerán aquí.</span></div> : data.notifications.map((notification) => <article className={notification.readAt ? 'notification-item' : 'notification-item is-unread'} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
+        {view === 'notifications' && <section className="notification-list">{notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las solicitudes y avisos del proceso aparecerán aquí.</span></div> : notifications.map((notification) => <article className={notification.readAt ? 'notification-item' : 'notification-item is-unread'} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
       </div>
     </section>
   </main>
 }
 
-function ReviewerPortal({ data, onLogout, onRefresh, sessionActions }: { data: ReviewerDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
+function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: ReviewerDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [view, setView] = useState<'home' | 'pending' | 'completed' | 'notifications'>('home')
   const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
   const [generalComment, setGeneralComment] = useState('')
@@ -1322,7 +1322,7 @@ function ReviewerPortal({ data, onLogout, onRefresh, sessionActions }: { data: R
         </>}
         {!selectedReview && view === 'pending' && (data.pendingReviews.length > 0 ? <div className="tutor-cards">{data.pendingReviews.map((review) => reviewCard(review))}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán automáticamente en esta sección.</span></section>)}
         {!selectedReview && view === 'completed' && (data.completedReviews.length > 0 ? <div className="tutor-cards">{data.completedReviews.map((review) => reviewCard(review, false))}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no emitiste dictámenes.</strong><span>Cuando finalices una revisión aparecerá en este historial.</span></section>)}
-        {!selectedReview && view === 'notifications' && <section className="notification-list">{data.notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las asignaciones y cambios del proceso aparecerán aquí.</span></div> : data.notifications.map((notification) => <article className={notification.readAt ? 'notification-item' : 'notification-item is-unread'} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
+        {!selectedReview && view === 'notifications' && <section className="notification-list">{notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las asignaciones y cambios del proceso aparecerán aquí.</span></div> : notifications.map((notification) => <article className={notification.readAt ? 'notification-item' : 'notification-item is-unread'} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
       </div>
     </section>
   </main>
@@ -1855,9 +1855,9 @@ function App() {
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
   if (!data || isPasswordResetFlow) return <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
-  if ('pendingReviews' in data) return <ReviewerPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('pendingReviews' in data) return <ReviewerPortal data={data} notifications={notifications} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  if ('invitations' in data) return <TutorPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('invitations' in data) return <TutorPortal data={data} notifications={notifications} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   return view === 'home'
     ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
     : view === 'documents'
