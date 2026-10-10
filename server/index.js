@@ -459,6 +459,18 @@ function storedFilePath(relativePath, projectId) {
   return absolutePath.startsWith(`${uploadsRoot}${path.sep}`) ? absolutePath : null
 }
 
+function versionedDocumentFilename(documentName, versionNumber, originalFilename) {
+  const extension = path.extname(originalFilename).toLowerCase()
+  const baseName = text(documentName)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 100) || 'documento'
+  const safeExtension = extension === '.doc' || extension === '.docx' ? extension : '.docx'
+  return `${baseName}_v${versionNumber}${safeExtension}`
+}
+
 function versionPayload(row) {
   return {
     id: row.version_id,
@@ -1683,7 +1695,7 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
        VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         document.rows[0].id,
-        path.basename(request.file.originalname),
+        versionedDocumentFilename(title, 1, request.file.originalname),
         relativePath,
         request.file.mimetype || 'application/octet-stream',
         request.file.size,
@@ -3239,7 +3251,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     databaseClient = await pool.connect()
     await databaseClient.query('BEGIN')
     const document = await databaseClient.query(
-      `SELECT d.id, d.proyecto_id, d.tipo_documento, f.codigo AS fase_codigo,
+      `SELECT d.id, d.proyecto_id, d.nombre, d.tipo_documento, f.codigo AS fase_codigo,
               ep.permite_edicion_estudiante
        FROM titulacion.documentos d
        JOIN titulacion.proyectos p ON p.id = d.proyecto_id
@@ -3285,7 +3297,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
       [
         selected.id,
         number.rows[0].siguiente,
-        path.basename(request.file.originalname),
+        versionedDocumentFilename(selected.nombre, number.rows[0].siguiente, request.file.originalname),
         relativePath,
         request.file.mimetype || 'application/octet-stream',
         request.file.size,
@@ -3473,7 +3485,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
        VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         document.rows[0].id,
-        path.basename(request.file.originalname),
+        versionedDocumentFilename(title, 1, request.file.originalname),
         relativePath,
         request.file.mimetype || 'application/octet-stream',
         request.file.size,
