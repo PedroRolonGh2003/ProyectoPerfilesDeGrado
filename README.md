@@ -35,6 +35,10 @@ La pantalla inicial permite crear cuentas institucionales. El dominio determina 
 
 Las cuentas nuevas permanecen inactivas hasta que se consume un enlace de un solo uso enviado por correo. Configura `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM`; en producción también define `APP_BASE_URL` si no deseas usar la URL de Vercel detectada automáticamente.
 
+## Recuperación de contraseña
+
+En el inicio de sesión, **¿Olvidaste tu contraseña?** envía un enlace de un solo uso al correo institucional de una cuenta activa. El enlace abre la vista para definir una nueva contraseña, vence en una hora por defecto (`PASSWORD_RESET_HOURS`) y, al usarse, invalida las sesiones activas de esa cuenta.
+
 ## Base de datos en Neon
 
 La aplicacion admite una conexion administrada mediante `DATABASE_URL`. Cuando esta variable esta definida, tiene prioridad sobre las variables locales `DB_*`; la cadena debe incluir `sslmode=require`.

@@ -375,8 +375,8 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
   </div>
 }
 
-function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }) {
-  const [view, setView] = useState<'login' | 'signup' | 'confirmation-pending'>('login')
+function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () => Promise<void>; onPasswordReset: () => void }) {
+  const [view, setView] = useState<'login' | 'signup' | 'confirmation-pending' | 'password-recovery' | 'password-reset'>('login')
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [firstName, setFirstName] = useState('')
@@ -384,15 +384,32 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
   const [registerEmail, setRegisterEmail] = useState('')
   const [registerPassword, setRegisterPassword] = useState('')
   const [registerConfirmPassword, setRegisterConfirmPassword] = useState('')
+  const [recoveryEmail, setRecoveryEmail] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirmation, setNewPasswordConfirmation] = useState('')
+  const [passwordResetToken, setPasswordResetToken] = useState('')
   const [careerId, setCareerId] = useState('')
   const [pendingConfirmationEmail, setPendingConfirmationEmail] = useState('')
   const [careers, setCareers] = useState<RegistrationCareer[]>([])
   const [showPassword, setShowPassword] = useState(false)
   const [showRegisterPassword, setShowRegisterPassword] = useState(false)
+  const [showResetPassword, setShowResetPassword] = useState(false)
   const [remember, setRemember] = useState(false)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const isStudentRegistration = /^[^\s@]+@est\.univalle\.edu$/i.test(registerEmail.trim())
+
+  useEffect(() => {
+    const resetToken = new URLSearchParams(window.location.search).get('resetToken')
+    if (!resetToken) return
+
+    setPasswordResetToken(resetToken)
+    setMessage('')
+    setView('password-reset')
+    const url = new URL(window.location.href)
+    url.searchParams.delete('resetToken')
+    window.history.replaceState({}, '', url)
+  }, [])
 
   useEffect(() => {
     const confirmToken = new URLSearchParams(window.location.search).get('confirmToken')
@@ -528,6 +545,66 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
     }
   }
 
+  async function requestPasswordReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const email = recoveryEmail.trim().toLowerCase()
+    if (!email) {
+      setMessage('Ingresa tu correo institucional para continuar.')
+      return
+    }
+
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>('/api/auth/request-password-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      })
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible solicitar el cambio de contraseña.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function resetPassword(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!passwordResetToken) {
+      setMessage('El enlace para cambiar la contraseña no es válido.')
+      return
+    }
+    if (newPassword.length < 8) {
+      setMessage('La contraseña debe tener al menos 8 caracteres.')
+      return
+    }
+    if (newPassword !== newPasswordConfirmation) {
+      setMessage('Las contraseñas no coinciden.')
+      return
+    }
+
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: passwordResetToken, password: newPassword, confirmPassword: newPasswordConfirmation }),
+      })
+      setPasswordResetToken('')
+      setNewPassword('')
+      setNewPasswordConfirmation('')
+      onPasswordReset()
+      setView('login')
+      setMessage(result.message)
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible cambiar la contraseña.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   return (
     <main className="login-page">
       <section className="welcome-panel" aria-label="Información del sistema">
@@ -560,8 +637,8 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>{view === 'signup' ? 'Crea tu cuenta' : view === 'confirmation-pending' ? 'Confirma tu correo' : 'Bienvenido'}</h2>
-            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : view === 'confirmation-pending' ? 'Tu cuenta se activará cuando confirmes el enlace enviado.' : 'Ingresa con tus credenciales institucionales.'}</p>
+            <h2>{view === 'signup' ? 'Crea tu cuenta' : view === 'confirmation-pending' ? 'Confirma tu correo' : view === 'password-recovery' ? 'Recupera tu acceso' : view === 'password-reset' ? 'Nueva contraseña' : 'Bienvenido'}</h2>
+            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : view === 'confirmation-pending' ? 'Tu cuenta se activará cuando confirmes el enlace enviado.' : view === 'password-recovery' ? 'Te enviaremos un enlace a tu correo institucional.' : view === 'password-reset' ? 'Define una contraseña nueva y segura para continuar.' : 'Ingresa con tus credenciales institucionales.'}</p>
           </header>
 
           {view === 'confirmation-pending' ? (
@@ -574,6 +651,25 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
               <button className="text-button" disabled={isSubmitting} onClick={() => { setMessage(''); setView('login') }} type="button">Volver a iniciar sesión</button>
               <p className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
             </section>
+          ) : view === 'password-recovery' ? (
+            <form onSubmit={requestPasswordReset} noValidate>
+              <label className="field-label" htmlFor="recovery-email">Correo institucional</label>
+              <div className="input-shell"><Icon name="user" /><input autoComplete="email" disabled={isSubmitting} id="recovery-email" onChange={(event) => setRecoveryEmail(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={recoveryEmail} /></div>
+              <p className="registration-note">Por seguridad, enviaremos el enlace solo si existe una cuenta activa con ese correo.</p>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Enviando enlace…' : 'Enviar enlace'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setMessage(''); setView('login') }} type="button">Volver a iniciar sesión</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
+          ) : view === 'password-reset' ? (
+            <form onSubmit={resetPassword} noValidate>
+              <label className="field-label" htmlFor="new-password">Nueva contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="new-password" onChange={(event) => setNewPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showResetPassword ? 'text' : 'password'} value={newPassword} /><button aria-label={showResetPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowResetPassword((visible) => !visible)} type="button"><Icon name={showResetPassword ? 'eyeOff' : 'eye'} /></button></div>
+              <label className="field-label" htmlFor="new-password-confirmation">Confirmar nueva contraseña</label>
+              <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="new-password-confirmation" onChange={(event) => setNewPasswordConfirmation(event.target.value)} placeholder="Repite tu contraseña nueva" type={showResetPassword ? 'text' : 'password'} value={newPasswordConfirmation} /></div>
+              <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Actualizando…' : 'Actualizar contraseña'}</span><Icon name="arrow" /></button>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setPasswordResetToken(''); onPasswordReset(); setView('login') }} type="button">Volver a iniciar sesión</button>
+              <p aria-live="polite" className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </form>
           ) : view === 'signup' ? (
             <form onSubmit={handleRegister} noValidate>
               <label className="field-label" htmlFor="first-name">Nombres</label>
@@ -595,7 +691,7 @@ function LoginView({ onAuthenticated }: { onAuthenticated: () => Promise<void> }
           ) : <form onSubmit={handleSubmit} noValidate>
               <label className="field-label" htmlFor="identifier">Correo institucional</label>
               <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="identifier" name="identifier" onChange={(event) => setIdentifier(event.target.value)} placeholder="nombre@univalle.edu" type="email" value={identifier} /></div>
-              <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => setMessage('Comunícate con Administración para recuperar tu acceso.')} type="button">¿Olvidaste tu contraseña?</button></div>
+              <div className="password-heading"><label className="field-label" htmlFor="password">Contraseña</label><button className="text-button" onClick={() => { setRecoveryEmail(identifier.trim()); setMessage(''); setView('password-recovery') }} type="button">¿Olvidaste tu contraseña?</button></div>
               <div className="input-shell"><Icon name="lock" /><input autoComplete="current-password" disabled={isSubmitting} id="password" name="password" onChange={(event) => setPassword(event.target.value)} placeholder="Ingresa tu contraseña" type={showPassword ? 'text' : 'password'} value={password} /><button aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowPassword((visible) => !visible)} type="button"><Icon name={showPassword ? 'eyeOff' : 'eye'} /></button></div>
               <label className="remember-option"><input checked={remember} disabled={isSubmitting} onChange={(event) => setRemember(event.target.checked)} type="checkbox" /><span>Recordar mi sesión en este equipo</span></label>
               <button className="submit-button" disabled={isSubmitting} type="submit"><span>{isSubmitting ? 'Verificando acceso…' : 'Iniciar sesión'}</span><Icon name="arrow" /></button>
@@ -1642,6 +1738,7 @@ function App() {
   const [notifications, setNotifications] = useState<AppNotification[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSwitchingRole, setIsSwitchingRole] = useState(false)
+  const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
 
   async function loadPortal() {
@@ -1716,7 +1813,7 @@ function App() {
   }
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
-  if (!data) return <LoginView onAuthenticated={loadPortal} />
+  if (!data || isPasswordResetFlow) return <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
   if ('pendingReviews' in data) return <ReviewerPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   if ('invitations' in data) return <TutorPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />

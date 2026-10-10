@@ -14,6 +14,7 @@ const port = Number(process.env.PORT ?? 3001)
 const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
 const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
 const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
+const passwordResetHours = Number(process.env.PASSWORD_RESET_HOURS ?? 1)
 const appBaseUrl = (process.env.APP_BASE_URL
   ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : null)
   ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://127.0.0.1:5173')).replace(/\/$/, '')
@@ -306,6 +307,24 @@ async function ensureRegistrationSchema() {
     CREATE INDEX IF NOT EXISTS ix_email_confirmation_tokens_expiracion
       ON titulacion.email_confirmation_tokens (expires_at);
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.password_reset_tokens (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id) ON DELETE CASCADE,
+      token_hash varchar(128) NOT NULL UNIQUE,
+      expires_at timestamptz NOT NULL,
+      usado_en timestamptz,
+      creado_en timestamptz NOT NULL DEFAULT now()
+    );
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_usuario
+      ON titulacion.password_reset_tokens (usuario_id, creado_en DESC);
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_expiracion
+      ON titulacion.password_reset_tokens (expires_at);
+  `)
 }
 
 async function issueEmailConfirmation(databaseClient, userId) {
@@ -340,6 +359,38 @@ async function sendEmailConfirmation({ email, name, confirmationUrl, kind }) {
     subject: 'Confirma tu cuenta de Seguimiento de Titulación',
     text: `Hola ${name}. Confirma tu correo institucional abriendo este enlace:\n\n${confirmationUrl}\n\n${pendingRoleNote}\n\nEl enlace vence en ${confirmationHours} horas.`,
     html: `<p>Hola ${name}.</p><p>Confirma tu correo institucional para activar tu cuenta.</p><p><a href="${confirmationUrl}">Confirmar mi correo</a></p><p>${pendingRoleNote}</p><p>El enlace vence en ${confirmationHours} horas.</p>`,
+  })
+}
+
+async function issuePasswordReset(databaseClient, userId) {
+  const token = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = new Date(Date.now() + passwordResetHours * 60 * 60 * 1000)
+
+  await databaseClient.query(
+    `UPDATE titulacion.password_reset_tokens
+     SET usado_en = now()
+     WHERE usuario_id = $1 AND usado_en IS NULL AND expires_at > now()`,
+    [userId],
+  )
+  await databaseClient.query(
+    `INSERT INTO titulacion.password_reset_tokens (usuario_id, token_hash, expires_at)
+     VALUES ($1, $2, $3)`,
+    [userId, hashToken(token), expiresAt],
+  )
+  return `${appBaseUrl}/?resetToken=${encodeURIComponent(token)}`
+}
+
+async function sendPasswordResetEmail({ email, name, resetUrl }) {
+  if (!mailTransport) {
+    throw new Error('El envío de correo no está configurado. Configura SMTP antes de habilitar la recuperación de contraseñas.')
+  }
+
+  await mailTransport.sendMail({
+    from: smtpFrom,
+    to: email,
+    subject: 'Restablece tu contraseña de Seguimiento de Titulación',
+    text: `Hola ${name}. Recibimos una solicitud para cambiar tu contraseña. Abre este enlace para definir una nueva:\n\n${resetUrl}\n\nEl enlace vence en ${passwordResetHours} hora${passwordResetHours === 1 ? '' : 's'} y solo puede utilizarse una vez. Si no solicitaste este cambio, ignora este correo.`,
+    html: `<p>Hola ${name}.</p><p>Recibimos una solicitud para cambiar tu contraseña.</p><p><a href="${resetUrl}">Crear una nueva contraseña</a></p><p>El enlace vence en ${passwordResetHours} hora${passwordResetHours === 1 ? '' : 's'} y solo puede utilizarse una vez.</p><p>Si no solicitaste este cambio, ignora este correo.</p>`,
   })
 }
 
@@ -723,6 +774,99 @@ app.post('/api/auth/resend-confirmation', async (request, response, next) => {
       kind: accountKind(account.rows[0].correo),
     })
     return response.json({ message: genericMessage })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
+  }
+})
+
+app.post('/api/auth/request-password-reset', async (request, response, next) => {
+  let databaseClient = null
+  const genericMessage = 'Si existe una cuenta activa para ese correo, recibirás un enlace para cambiar tu contraseña.'
+  try {
+    await initializeServerless()
+    const email = text(request.body?.email).toLowerCase()
+    if (!accountKind(email)) return response.json({ message: genericMessage })
+
+    const account = await pool.query(
+      `SELECT id, nombres, correo
+       FROM titulacion.usuarios
+       WHERE lower(correo) = $1 AND activo
+       LIMIT 1`,
+      [email],
+    )
+    if (!account.rows[0]) return response.json({ message: genericMessage })
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const resetUrl = await issuePasswordReset(databaseClient, account.rows[0].id)
+    await databaseClient.query('COMMIT')
+    await sendPasswordResetEmail({
+      email: account.rows[0].correo,
+      name: account.rows[0].nombres,
+      resetUrl,
+    })
+    return response.json({ message: genericMessage })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
+  }
+})
+
+app.post('/api/auth/reset-password', async (request, response, next) => {
+  let databaseClient = null
+  try {
+    await initializeServerless()
+    const token = text(request.body?.token)
+    const password = request.body?.password
+    const confirmPassword = request.body?.confirmPassword
+    if (!token) return response.status(400).json({ message: 'El enlace para cambiar la contraseña no es válido.' })
+    if (typeof password !== 'string' || password.length < 8) {
+      return response.status(422).json({ message: 'La contraseña debe tener al menos 8 caracteres.' })
+    }
+    if (password !== confirmPassword) {
+      return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
+    }
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const reset = await databaseClient.query(
+      `SELECT prt.id, prt.usuario_id
+       FROM titulacion.password_reset_tokens prt
+       JOIN titulacion.usuarios u ON u.id = prt.usuario_id AND u.activo
+       WHERE prt.token_hash = $1 AND prt.usado_en IS NULL AND prt.expires_at > now()
+       FOR UPDATE OF prt, u`,
+      [hashToken(token)],
+    )
+    if (!reset.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(410).json({ message: 'El enlace para cambiar la contraseña venció, ya fue utilizado o no es válido.' })
+    }
+
+    await databaseClient.query(
+      `UPDATE titulacion.usuarios
+       SET password_hash = $1, actualizado_en = now()
+       WHERE id = $2`,
+      [await bcrypt.hash(password, 12), reset.rows[0].usuario_id],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.password_reset_tokens
+       SET usado_en = now()
+       WHERE id = $1`,
+      [reset.rows[0].id],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.sesiones_usuario
+       SET cerrada_en = COALESCE(cerrada_en, now())
+       WHERE usuario_id = $1 AND cerrada_en IS NULL`,
+      [reset.rows[0].usuario_id],
+    )
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'Tu contraseña fue actualizada. Ya puedes iniciar sesión.' })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
