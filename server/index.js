@@ -3120,7 +3120,7 @@ app.get('/api/student/overview', requireStudent, async (request, response, next)
 app.get('/api/documents', requireStudent, async (request, response, next) => {
   try {
     const { session } = request
-    const [documents, versions] = await Promise.all([
+    const [documents, versions, observations] = await Promise.all([
       pool.query(
         `SELECT d.id, d.proyecto_id, d.nombre, d.tipo_documento, d.creado_en,
                 p.codigo_seguimiento, f.codigo AS fase_codigo, f.nombre AS fase_nombre,
@@ -3161,6 +3161,26 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
          ORDER BY d.id, vd.numero_version DESC`,
         [session.estudiante_id],
       ),
+      pool.query(
+        `SELECT d.id AS documento_id, o.id AS observacion_id, o.numero, o.detalle,
+                o.estado, o.respuesta_estudiante, o.respondida_en,
+                rr.numero_ronda, source_version.numero_version AS version_origen,
+                response_version.numero_version AS version_respuesta,
+                trim(concat(reviewer.nombres, ' ', reviewer.apellidos)) AS revisor
+         FROM titulacion.documentos d
+         JOIN titulacion.proyecto_estudiantes pe ON pe.proyecto_id = d.proyecto_id AND pe.estudiante_id = $1 AND pe.activo
+         JOIN titulacion.versiones_documento source_version ON source_version.documento_id = d.id
+         JOIN titulacion.rondas_revision rr ON rr.version_documento_id = source_version.id
+         JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id
+         JOIN titulacion.observaciones o ON o.revision_id = r.id
+         JOIN titulacion.asignaciones_proyecto assignment ON assignment.id = r.asignacion_proyecto_id
+         JOIN titulacion.docentes teacher ON teacher.id = assignment.docente_id
+         JOIN titulacion.usuarios reviewer ON reviewer.id = teacher.usuario_id
+         LEFT JOIN titulacion.versiones_documento response_version ON response_version.id = o.version_documento_respuesta_id
+         WHERE d.activo
+         ORDER BY d.id, rr.numero_ronda DESC, assignment.tipo, o.numero`,
+        [session.estudiante_id],
+      ),
     ])
 
     const versionsByDocument = new Map()
@@ -3168,6 +3188,23 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
       const current = versionsByDocument.get(version.documento_id) ?? []
       current.push(versionPayload(version))
       versionsByDocument.set(version.documento_id, current)
+    }
+    const observationsByDocument = new Map()
+    for (const observation of observations.rows) {
+      const current = observationsByDocument.get(observation.documento_id) ?? []
+      current.push({
+        id: observation.observacion_id,
+        number: observation.numero,
+        detail: observation.detalle,
+        status: observation.estado,
+        response: observation.respuesta_estudiante,
+        respondedAt: observation.respondida_en,
+        roundNumber: observation.numero_ronda,
+        sourceVersion: observation.version_origen,
+        responseVersion: observation.version_respuesta,
+        reviewer: observation.revisor,
+      })
+      observationsByDocument.set(observation.documento_id, current)
     }
 
     return response.json({
@@ -3192,8 +3229,51 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
           comentario_entrega: null,
         }) : null,
         versions: versionsByDocument.get(document.id) ?? [],
+        observations: observationsByDocument.get(document.id) ?? [],
       })),
     })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+app.patch('/api/documents/:documentId/observations/:observationId', requireStudent, async (request, response, next) => {
+  try {
+    const documentId = request.params.documentId
+    const observationId = request.params.observationId
+    const studentResponse = text(request.body?.response)
+    if (!isUuid(documentId) || !isUuid(observationId)) {
+      return response.status(400).json({ message: 'La observación solicitada no es válida.' })
+    }
+    if (studentResponse.length < 5 || studentResponse.length > 2000) {
+      return response.status(422).json({ message: 'Escribe una respuesta entre 5 y 2000 caracteres.' })
+    }
+
+    const updated = await pool.query(
+      `UPDATE titulacion.observaciones o
+       SET estado = 'RESPONDIDA',
+           respuesta_estudiante = $1,
+           respondida_por_usuario_id = $2,
+           respondida_en = now()
+       FROM titulacion.revisiones r
+       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
+       JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
+       JOIN titulacion.documentos d ON d.id = source_version.documento_id
+       JOIN titulacion.proyectos p ON p.id = d.proyecto_id
+       JOIN titulacion.proyecto_estudiantes pe ON pe.proyecto_id = p.id AND pe.estudiante_id = $3 AND pe.activo
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       WHERE o.id = $4
+         AND o.revision_id = r.id
+         AND d.id = $5
+         AND o.estado = 'ABIERTA'
+         AND ep.permite_edicion_estudiante
+       RETURNING o.id, o.respondida_en`,
+      [studentResponse, request.session.usuario_id, request.session.estudiante_id, observationId, documentId],
+    )
+    if (!updated.rows[0]) {
+      return response.status(409).json({ message: 'La observación no está disponible para responder o ya fue respondida.' })
+    }
+    return response.json({ message: 'Respuesta registrada. Al subir la nueva versión quedará vinculada como corrección.', respondedAt: updated.rows[0].respondida_en })
   } catch (error) {
     return next(error)
   }
@@ -3306,10 +3386,26 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
         text(request.body?.comment) || null,
       ],
     )
+    const linkedObservations = await databaseClient.query(
+      `UPDATE titulacion.observaciones o
+       SET version_documento_respuesta_id = $1
+       FROM titulacion.revisiones r
+       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
+       JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
+       WHERE o.revision_id = r.id
+         AND source_version.documento_id = $2
+         AND o.estado = 'RESPONDIDA'
+         AND o.version_documento_respuesta_id IS NULL
+       RETURNING o.id`,
+      [inserted.rows[0].version_id, selected.id],
+    )
     await databaseClient.query('COMMIT')
     return response.status(201).json({
-      message: `Se registró la versión ${inserted.rows[0].numero_version} del perfil.`,
+      message: linkedObservations.rowCount > 0
+        ? `Se registró la versión ${inserted.rows[0].numero_version} del perfil y se asociaron ${linkedObservations.rowCount} observación(es) respondida(s).`
+        : `Se registró la versión ${inserted.rows[0].numero_version} del perfil.`,
       version: versionPayload(inserted.rows[0]),
+      linkedObservations: linkedObservations.rowCount,
     })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)

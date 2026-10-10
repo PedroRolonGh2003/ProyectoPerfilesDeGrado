@@ -10,14 +10,19 @@ import pg from 'pg'
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const apiUrl = `http://127.0.0.1:${port}`
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT ?? 5432),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  options: '-c search_path=titulacion,public',
-})
+const pool = new Pool(process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
+    }
+  : {
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT ?? 5432),
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      options: '-c search_path=titulacion,public',
+    })
 
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const password = 'ReviewerFlowQA-2026'
@@ -248,9 +253,36 @@ try {
   assert.equal(finalState.rows[0].phase, 'REGISTRO', 'El perfil devuelto no habilitó la fase de corrección')
   assert.ok(finalState.rows[0].cerrada_en, 'La ronda no se cerró al recibir ambos dictámenes')
   assert.equal(finalState.rows[0].email_queue, 1, 'No se encoló el aviso por correo al devolver el perfil')
+  const studentDocumentsResponse = await expect(await fetch(`${apiUrl}/api/documents`, { headers: { Cookie: cookies.student } }), 200, 'Consulta de observaciones por estudiante')
+  const studentDocument = (await studentDocumentsResponse.json()).documents.find((item) => item.id === documentId)
+  assert.ok(studentDocument?.observations?.length === 2, 'El estudiante no puede ver las observaciones del perfil')
+  const observation = studentDocument.observations[0]
+  assert.equal(observation.status, 'ABIERTA', 'La observación nueva debe quedar abierta')
+  await expect(await fetch(`${apiUrl}/api/documents/${documentId}/observations/${observation.id}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookies.student },
+    body: JSON.stringify({ response: 'Se precisó el objetivo general y se documentó el ajuste en el perfil.' }),
+  }), 200, 'Respuesta del estudiante a la observación')
+  const correction = new FormData()
+  correction.set('document', new Blob([Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'correccion-qa.docx')
+  correction.set('comment', 'Corrección del objetivo general para QA.')
+  const uploadedCorrection = await expect(await fetch(`${apiUrl}/api/documents/${documentId}/versions`, {
+    method: 'POST', headers: { Cookie: cookies.student }, body: correction,
+  }), 201, 'Carga de versión corregida por estudiante')
+  const correctionPayload = await uploadedCorrection.json()
+  assert.equal(correctionPayload.linkedObservations, 1, 'La versión corregida no se vinculó con la observación respondida')
+  const linkedObservation = await pool.query(
+    `SELECT o.estado, o.respuesta_estudiante, vd.numero_version AS version_respuesta
+     FROM titulacion.observaciones o
+     LEFT JOIN titulacion.versiones_documento vd ON vd.id = o.version_documento_respuesta_id
+     WHERE o.id = $1`,
+    [observation.id],
+  )
+  assert.equal(linkedObservation.rows[0].estado, 'RESPONDIDA', 'La respuesta del estudiante no cambió el estado de la observación')
+  assert.equal(linkedObservation.rows[0].respuesta_estudiante, 'Se precisó el objetivo general y se documentó el ajuste en el perfil.', 'La respuesta del estudiante no se conservó')
+  assert.equal(linkedObservation.rows[0].version_respuesta, 2, 'La observación no quedó vinculada a la versión 2')
   const completedDashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer1 } }), 200, 'Historial del primer revisor')
   assert.equal((await completedDashboard.json()).completedReviews.length, 1, 'El dictamen no pasó al historial del revisor')
-  console.log('QA revisor aprobado: bandeja, descarga, dictamen, cierre de ronda y correo en cola verificados.')
+  console.log('QA revisor aprobado: bandeja, descarga, dictamen, devolución, respuesta y versión corregida verificados.')
 } finally {
   for (const cookie of Object.values(cookies)) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } }).catch(() => undefined)
   await cleanup()
