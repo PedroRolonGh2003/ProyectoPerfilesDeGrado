@@ -223,7 +223,15 @@ type Project = {
   modality: string
   phase: string
   status: string
+  statusCode: string
   registeredAt: string
+}
+type ProjectRejectionReason = {
+  reviewer: string
+  roundNumber: number
+  sourceVersion: number
+  comment: string | null
+  observations: { number: number; detail: string }[]
 }
 type Bootstrap = {
   user: StudentUser
@@ -231,6 +239,7 @@ type Bootstrap = {
   modalities: Option[]
   tutors: Tutor[]
   project: Project | null
+  rejectionReasons: ProjectRejectionReason[]
 }
 type DocumentVersion = {
   id: string
@@ -718,19 +727,31 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
   )
 }
 
-function ExistingProject({ project, message }: { project: Project; message: string }) {
+function projectStatusPresentation(statusCode: string) {
+  if (['OBSERVADO', 'RECHAZADO'].includes(statusCode)) {
+    return { tone: 'rejected', label: 'Rechazado con observaciones', message: 'Tu perfil requiere correcciones. Revisa los motivos indicados por los revisores.' }
+  }
+  if (['APROBADO_TECNICO', 'APROBADO_INSTITUCIONAL', 'FINALIZADO'].includes(statusCode)) {
+    return { tone: 'approved', label: 'Aprobado', message: 'Tu perfil fue aprobado. Puedes consultar el avance de tu proceso desde este portal.' }
+  }
+  return { tone: 'pending', label: 'Pendiente de revisión', message: 'Tu perfil está en espera de la revisión académica correspondiente.' }
+}
+
+function ExistingProject({ project, message, rejectionReasons }: { project: Project; message: string; rejectionReasons: ProjectRejectionReason[] }) {
+  const status = projectStatusPresentation(project.statusCode)
   return (
     <>
-      <section className="student-callout project-registered"><Icon name="check" /><div><strong>Tu proyecto ya está registrado</strong><p>{message || 'Puedes consultar el avance actual de tu proceso desde este portal.'}</p></div></section>
+      <section className={`student-callout project-status-callout is-${status.tone}`}><Icon name="check" /><div><span className="project-status-badge">{status.label}</span><strong>{status.label}</strong><p>{message || status.message}</p></div></section>
       <section className="form-section project-summary">
         <div className="section-heading"><span>F1</span><div><h2>{project.title}</h2><p>Código de seguimiento: <strong>{project.code}</strong></p></div></div>
         <div className="project-summary-grid">
           <div><small>Gestión</small><strong>{project.management}</strong></div>
           <div><small>Modalidad</small><strong>{project.modality}</strong></div>
           <div><small>Fase actual</small><strong>{project.phase}</strong></div>
-          <div><small>Estado</small><strong>{project.status}</strong></div>
+          <div><small>Estado</small><strong className={`project-status-text is-${status.tone}`}>{status.label}</strong></div>
         </div>
         <div className="project-summary-copy"><small>Descripción</small><p>{project.description}</p><small>Objetivo general</small><p>{project.generalObjective}</p></div>
+        {status.tone === 'rejected' && <section className="project-rejection-reasons"><div><p>REVISIÓN DEL PERFIL</p><h3>Motivos de rechazo</h3><span>Corrige cada punto desde Documentos antes de adjuntar una nueva versión.</span></div>{rejectionReasons.length === 0 ? <p className="project-rejection-empty">El perfil fue devuelto para correcciones. Revisa la sección Documentos para conocer el detalle.</p> : <div className="rejection-reason-list">{rejectionReasons.map((reason) => <article key={`${reason.reviewer}-${reason.roundNumber}`}><header><strong>{reason.reviewer}</strong><span>Ronda {reason.roundNumber} · V{reason.sourceVersion}</span></header>{reason.comment && <p className="rejection-general-comment">{reason.comment}</p>}{reason.observations.length > 0 && <ol>{reason.observations.map((observation) => <li key={observation.number}><b>{observation.number}</b><span>{observation.detail}</span></li>)}</ol>}</article>)}</div>}</section>}
       </section>
     </>
   )
@@ -819,7 +840,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
           <div className="breadcrumb">Inicio <span>/</span> Mi proyecto <span>/</span> Formulario 1</div>
           <div className="student-title-row"><div><p className="eyebrow">Fase 1 · Perfil</p><h1>{data.project ? 'Mi proyecto' : 'Registra tu proyecto'}</h1><p>{data.project ? 'Consulta la información registrada y el estado actual de tu proceso.' : 'Completa el Formulario 1 con la información inicial de tu propuesta de titulación.'}</p></div>{!data.project && <div className="form-progress"><span>Progreso del formulario</span><strong>0%</strong><div><i /></div></div>}</div>
 
-          {data.project ? <ExistingProject message={message} project={data.project} /> : (
+          {data.project ? <ExistingProject message={message} project={data.project} rejectionReasons={data.rejectionReasons} /> : (
             <>
               <section className="student-callout"><Icon name="check" /><div><strong>Antes de comenzar</strong><p>Ten a mano el título tentativo, los objetivos del proyecto y el perfil en formato Word.</p></div></section>
               <form className="project-form" onSubmit={handleSubmit} noValidate>
@@ -960,7 +981,6 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
   const [versionFile, setVersionFile] = useState<File | null>(null)
   const [comment, setComment] = useState('')
   const [observationReplies, setObservationReplies] = useState<Record<string, string>>({})
-  const [replyingObservationId, setReplyingObservationId] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   async function loadDocuments() {
@@ -981,7 +1001,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
     void loadDocuments()
   }, [data.project?.id])
 
-  async function submitVersion(event: FormEvent<HTMLFormElement>, documentId: string) {
+  async function submitVersion(event: FormEvent<HTMLFormElement>, document: StudentDocument) {
     event.preventDefault()
     if (!versionFile) {
       setMessage('Selecciona el archivo Word de la nueva versión.')
@@ -992,48 +1012,31 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
       setMessage('Solo se permiten archivos Word (.doc o .docx).')
       return
     }
+    const openObservations = document.observations.filter((observation) => observation.status === 'ABIERTA')
+    const responses = openObservations.map((observation) => ({ id: observation.id, response: observationReplies[observation.id]?.trim() ?? '' }))
+    if (responses.some((item) => item.response.length < 5)) {
+      setMessage('Explica cómo corregiste cada observación antes de subir la nueva versión.')
+      return
+    }
 
     const form = new FormData()
     form.set('document', versionFile)
     form.set('comment', comment.trim())
+    form.set('observationResponses', JSON.stringify(responses))
     setIsSubmitting(true)
     setMessage('')
     try {
-      const result = await api<{ message: string }>(`/api/documents/${documentId}/versions`, { method: 'POST', body: form })
+      const result = await api<{ message: string }>(`/api/documents/${document.id}/versions`, { method: 'POST', body: form })
       setMessage(result.message)
       setSelectedDocumentId('')
       setVersionFile(null)
       setComment('')
+      setObservationReplies({})
       await loadDocuments()
     } catch (submitError) {
       setMessage(submitError instanceof Error ? submitError.message : 'No fue posible guardar la nueva versión.')
     } finally {
       setIsSubmitting(false)
-    }
-  }
-
-  async function submitObservationReply(event: FormEvent<HTMLFormElement>, documentId: string, observationId: string) {
-    event.preventDefault()
-    const reply = observationReplies[observationId]?.trim() ?? ''
-    if (reply.length < 5) {
-      setMessage('Explica la corrección realizada antes de enviar tu respuesta.')
-      return
-    }
-    setReplyingObservationId(observationId)
-    setMessage('')
-    try {
-      const result = await api<{ message: string }>(`/api/documents/${documentId}/observations/${observationId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ response: reply }),
-      })
-      setMessage(result.message)
-      setObservationReplies((current) => ({ ...current, [observationId]: '' }))
-      await loadDocuments()
-    } catch (replyError) {
-      setMessage(replyError instanceof Error ? replyError.message : 'No fue posible guardar tu respuesta.')
-    } finally {
-      setReplyingObservationId('')
     }
   }
 
@@ -1071,10 +1074,10 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
                   return <section className="document-card" key={document.id}>
                     <div className="document-card-header"><div className="document-symbol"><Icon name="file" /></div><div><p>{documentLabel(document.type)}</p><h2>{document.name}</h2><span>{document.phase} · Estado: {document.status}</span></div><div className="document-version-badge">{document.totalVersions} {document.totalVersions === 1 ? 'versión' : 'versiones'}</div></div>
                     {document.latest ? <div className="document-latest"><div><small>Última versión</small><strong>V{document.latest.number} · {document.latest.filename}</strong><span>{formatFileSize(document.latest.size)} · {formatDate(document.latest.uploadedAt)}</span></div><a className="document-download" href={`/api/documents/${document.id}/download`}><Icon name="download" />Descargar</a></div> : <p className="document-lock-note">Este registro aún no tiene un archivo disponible.</p>}
-                    {document.observations.length > 0 && <section className="document-observations"><div className="document-observations-heading"><div><small>DEVOLUCIONES DE REVISORES</small><h3>Observaciones del perfil</h3><p>Responde cómo corregiste cada punto. La siguiente versión que subas quedará asociada a tus respuestas.</p></div><span>{document.observations.filter((observation) => observation.status === 'ABIERTA').length} pendientes</span></div><ol>{document.observations.map((observation) => <li className={`document-observation is-${observation.status.toLowerCase()}`} key={observation.id}><div className="observation-number">{observation.number}</div><div className="observation-content"><div className="observation-meta"><strong>{observation.reviewer}</strong><span>Ronda {observation.roundNumber} · Perfil V{observation.sourceVersion}</span></div><p>{observation.detail}</p>{observation.status === 'ABIERTA' ? <form className="observation-reply-form" onSubmit={(event) => void submitObservationReply(event, document.id, observation.id)}><label className="form-field"><span>Tu respuesta y corrección realizada <b>*</b></span><textarea disabled={Boolean(replyingObservationId)} onChange={(event) => setObservationReplies((current) => ({ ...current, [observation.id]: event.target.value }))} placeholder="Ej.: Se delimitó el objetivo general en la sección 1.2 del perfil." rows={2} value={observationReplies[observation.id] ?? ''} /></label><button className="secondary-button" disabled={Boolean(replyingObservationId)} type="submit">{replyingObservationId === observation.id ? 'Guardando…' : 'Responder observación'}</button></form> : <div className="observation-response"><strong>{observation.status === 'CERRADA' ? 'Corrección validada' : observation.responseVersion ? `Asociada a la versión V${observation.responseVersion}` : 'Respuesta registrada; falta adjuntar la nueva versión'}</strong><p>{observation.response}</p>{observation.respondedAt && <small>Respondida el {formatDate(observation.respondedAt)}</small>}</div>}</div></li>)}</ol></section>}
+                    {document.observations.length > 0 && <section className="document-observations"><div className="document-observations-heading"><div><small>DEVOLUCIONES DE REVISORES</small><h3>Observaciones del perfil</h3><p>Consulta las observaciones de la versión devuelta. Las respuestas se completan junto con el archivo al subir la versión corregida.</p></div><span>{document.observations.filter((observation) => observation.status === 'ABIERTA').length} pendientes</span></div><ol>{document.observations.map((observation) => <li className={`document-observation is-${observation.status.toLowerCase()}`} key={observation.id}><div className="observation-number">{observation.number}</div><div className="observation-content"><div className="observation-meta"><strong>{observation.reviewer}</strong><span>Ronda {observation.roundNumber} · Perfil V{observation.sourceVersion}</span></div><p>{observation.detail}</p>{observation.status === 'ABIERTA' ? <p className="observation-pending-note">Pendiente de corrección. Responde este punto al seleccionar “Subir nueva versión”.</p> : <div className="observation-response"><strong>{observation.status === 'CERRADA' ? 'Corrección validada' : `Asociada a la versión V${observation.responseVersion}`}</strong><p>{observation.response}</p>{observation.respondedAt && <small>Respondida el {formatDate(observation.respondedAt)}</small>}</div>}</div></li>)}</ol></section>}
                     {document.versions.length > 0 && <details className="version-history"><summary>Ver historial de versiones ({document.versions.length})</summary><ul>{document.versions.map((version) => <li key={version.id}><div><strong>Versión {version.number}</strong><span>{version.filename} · {formatDate(version.uploadedAt)}{version.comment ? ` · ${version.comment}` : ''}</span></div><a aria-label={`Descargar versión ${version.number}`} href={`/api/documents/${document.id}/download?version=${version.id}`}><Icon name="download" /></a></li>)}</ul></details>}
                     {document.canUploadVersion ? <div className="document-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => { setSelectedDocumentId(isUpdating ? '' : document.id); setMessage('') }} type="button">{isUpdating ? 'Cancelar actualización' : 'Subir nueva versión'}</button><small>El estado actual permite que envíes una corrección del perfil.</small></div> : <p className="document-lock-note">El estado actual no permite nuevas versiones. Administración habilitará la edición cuando corresponda.</p>}
-                    {isUpdating && <form className="version-form" onSubmit={(event) => void submitVersion(event, document.id)}><label className="form-field"><span>Nueva versión en Word <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => setVersionFile(event.target.files?.[0] ?? null)} type="file" /><small>{versionFile ? versionFile.name : 'Formato permitido: .doc o .docx · máximo 10 MB'}</small></label><label className="form-field"><span>Comentario de entrega</span><textarea disabled={isSubmitting} onChange={(event) => setComment(event.target.value)} placeholder="Indica brevemente qué corregiste en esta versión." rows={2} value={comment} /></label><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Guardando…' : 'Guardar nueva versión'} <Icon name="arrow" /></button></form>}
+                    {isUpdating && <form className="version-form" onSubmit={(event) => void submitVersion(event, document)}><div className="version-form-heading"><small>VERSIÓN CORREGIDA</small><h3>Adjunta V{document.totalVersions + 1} y responde las observaciones</h3><p>Las respuestas y el archivo se guardarán juntos. No se registrará ninguna respuesta por separado.</p></div>{document.observations.filter((observation) => observation.status === 'ABIERTA').length > 0 && <section className="version-observation-responses"><strong>Respuestas a observaciones <b>*</b></strong>{document.observations.filter((observation) => observation.status === 'ABIERTA').map((observation) => <label key={observation.id}><span>{observation.reviewer} · Observación {observation.number}</span><small>{observation.detail}</small><textarea disabled={isSubmitting} onChange={(event) => setObservationReplies((current) => ({ ...current, [observation.id]: event.target.value }))} placeholder="Explica qué corregiste y en qué sección de la nueva versión." rows={3} value={observationReplies[observation.id] ?? ''} /></label>)}</section>}<label className="form-field"><span>Nueva versión en Word <b>*</b></span><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} onChange={(event) => setVersionFile(event.target.files?.[0] ?? null)} type="file" /><small>{versionFile ? versionFile.name : 'Formato permitido: .doc o .docx · máximo 10 MB'}</small></label><label className="form-field"><span>Comentario de entrega</span><textarea disabled={isSubmitting} onChange={(event) => setComment(event.target.value)} placeholder="Indica brevemente qué corregiste en esta versión." rows={2} value={comment} /></label><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Guardando…' : 'Guardar nueva versión'} <Icon name="arrow" /></button></form>}
                   </section>
                 })}
               </div>

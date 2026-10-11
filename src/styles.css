@@ -218,9 +218,21 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .primary-button svg { height: 17px; width: 17px; }
 .student-message { color: var(--univalle-wine); font-size: 12px; line-height: 1.45; margin: 0; max-height: 0; opacity: 0; overflow: hidden; padding: 0 clamp(21px, 4vw, 42px); transition: all .2s ease; }
 .student-message.is-visible { max-height: 60px; opacity: 1; padding-bottom: 22px; }
-.project-registered { background: #eef8f0; border-color: #cfe7d4; }
-.project-registered svg, .project-registered strong { color: #27653a; }
-.project-registered p { color: #5a7962; }
+.project-status-callout { align-items: center; }
+.project-status-callout > div { align-items: flex-start; display: grid; gap: 3px; }
+.project-status-badge { border-radius: 99px; font-size: 10px; font-weight: 800; letter-spacing: .045em; padding: 5px 9px; text-transform: uppercase; }
+.project-status-callout.is-rejected { background: #fff0f1; border-color: #f0c7ca; }
+.project-status-callout.is-rejected svg, .project-status-callout.is-rejected strong { color: #ad333a; }
+.project-status-callout.is-rejected p { color: #92545a; }
+.project-status-callout.is-rejected .project-status-badge, .project-status-text.is-rejected { background: #fde0e2; color: #ad333a; }
+.project-status-callout.is-pending { background: #fff7e7; border-color: #eedba5; }
+.project-status-callout.is-pending svg, .project-status-callout.is-pending strong { color: #9a6810; }
+.project-status-callout.is-pending p { color: #866c31; }
+.project-status-callout.is-pending .project-status-badge, .project-status-text.is-pending { background: #ffedbb; color: #8b5c0b; }
+.project-status-callout.is-approved { background: #eef8f0; border-color: #cfe7d4; }
+.project-status-callout.is-approved svg, .project-status-callout.is-approved strong { color: #27653a; }
+.project-status-callout.is-approved p { color: #5a7962; }
+.project-status-callout.is-approved .project-status-badge, .project-status-text.is-approved { background: #dff1e3; color: #27653a; }
 .project-summary { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 10px 27px rgba(71, 39, 49, .04); }
 .project-summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, 1fr); margin: 2px 0 26px; }
 .project-summary-grid > div { background: #faf7f7; border: 1px solid #eee8e9; border-radius: 7px; display: grid; gap: 5px; min-height: 72px; padding: 13px; }
@@ -228,6 +240,22 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .project-summary-grid strong { color: #4d4144; font-size: 12px; line-height: 1.35; }
 .project-summary-copy { border-top: 1px solid #eee8e9; display: grid; gap: 6px; padding-top: 20px; }
 .project-summary-copy p { color: #66595d; font-size: 13px; line-height: 1.55; margin: 0 0 13px; }
+.project-status-text { border-radius: 99px; display: inline-flex; padding: 5px 8px; width: fit-content; }
+.project-rejection-reasons { background: #fff7f7; border: 1px solid #f0d2d4; border-radius: 8px; display: grid; gap: 15px; margin-top: 22px; padding: 18px; }
+.project-rejection-reasons > div:first-child { display: grid; gap: 4px; }
+.project-rejection-reasons > div:first-child p { color: #ad333a; font-size: 10px; font-weight: 800; letter-spacing: .08em; margin: 0; }
+.project-rejection-reasons h3 { color: #5b2a30; font-size: 15px; margin: 0; }
+.project-rejection-reasons > div:first-child span, .project-rejection-empty { color: #7d6568; font-size: 11px; line-height: 1.5; }
+.project-rejection-empty { margin: 0; }
+.rejection-reason-list { display: grid; gap: 10px; }
+.rejection-reason-list article { background: #fff; border: 1px solid #f0e0e1; border-radius: 7px; padding: 13px; }
+.rejection-reason-list header { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.rejection-reason-list header strong { color: #543c40; font-size: 12px; }
+.rejection-reason-list header span { color: #9b8588; font-size: 10px; }
+.rejection-general-comment { color: #765e62; font-size: 12px; line-height: 1.5; margin: 9px 0; }
+.rejection-reason-list ol { display: grid; gap: 7px; list-style: none; margin: 10px 0 0; padding: 0; }
+.rejection-reason-list li { align-items: flex-start; color: #624d51; display: flex; font-size: 12px; gap: 8px; line-height: 1.45; }
+.rejection-reason-list li b { align-items: center; background: #fde0e2; border-radius: 50%; color: #ad333a; display: inline-flex; flex: 0 0 auto; font-size: 10px; height: 20px; justify-content: center; width: 20px; }
 .documents-title { align-items: flex-start; }
 .document-project-tag { background: #fff; border: 1px solid #e7e0e2; border-radius: 8px; display: grid; gap: 5px; min-width: 170px; padding: 12px 15px; }
 .document-project-tag small { color: #968a8d; font-size: 10px; }
@@ -271,9 +299,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .observation-meta strong { color: #5f4a3d; font-size: 11px; }
 .observation-meta span, .observation-response small { color: #95806e; font-size: 10px; }
 .observation-content > p { color: #674f3e; font-size: 12px; line-height: 1.45; margin: 7px 0 0; }
-.observation-reply-form { border-top: 1px solid #f0e5d6; margin-top: 10px; padding-top: 10px; }
-.observation-reply-form .form-field { margin-bottom: 9px; }
-.observation-reply-form textarea { background: #fffdf9; }
+.observation-pending-note { background: #fff8e9; border-radius: 6px; color: #80672e; font-size: 11px; line-height: 1.45; margin: 10px 0 0; padding: 9px 10px; }
 .observation-response { background: #f2faf5; border-radius: 6px; margin-top: 10px; padding: 9px 10px; }
 .observation-response strong { color: #367152; font-size: 10px; }
 .observation-response p { color: #54705e; font-size: 11px; line-height: 1.4; margin: 5px 0; }
@@ -292,6 +318,18 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .version-form { background: #fcf6f8; border-top: 1px solid #efdce3; padding: 20px clamp(18px, 3vw, 26px); }
 .version-form .form-field { margin-bottom: 14px; }
 .version-form input[type='file'] { background: #fff; padding: 9px; }
+.version-form-heading { display: grid; gap: 4px; margin-bottom: 18px; }
+.version-form-heading small { color: var(--univalle-wine); font-size: 9px; font-weight: 800; letter-spacing: .09em; }
+.version-form-heading h3 { color: #49363c; font-size: 15px; margin: 0; }
+.version-form-heading p { color: #806f74; font-size: 11px; line-height: 1.45; margin: 0; }
+.version-observation-responses { background: #fff; border: 1px solid #ead9df; border-radius: 8px; display: grid; gap: 13px; margin: 0 0 17px; padding: 15px; }
+.version-observation-responses > strong { color: #563f46; font-size: 12px; }
+.version-observation-responses > strong b { color: var(--univalle-wine); }
+.version-observation-responses label { border-top: 1px solid #f0e8eb; display: grid; gap: 6px; padding-top: 12px; }
+.version-observation-responses label > span { color: #69555b; font-size: 11px; font-weight: 700; }
+.version-observation-responses label > small { color: #8b7a7e; font-size: 11px; line-height: 1.4; }
+.version-observation-responses textarea { background: #fffdfd; border: 1px solid #dcd5d7; border-radius: 7px; color: #4d3c42; font: inherit; font-size: 12px; line-height: 1.45; outline: none; padding: 9px 10px; resize: vertical; }
+.version-observation-responses textarea:focus { border-color: var(--univalle-wine); box-shadow: 0 0 0 3px rgba(173, 0, 71, .08); }
 .documents-message { background: #fdf0f4; border: 1px solid #f2d7e0; border-radius: 8px; margin-top: 15px; padding-bottom: 12px; padding-top: 12px; }
 
 /* Inicio del estudiante */

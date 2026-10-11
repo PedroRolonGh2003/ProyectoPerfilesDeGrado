@@ -442,6 +442,7 @@ function projectPayload(row) {
     modality: row.modalidad_nombre,
     phase: row.fase_nombre,
     status: row.estado_nombre,
+    statusCode: row.estado_codigo,
     registeredAt: row.registrado_en,
   }
 }
@@ -3118,7 +3119,7 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
         `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
                 p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
                 m.nombre AS modalidad_nombre, f.nombre AS fase_nombre,
-                ep.nombre AS estado_nombre
+                ep.nombre AS estado_nombre, ep.codigo AS estado_codigo
          FROM titulacion.proyecto_estudiantes pe
          JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
          JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -3132,12 +3133,44 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
       ),
     ])
 
+    const projectRow = project.rows[0]
+    const feedback = projectRow ? await pool.query(
+      `SELECT r.id AS revision_id, rr.numero_ronda, source_version.numero_version,
+              trim(concat(reviewer.nombres, ' ', reviewer.apellidos)) AS revisor,
+              r.comentario_general, o.numero AS observacion_numero, o.detalle AS observacion_detalle
+       FROM titulacion.rondas_revision rr
+       JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
+       JOIN titulacion.documentos d ON d.id = source_version.documento_id
+       JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id
+       JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+       JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
+       JOIN titulacion.usuarios reviewer ON reviewer.id = teacher.usuario_id
+       LEFT JOIN titulacion.observaciones o ON o.revision_id = r.id
+       WHERE d.proyecto_id = $1
+         AND r.decision IN ('OBSERVADO', 'RECHAZADO')
+       ORDER BY rr.numero_ronda DESC, a.tipo, o.numero`,
+      [projectRow.id],
+    ) : { rows: [] }
+    const feedbackByReview = new Map()
+    for (const row of feedback.rows) {
+      const current = feedbackByReview.get(row.revision_id) ?? {
+        reviewer: row.revisor,
+        roundNumber: row.numero_ronda,
+        sourceVersion: row.numero_version,
+        comment: row.comentario_general,
+        observations: [],
+      }
+      if (row.observacion_detalle) current.observations.push({ number: row.observacion_numero, detail: row.observacion_detalle })
+      feedbackByReview.set(row.revision_id, current)
+    }
+
     return response.json({
       user: sanitizeUser(session),
       managements: managements.rows,
       modalities: modalities.rows,
       tutors: tutors.rows.map((tutor) => ({ id: tutor.id, name: `${tutor.nombres} ${tutor.apellidos}`.trim() })),
-      project: projectPayload(project.rows[0]),
+      project: projectPayload(projectRow),
+      rejectionReasons: [...feedbackByReview.values()],
     })
   } catch (error) {
     return next(error)
@@ -3151,7 +3184,7 @@ app.get('/api/student/overview', requireStudent, async (request, response, next)
       `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
               p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
               m.nombre AS modalidad_nombre, f.nombre AS fase_nombre,
-              ep.nombre AS estado_nombre
+              ep.nombre AS estado_nombre, ep.codigo AS estado_codigo
        FROM titulacion.proyecto_estudiantes pe
        JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
        JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -3371,48 +3404,6 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
   }
 })
 
-app.patch('/api/documents/:documentId/observations/:observationId', requireStudent, async (request, response, next) => {
-  try {
-    const documentId = request.params.documentId
-    const observationId = request.params.observationId
-    const studentResponse = text(request.body?.response)
-    if (!isUuid(documentId) || !isUuid(observationId)) {
-      return response.status(400).json({ message: 'La observación solicitada no es válida.' })
-    }
-    if (studentResponse.length < 5 || studentResponse.length > 2000) {
-      return response.status(422).json({ message: 'Escribe una respuesta entre 5 y 2000 caracteres.' })
-    }
-
-    const updated = await pool.query(
-      `UPDATE titulacion.observaciones o
-       SET estado = 'RESPONDIDA',
-           respuesta_estudiante = $1,
-           respondida_por_usuario_id = $2,
-           respondida_en = now()
-       FROM titulacion.revisiones r
-       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
-       JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
-       JOIN titulacion.documentos d ON d.id = source_version.documento_id
-       JOIN titulacion.proyectos p ON p.id = d.proyecto_id
-       JOIN titulacion.proyecto_estudiantes pe ON pe.proyecto_id = p.id AND pe.estudiante_id = $3 AND pe.activo
-       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
-       WHERE o.id = $4
-         AND o.revision_id = r.id
-         AND d.id = $5
-         AND o.estado = 'ABIERTA'
-         AND ep.permite_edicion_estudiante
-       RETURNING o.id, o.respondida_en`,
-      [studentResponse, request.session.usuario_id, request.session.estudiante_id, observationId, documentId],
-    )
-    if (!updated.rows[0]) {
-      return response.status(409).json({ message: 'La observación no está disponible para responder o ya fue respondida.' })
-    }
-    return response.json({ message: 'Respuesta registrada. Al subir la nueva versión quedará vinculada como corrección.', respondedAt: updated.rows[0].respondida_en })
-  } catch (error) {
-    return next(error)
-  }
-})
-
 app.get('/api/documents/:documentId/download', requireStudent, async (request, response, next) => {
   try {
     const documentId = request.params.documentId
@@ -3488,6 +3479,57 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     if (selected.tipo_documento !== 'PERFIL_PROYECTO' || selected.fase_codigo !== 'REGISTRO') {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Por ahora solo puedes versionar el perfil del proyecto en esta fase.' })
+    }
+
+    let submittedResponses
+    try {
+      submittedResponses = text(request.body?.observationResponses)
+        ? JSON.parse(request.body.observationResponses)
+        : []
+    } catch {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'Las respuestas a las observaciones no tienen un formato válido.' })
+    }
+    const pendingObservations = await databaseClient.query(
+      `SELECT o.id
+       FROM titulacion.observaciones o
+       JOIN titulacion.revisiones r ON r.id = o.revision_id
+       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
+       JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
+       WHERE source_version.documento_id = $1
+         AND o.estado = 'ABIERTA'
+       ORDER BY o.id
+       FOR UPDATE OF o`,
+      [selected.id],
+    )
+    if (pendingObservations.rows.length > 0) {
+      if (!Array.isArray(submittedResponses)) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(422).json({ message: 'Debes responder todas las observaciones junto con la versión corregida.' })
+      }
+      const responsesByObservation = new Map()
+      for (const item of submittedResponses) {
+        const observationId = typeof item?.id === 'string' ? item.id : ''
+        const studentResponse = text(item?.response)
+        if (!isUuid(observationId) || studentResponse.length < 5 || studentResponse.length > 2000 || responsesByObservation.has(observationId)) {
+          await databaseClient.query('ROLLBACK')
+          return response.status(422).json({ message: 'Cada respuesta debe tener entre 5 y 2000 caracteres y corresponder a una observación pendiente.' })
+        }
+        responsesByObservation.set(observationId, studentResponse)
+      }
+      if (responsesByObservation.size !== pendingObservations.rows.length || pendingObservations.rows.some((observation) => !responsesByObservation.has(observation.id))) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(422).json({ message: 'Responde todas las observaciones pendientes antes de adjuntar la versión corregida.' })
+      }
+      for (const observation of pendingObservations.rows) {
+        await databaseClient.query(
+          `UPDATE titulacion.observaciones
+           SET estado = 'RESPONDIDA', respuesta_estudiante = $1,
+               respondida_por_usuario_id = $2, respondida_en = now()
+           WHERE id = $3`,
+          [responsesByObservation.get(observation.id), request.session.usuario_id, observation.id],
+        )
+      }
     }
 
     const number = await databaseClient.query(
