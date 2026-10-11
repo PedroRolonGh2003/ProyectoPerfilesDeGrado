@@ -51,7 +51,7 @@ const pool = new Pool(databaseUrl
 const app = express()
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024, files: 6 },
 })
 
 app.disable('x-powered-by')
@@ -428,6 +428,12 @@ function isWordDocument(file) {
     return signature?.equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) ?? false
   }
   return false
+}
+
+function isSupportingDocument(file) {
+  if (!file?.buffer?.length) return false
+  return new Set(['.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp4', '.mov', '.avi', '.mp3', '.wav', '.m4a'])
+    .has(path.extname(file.originalname).toLowerCase())
 }
 
 function projectPayload(row) {
@@ -3626,14 +3632,28 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
   }
 })
 
-app.post('/api/projects', requireStudent, upload.single('profile'), async (request, response, next) => {
-  let savedFilePath = null
+app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxCount: 1 }, { name: 'supportingDocuments', maxCount: 5 }]), async (request, response, next) => {
+  const savedFilePaths = []
   let databaseClient = null
 
   try {
+    const profileFile = request.files?.profile?.[0]
+    const supportingFiles = request.files?.supportingDocuments ?? []
     const managementId = text(request.body?.managementId)
     const modalityId = text(request.body?.modalityId)
     const tutorId = text(request.body?.tutorId)
+    const program = text(request.body?.program)
+    const participants = text(request.body?.participants).split('\n').map(text).filter(Boolean)
+    const address = text(request.body?.address)
+    const landline = text(request.body?.landline)
+    const contactEmail = text(request.body?.contactEmail).toLowerCase()
+    const mobile = text(request.body?.mobile)
+    const scope = text(request.body?.scope)
+    const hasTutor = request.body?.hasTutor === 'true'
+    const tutorName = text(request.body?.tutorName)
+    const tutorWorkplace = text(request.body?.tutorWorkplace)
+    const tutorEmail = text(request.body?.tutorEmail).toLowerCase()
+    const tutorMobile = text(request.body?.tutorMobile)
     const title = text(request.body?.title)
     const description = text(request.body?.description)
     const generalObjective = text(request.body?.generalObjective)
@@ -3649,12 +3669,16 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       ? objectives.map(text).filter(Boolean)
       : []
 
-    if (title.length < 10 || description.length < 20 || generalObjective.length < 10 || !managementId || !modalityId || !tutorId || cleanObjectives.length === 0 || cleanObjectives.some((item) => item.length < 10)) {
+    const validPrograms = ['Ingenieria de Sistemas Informaticos', 'Tecnico Superior en Desarrollo de Video Juegos']
+    if (participants.length === 0 || !validPrograms.includes(program) || address.length < 5 || !contactEmail.includes('@') || title.length < 10 || description.length < 20 || scope.length < 20 || generalObjective.length < 10 || !managementId || !modalityId || (hasTutor && (!isUuid(tutorId) || tutorName.length < 3 || tutorWorkplace.length < 3)) || cleanObjectives.some((item) => item.length < 10)) {
       return response.status(422).json({ message: 'Revisa los campos: título (10), descripción (20) y cada objetivo (10) requieren la longitud mínima indicada.' })
     }
 
-    if (!isWordDocument(request.file)) {
+    if (!isWordDocument(profileFile)) {
       return response.status(422).json({ message: 'Adjunta el perfil del proyecto en formato Word (.doc o .docx).' })
+    }
+    if (supportingFiles.some((file) => !isSupportingDocument(file))) {
+      return response.status(422).json({ message: 'Los documentos complementarios deben tener un formato permitido.' })
     }
 
     databaseClient = await pool.connect()
@@ -3699,7 +3723,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       return response.status(422).json({ message: 'La gestión o modalidad elegida ya no está disponible.' })
     }
 
-    const tutor = await databaseClient.query(
+    const tutor = hasTutor ? await databaseClient.query(
       `SELECT d.id, u.id AS usuario_id, u.correo
        FROM titulacion.docentes d
        JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
@@ -3708,8 +3732,8 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
        WHERE d.id = $1 AND d.carrera_id = $2 AND d.activo
        LIMIT 1`,
       [tutorId, student.rows[0].carrera_id],
-    )
-    if (!tutor.rows[0]) {
+    ) : { rows: [] }
+    if (hasTutor && !tutor.rows[0]) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Selecciona un tutor disponible de la lista.' })
     }
@@ -3717,8 +3741,11 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
     const project = await databaseClient.query(
       `INSERT INTO titulacion.proyectos
          (codigo_seguimiento, gestion_id, modalidad_id, fase_actual_id, estado_actual_id,
-          titulo_tentativo, descripcion, objetivo_general, creado_por_usuario_id)
-       VALUES ('', $1, $2, $3, $4, $5, $6, $7, $8)
+          titulo_tentativo, descripcion, objetivo_general, creado_por_usuario_id,
+          programa_academico, integrantes_declarados, direccion_contacto, telefono_fijo,
+          correo_contacto, celular_contacto, alcance_trabajo, tiene_tutor,
+          tutor_nombre_declarado, tutor_lugar_trabajo, tutor_correo_declarado, tutor_celular_declarado)
+       VALUES ('', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING id, codigo_seguimiento`,
       [
         values.gestion_id,
@@ -3729,6 +3756,18 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
         description,
         generalObjective,
         request.session.usuario_id,
+        program,
+        JSON.stringify(participants),
+        address,
+        landline || null,
+        contactEmail,
+        mobile || null,
+        scope,
+        hasTutor,
+        tutorName || null,
+        tutorWorkplace || null,
+        tutorEmail || null,
+        tutorMobile || null,
       ],
     )
     const createdProject = project.rows[0]
@@ -3748,7 +3787,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       )
     }
 
-    await databaseClient.query(
+    if (hasTutor) await databaseClient.query(
       `INSERT INTO titulacion.asignaciones_proyecto
         (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
        VALUES ($1, $2, 'TUTOR', $3, false, $4)`,
@@ -3760,7 +3799,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       ],
     )
 
-    await createNotification(databaseClient, {
+    if (hasTutor) await createNotification(databaseClient, {
       userId: tutor.rows[0].usuario_id,
       recipientEmail: tutor.rows[0].correo,
       projectId: createdProject.id,
@@ -3771,12 +3810,13 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
       queueEmail: true,
     })
 
-    const extension = path.extname(request.file.originalname).toLowerCase()
+    const extension = path.extname(profileFile.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
     const relativePath = path.posix.join('uploads', 'proyectos', createdProject.id, filename)
-    savedFilePath = path.join(process.cwd(), ...relativePath.split('/'))
+    const savedFilePath = path.join(process.cwd(), ...relativePath.split('/'))
+    savedFilePaths.push(savedFilePath)
     await mkdir(path.dirname(savedFilePath), { recursive: true })
-    await writeFile(savedFilePath, request.file.buffer, { flag: 'wx' })
+    await writeFile(savedFilePath, profileFile.buffer, { flag: 'wx' })
 
     const document = await databaseClient.query(
       `INSERT INTO titulacion.documentos
@@ -3791,15 +3831,33 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
        VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
       [
         document.rows[0].id,
-        versionedDocumentFilename(title, 1, request.file.originalname),
+        versionedDocumentFilename(title, 1, profileFile.originalname),
         relativePath,
-        request.file.mimetype || 'application/octet-stream',
-        request.file.size,
-        crypto.createHash('sha256').update(request.file.buffer).digest('hex'),
+        profileFile.mimetype || 'application/octet-stream',
+        profileFile.size,
+        crypto.createHash('sha256').update(profileFile.buffer).digest('hex'),
         request.session.usuario_id,
         'Perfil adjunto durante el registro del Formulario 1.',
       ],
     )
+
+    for (const [index, file] of supportingFiles.entries()) {
+      const attachmentPath = path.posix.join('uploads', 'proyectos', createdProject.id, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
+      const attachmentAbsolutePath = path.join(process.cwd(), ...attachmentPath.split('/'))
+      savedFilePaths.push(attachmentAbsolutePath)
+      await writeFile(attachmentAbsolutePath, file.buffer, { flag: 'wx' })
+      const attachment = await databaseClient.query(
+        `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
+         VALUES ($1, $2, $3, 'ANEXO_FORMULARIO_1', $4) RETURNING id`,
+        [createdProject.id, values.fase_id, `Documento complementario ${index + 1}`, request.session.usuario_id],
+      )
+      await databaseClient.query(
+        `INSERT INTO titulacion.versiones_documento
+          (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega)
+         VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'Documento complementario adjunto en el Formulario 1.')`,
+        [attachment.rows[0].id, file.originalname, attachmentPath, file.mimetype || 'application/octet-stream', file.size, crypto.createHash('sha256').update(file.buffer).digest('hex'), request.session.usuario_id],
+      )
+    }
 
     await databaseClient.query(
       `INSERT INTO titulacion.historial_estados
@@ -3815,7 +3873,7 @@ app.post('/api/projects', requireStudent, upload.single('profile'), async (reque
     })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
-    if (savedFilePath) await rm(savedFilePath, { force: true }).catch(() => undefined)
+    await Promise.all(savedFilePaths.map((filePath) => rm(filePath, { force: true }).catch(() => undefined)))
     return next(error)
   } finally {
     databaseClient?.release()

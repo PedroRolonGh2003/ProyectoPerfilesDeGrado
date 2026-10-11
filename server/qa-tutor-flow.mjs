@@ -9,14 +9,7 @@ import pg from 'pg'
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const apiUrl = `http://127.0.0.1:${port}`
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT ?? 5432),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  options: '-c search_path=titulacion,public',
-})
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, options: '-c search_path=titulacion,public' })
 
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const studentEmail = `qa.tutor.student.${suffix}@univalle.edu`
@@ -177,7 +170,15 @@ try {
   const form = new FormData()
   form.set('managementId', studentData.managements[0].id)
   form.set('modalityId', studentData.modalities[0].id)
+  form.set('program', 'Ingenieria de Sistemas Informaticos')
+  form.set('participants', 'Estudiante QA Tutor')
+  form.set('address', 'Calle temporal 123, Cochabamba')
+  form.set('contactEmail', studentEmail)
+  form.set('scope', 'Alcance temporal para validar invitaciones y la aceptación de tutoría.')
+  form.set('hasTutor', 'true')
   form.set('tutorId', tutor.id)
+  form.set('tutorName', tutor.name)
+  form.set('tutorWorkplace', 'Universidad Privada del Valle')
   form.set('title', 'Proyecto de tutoría temporal para QA')
   form.set('description', 'Proyecto temporal para validar invitaciones, avisos y aceptación de tutoría.')
   form.set('generalObjective', 'Validar el flujo de tutoría y notificaciones.')

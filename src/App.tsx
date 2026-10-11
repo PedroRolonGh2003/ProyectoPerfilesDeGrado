@@ -762,10 +762,22 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
   const [managementId, setManagementId] = useState('')
   const [modalityId, setModalityId] = useState('')
   const [tutorId, setTutorId] = useState('')
-  const [description, setDescription] = useState('')
+  const [program, setProgram] = useState('')
+  const [participants, setParticipants] = useState(data.user.fullName)
+  const [address, setAddress] = useState('')
+  const [landline, setLandline] = useState('')
+  const [contactEmail, setContactEmail] = useState(data.user.email)
+  const [mobile, setMobile] = useState('')
+  const [scope, setScope] = useState('')
+  const [hasTutor, setHasTutor] = useState(true)
+  const [tutorName, setTutorName] = useState('')
+  const [tutorWorkplace, setTutorWorkplace] = useState('')
+  const [tutorEmail, setTutorEmail] = useState('')
+  const [tutorMobile, setTutorMobile] = useState('')
   const [generalObjective, setGeneralObjective] = useState('')
   const [specificObjectives, setSpecificObjectives] = useState([''])
   const [profileFile, setProfileFile] = useState<File | null>(null)
+  const [supportingFiles, setSupportingFiles] = useState<File[]>([])
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
@@ -781,10 +793,21 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
     setProfileFile(event.target.files?.[0] ?? null)
   }
 
+  function selectSupportingDocuments(event: ChangeEvent<HTMLInputElement>) {
+    setSupportingFiles(Array.from(event.target.files ?? []).slice(0, 5))
+  }
+
+  function selectTutor(value: string) {
+    setTutorId(value)
+    const tutor = data.tutors.find((item) => item.id === value)
+    if (tutor) setTutorName(tutor.name)
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    const hasObjectives = specificObjectives.length > 0 && specificObjectives.every((objective) => objective.trim().length >= 10)
-    if (title.trim().length < 10 || description.trim().length < 20 || generalObjective.trim().length < 10 || !managementId || !modalityId || !tutorId || !hasObjectives || !profileFile) {
+    const filledObjectives = specificObjectives.filter((objective) => objective.trim())
+    const hasObjectives = filledObjectives.every((objective) => objective.trim().length >= 10)
+    if (!participants.trim() || !program || address.trim().length < 5 || !contactEmail.includes('@') || title.trim().length < 10 || scope.trim().length < 20 || generalObjective.trim().length < 10 || !managementId || !modalityId || !hasObjectives || !profileFile || (hasTutor && (!tutorId || tutorName.trim().length < 3 || tutorWorkplace.trim().length < 3))) {
       setMessage('Completa los campos obligatorios. Título y objetivos: mínimo 10 caracteres; descripción: mínimo 20 caracteres.')
       return
     }
@@ -798,12 +821,25 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
     const formData = new FormData()
     formData.set('managementId', managementId)
     formData.set('modalityId', modalityId)
+    formData.set('program', program)
+    formData.set('participants', participants.trim())
+    formData.set('address', address.trim())
+    formData.set('landline', landline.trim())
+    formData.set('contactEmail', contactEmail.trim())
+    formData.set('mobile', mobile.trim())
+    formData.set('scope', scope.trim())
+    formData.set('hasTutor', String(hasTutor))
     formData.set('tutorId', tutorId)
+    formData.set('tutorName', tutorName.trim())
+    formData.set('tutorWorkplace', tutorWorkplace.trim())
+    formData.set('tutorEmail', tutorEmail.trim())
+    formData.set('tutorMobile', tutorMobile.trim())
     formData.set('title', title.trim())
-    formData.set('description', description.trim())
+    formData.set('description', scope.trim())
     formData.set('generalObjective', generalObjective.trim())
-    formData.set('objectives', JSON.stringify(specificObjectives.map((objective) => objective.trim())))
+    formData.set('objectives', JSON.stringify(filledObjectives.map((objective) => objective.trim())))
     formData.set('profile', profileFile)
+    supportingFiles.forEach((file) => formData.append('supportingDocuments', file))
 
     setIsSubmitting(true)
     setMessage('')
@@ -845,26 +881,38 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
               <section className="student-callout"><Icon name="check" /><div><strong>Antes de comenzar</strong><p>Ten a mano el título tentativo, los objetivos del proyecto y el perfil en formato Word.</p></div></section>
               <form className="project-form" onSubmit={handleSubmit} noValidate>
                 <section className="form-section">
-                  <div className="section-heading"><span>01</span><div><h2>Información del proyecto</h2><p>Datos generales para identificar tu proceso de titulación.</p></div></div>
-                  <div className="field-grid field-grid-three">
+                  <div className="section-heading"><span>01</span><div><h2>Datos del estudiante</h2><p>Información de contacto solicitada en el Formulario 1.</p></div></div>
+                  <label className="form-field"><span>Apellido(s) y nombre(s) del estudiante <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setParticipants(event.target.value)} placeholder="Registra una persona por línea si el proyecto es grupal." rows={3} value={participants} /><small>Si son dos o más estudiantes, registra una persona en cada línea.</small></label>
+                  <div className="field-grid field-grid-two">
+                    <label className="form-field"><span>Carrera <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setProgram(event.target.value)} value={program}><option value="">Selecciona una carrera</option><option value="Ingenieria de Sistemas Informaticos">Ingeniería de Sistemas Informáticos</option><option value="Tecnico Superior en Desarrollo de Video Juegos">Técnico Superior en Desarrollo de Video Juegos</option></select></label>
                     <label className="form-field"><span>Gestión <b>*</b></span><select disabled={isSubmitting || data.managements.length === 0} onChange={(event) => setManagementId(event.target.value)} value={managementId}><option value="">Selecciona una gestión</option>{data.managements.map((management) => <option key={management.id} value={management.id}>{management.codigo} · {management.nombre}</option>)}</select></label>
+                  </div>
+                  <label className="form-field"><span>Dirección de domicilio <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setAddress(event.target.value)} placeholder="Zona, calle, número y ciudad" value={address} /></label>
+                  <div className="field-grid field-grid-two">
+                    <label className="form-field"><span>Teléfono fijo</span><input disabled={isSubmitting} onChange={(event) => setLandline(event.target.value)} placeholder="Ej.: 4 000000" value={landline} /></label>
+                    <label className="form-field"><span>Número de celular</span><input disabled={isSubmitting} onChange={(event) => setMobile(event.target.value)} placeholder="Ej.: 7 0000000" value={mobile} /></label>
+                  </div>
+                  <label className="form-field"><span>Correo electrónico <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setContactEmail(event.target.value)} type="email" value={contactEmail} /></label>
+                </section>
+
+                <section className="form-section">
+                  <div className="section-heading"><span>02</span><div><h2>Datos del trabajo de grado</h2><p>Describe tu propuesta académica, tal como solicita el Formulario 1.</p></div></div>
+                  <div className="field-grid field-grid-two">
                     <label className="form-field"><span>Modalidad de titulación <b>*</b></span><select disabled={isSubmitting || data.modalities.length === 0} onChange={(event) => setModalityId(event.target.value)} value={modalityId}><option value="">Selecciona una modalidad</option>{data.modalities.map((modality) => <option key={modality.id} value={modality.id}>{modality.nombre}</option>)}</select></label>
                     <div className="form-field"><span>Código de seguimiento</span><div className="readonly-field">Se asignará al registrar</div></div>
                   </div>
-                  <label className="form-field"><span>Título tentativo del proyecto <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTitle(event.target.value)} placeholder="Ej.: Sistema web para el seguimiento de procesos de titulación" type="text" value={title} /></label>
-                </section>
-
-                <section className="form-section">
-                  <div className="section-heading"><span>02</span><div><h2>Propuesta académica</h2><p>Explica con claridad el propósito y alcance de tu proyecto.</p></div></div>
-                  <label className="form-field"><span>Descripción breve <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setDescription(event.target.value)} placeholder="Resume el problema, la propuesta de solución y el alcance de tu proyecto." rows={4} value={description} /><small>Mínimo: 20 caracteres.</small></label>
+                  <label className="form-field"><span>Posible título del trabajo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTitle(event.target.value)} placeholder="Ej.: Sistema web para el seguimiento de procesos de titulación" value={title} /></label>
                   <label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setGeneralObjective(event.target.value)} placeholder="Describe el resultado principal que deseas alcanzar con el proyecto." rows={3} value={generalObjective} /><small>Mínimo: 10 caracteres.</small></label>
-                  <div className="objectives-area"><div className="objective-label"><span>Objetivos específicos <b>*</b></span><small>Incluye las acciones concretas que permitirán alcanzar el objetivo general.</small></div>{specificObjectives.map((objective, index) => <div className="objective-input" key={`objective-${index}`}><span>{index + 1}</span><input aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObjective(index, event.target.value)} placeholder={`Objetivo específico ${index + 1} (mínimo 10 caracteres)`} type="text" value={objective} />{specificObjectives.length > 1 && <button aria-label={`Eliminar objetivo específico ${index + 1}`} disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => objectives.filter((_, objectiveIndex) => objectiveIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="add-objective" disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => [...objectives, ''])} type="button"><Icon name="plus" />Añadir objetivo específico</button></div>
+                  <div className="objectives-area"><div className="objective-label"><span>Objetivos específicos</span><small>Incluye las acciones concretas que permitirán alcanzar el objetivo general.</small></div>{specificObjectives.map((objective, index) => <div className="objective-input" key={`objective-${index}`}><span>{index + 1}</span><input aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObjective(index, event.target.value)} placeholder={`Objetivo específico ${index + 1} (mínimo 10 caracteres)`} value={objective} />{specificObjectives.length > 1 && <button aria-label={`Eliminar objetivo específico ${index + 1}`} disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => objectives.filter((_, objectiveIndex) => objectiveIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="add-objective" disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => [...objectives, ''])} type="button"><Icon name="plus" />Añadir objetivo específico</button></div>
+                  <label className="form-field"><span>Alcance del trabajo de grado <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setScope(event.target.value)} placeholder="Delimita qué resolverá el proyecto, sus usuarios, entregables y límites." rows={4} value={scope} /><small>Mínimo: 20 caracteres.</small></label>
                 </section>
 
                 <section className="form-section">
-                  <div className="section-heading"><span>03</span><div><h2>Tutor y perfil del proyecto</h2><p>Propón un tutor disponible y adjunta el documento del perfil.</p></div></div>
-                  <label className="form-field"><span>Docente tutor propuesto <b>*</b></span><select disabled={isSubmitting || data.tutors.length === 0} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{data.tutors.map((tutor) => <option key={tutor.id} value={tutor.id}>{tutor.name}</option>)}</select><small>El docente recibirá una invitación y deberá aceptarla para confirmar la tutoría.</small></label>
+                  <div className="section-heading"><span>03</span><div><h2>Datos de asesoramiento</h2><p>Registra a tu tutor si ya cuentas con uno.</p></div></div>
+                  <fieldset className="tutor-choice" disabled={isSubmitting}><legend>¿Cuenta usted con un tutor?</legend><label><input checked={hasTutor} name="has-tutor" onChange={() => setHasTutor(true)} type="radio" /> Sí</label><label><input checked={!hasTutor} name="has-tutor" onChange={() => setHasTutor(false)} type="radio" /> No</label></fieldset>
+                  {hasTutor && <><label className="form-field"><span>Tutor registrado en el sistema <b>*</b></span><select disabled={isSubmitting || data.tutors.length === 0} onChange={(event) => selectTutor(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{data.tutors.map((tutor) => <option key={tutor.id} value={tutor.id}>{tutor.name}</option>)}</select><small>El docente recibirá una invitación y deberá aceptarla para confirmar la tutoría.</small></label><div className="field-grid field-grid-two"><label className="form-field"><span>Nombre del tutor <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTutorName(event.target.value)} value={tutorName} /></label><label className="form-field"><span>Lugar de trabajo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTutorWorkplace(event.target.value)} placeholder="Ej.: Universidad Privada del Valle" value={tutorWorkplace} /></label></div><div className="field-grid field-grid-two"><label className="form-field"><span>Correo electrónico</span><input disabled={isSubmitting} onChange={(event) => setTutorEmail(event.target.value)} type="email" value={tutorEmail} /></label><label className="form-field"><span>Número de celular</span><input disabled={isSubmitting} onChange={(event) => setTutorMobile(event.target.value)} value={tutorMobile} /></label></div></>}
                   <div className="form-field"><span>Perfil del proyecto en Word <b>*</b></span><label className={profileFile ? 'upload-box has-file' : 'upload-box'} htmlFor="profile"><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} id="profile" onChange={selectProfile} type="file" /><Icon name={profileFile ? 'check' : 'upload'} /><div><strong>{profileFile?.name || 'Adjunta tu perfil de proyecto'}</strong><small>{profileFile ? 'Archivo listo para registrarse en el sistema.' : 'Formato permitido: .doc o .docx · máximo 10 MB'}</small></div><span>{profileFile ? 'Cambiar archivo' : 'Seleccionar archivo'}</span></label></div>
+                  <div className="form-field"><span>Documento complementario (si es necesario o solicitado)</span><label className={supportingFiles.length ? 'upload-box has-file' : 'upload-box'} htmlFor="supporting-documents"><input accept=".doc,.docx,.xls,.xlsx,.ppt,.pptx,.pdf,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mp3,.wav,.m4a" disabled={isSubmitting} id="supporting-documents" multiple onChange={selectSupportingDocuments} type="file" /><Icon name={supportingFiles.length ? 'check' : 'upload'} /><div><strong>{supportingFiles.length ? `${supportingFiles.length} documento(s) listo(s)` : 'Carga hasta 5 documentos complementarios'}</strong><small>Word, Excel, PowerPoint, PDF, imágenes, video o audio · máximo 10 MB por archivo.</small></div><span>{supportingFiles.length ? 'Cambiar archivos' : 'Seleccionar archivos'}</span></label></div>
                 </section>
 
                 <footer className="form-footer"><p><b>*</b> Campos obligatorios</p><div><button className="secondary-button" disabled={isSubmitting} onClick={() => setMessage('El formulario no se envió. Puedes continuar completándolo cuando lo necesites.')} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Registrando…' : 'Registrar proyecto'} <Icon name="arrow" /></button></div></footer>

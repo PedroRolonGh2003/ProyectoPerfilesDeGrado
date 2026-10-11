@@ -175,6 +175,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .section-heading h2 { color: #3a2e31; font-size: 17px; margin: 2px 0 0; }
 .section-heading p { color: #8a7e81; font-size: 12px; line-height: 1.5; margin: 4px 0 0; }
 .field-grid { display: grid; gap: 19px; }
+.field-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .field-grid-three { grid-template-columns: 1fr 1.5fr 1fr; margin-bottom: 19px; }
 .form-field { display: block; margin-bottom: 19px; }
 .form-field > span, .objective-label > span { color: #514447; display: block; font-size: 12px; font-weight: 700; margin-bottom: 8px; }
@@ -186,6 +187,10 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .form-field input::placeholder, .form-field textarea::placeholder { color: #aca2a5; }
 .form-field small { color: #92878a; display: block; font-size: 10px; line-height: 1.45; margin-top: 6px; }
 .readonly-field { background: #f7f4f4; color: #8e8285; min-height: 42px; }
+.tutor-choice { border: 0; display: flex; gap: 18px; margin: 0 0 20px; padding: 0; }
+.tutor-choice legend { color: #514447; font-size: 12px; font-weight: 700; margin-bottom: 10px; width: 100%; }
+.tutor-choice label { align-items: center; color: #514447; cursor: pointer; display: inline-flex; font-size: 13px; gap: 7px; }
+.tutor-choice input { accent-color: var(--univalle-wine); }
 .objectives-area { margin-top: 4px; }
 .objective-label { margin-bottom: 10px; }
 .objective-label small { color: #92878a; display: block; font-size: 11px; line-height: 1.45; margin-top: -2px; }
@@ -754,7 +759,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .student-main { padding: 25px 16px 42px; }
   .student-title-row { align-items: flex-start; flex-direction: column; gap: 18px; }
   .form-progress { width: 100%; }
-  .field-grid-three { grid-template-columns: 1fr; gap: 0; }
+  .field-grid-three, .field-grid-two { grid-template-columns: 1fr; gap: 0; }
   .form-section { padding: 25px 18px; }
   .form-footer { align-items: flex-start; flex-direction: column; gap: 17px; padding: 20px 18px; }
   .form-footer > div { justify-content: stretch; width: 100%; }
