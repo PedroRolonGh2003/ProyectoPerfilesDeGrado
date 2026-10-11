@@ -18,6 +18,7 @@
     "seed:demo": "node server/seed-demo-data.mjs",
     "seed:multirole-demo": "node server/seed-multirole-demo.mjs",
     "qa:multirole-demo": "node server/qa-multirole-demo.mjs",
+    "storage:backfill": "node server/backfill-document-storage.mjs",
     "db:migrate:neon": "node server/migrate-neon.mjs",
     "qa:neon-migration": "node server/qa-neon-migration.mjs",
     "preview": "vite preview",

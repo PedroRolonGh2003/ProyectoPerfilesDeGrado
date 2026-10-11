@@ -475,6 +475,34 @@ function storedFilePath(relativePath, projectId) {
   return absolutePath.startsWith(`${uploadsRoot}${path.sep}`) ? absolutePath : null
 }
 
+async function saveLocalDocumentCopy(relativePath, projectId, content) {
+  if (process.env.VERCEL) return null
+  const filePath = storedFilePath(relativePath, projectId)
+  if (!filePath) throw new Error('No fue posible preparar la ruta local del documento.')
+  await mkdir(path.dirname(filePath), { recursive: true })
+  await writeFile(filePath, content, { flag: 'wx' })
+  return filePath
+}
+
+async function sendStoredDocument(response, version) {
+  if (version.contenido_archivo !== null && version.contenido_archivo !== undefined) {
+    response.type(version.mime_type || 'application/octet-stream')
+    response.attachment(path.basename(version.nombre_archivo))
+    response.send(version.contenido_archivo)
+    return true
+  }
+
+  const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
+  if (!filePath) return false
+  try {
+    await access(filePath)
+  } catch {
+    return false
+  }
+  response.download(filePath, path.basename(version.nombre_archivo))
+  return true
+}
+
 function versionedDocumentFilename(documentName, versionNumber, originalFilename) {
   const extension = path.extname(originalFilename).toLowerCase()
   const baseName = text(documentName)
@@ -2519,7 +2547,7 @@ app.get('/api/admin/documents/:documentId/download', requireAdministrator, async
     const versionId = text(request.query?.versionId)
     if (!isUuid(documentId) || (versionId && !isUuid(versionId))) return response.status(400).json({ message: 'El documento no es válido.' })
     const result = await pool.query(
-      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo
+      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo, vd.mime_type, vd.contenido_archivo
        FROM titulacion.documentos d
        JOIN titulacion.versiones_documento vd ON vd.documento_id = d.id
        WHERE d.id = $1 AND d.activo AND ($2::uuid IS NULL OR vd.id = $2)
@@ -2529,12 +2557,9 @@ app.get('/api/admin/documents/:documentId/download', requireAdministrator, async
     )
     const version = result.rows[0]
     if (!version) return response.status(404).json({ message: 'El archivo no está disponible.' })
-    const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
-    if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
-    await access(filePath)
-    return response.download(filePath, version.nombre_archivo)
+    if (!await sendStoredDocument(response, version)) return response.status(404).json({ message: 'El archivo no está disponible en el almacenamiento.' })
+    return undefined
   } catch (error) {
-    if (error?.code === 'ENOENT') return response.status(404).json({ message: 'El archivo no fue encontrado.' })
     return next(error)
   }
 })
@@ -2784,16 +2809,8 @@ app.get('/api/tutor/documents/:documentId/download', requireTutor, async (reques
     )
     const version = result.rows[0]
     if (!version) return response.status(404).json({ message: 'El archivo no está disponible para tus proyectos asignados.' })
-    const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
-    if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
-    try {
-      await access(filePath)
-    } catch {
-      return response.status(404).json({ message: 'El archivo ya no se encuentra en el almacenamiento local.' })
-    }
-    return response.download(filePath, path.basename(version.nombre_archivo), (error) => {
-      if (error && !response.headersSent) next(error)
-    })
+    if (!await sendStoredDocument(response, version)) return response.status(404).json({ message: 'El archivo no está disponible en el almacenamiento.' })
+    return undefined
   } catch (error) {
     return next(error)
   }
@@ -3118,7 +3135,7 @@ app.get('/api/reviewer/documents/:documentId/download', requireReviewer, async (
       return response.status(400).json({ message: 'El documento solicitado no es válido.' })
     }
     const result = await pool.query(
-      `SELECT document.proyecto_id, version.nombre_archivo, version.ruta_archivo
+      `SELECT document.proyecto_id, version.nombre_archivo, version.ruta_archivo, version.mime_type, version.contenido_archivo
        FROM titulacion.documentos document
        JOIN titulacion.versiones_documento version ON version.documento_id = document.id
        JOIN titulacion.rondas_revision rr ON rr.version_documento_id = version.id
@@ -3134,16 +3151,8 @@ app.get('/api/reviewer/documents/:documentId/download', requireReviewer, async (
     )
     const version = result.rows[0]
     if (!version) return response.status(404).json({ message: 'El archivo no está disponible para tus revisiones asignadas.' })
-    const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
-    if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
-    try {
-      await access(filePath)
-    } catch {
-      return response.status(404).json({ message: 'El archivo ya no se encuentra en el almacenamiento local.' })
-    }
-    return response.download(filePath, path.basename(version.nombre_archivo), (error) => {
-      if (error && !response.headersSent) next(error)
-    })
+    if (!await sendStoredDocument(response, version)) return response.status(404).json({ message: 'El archivo no está disponible en el almacenamiento.' })
+    return undefined
   } catch (error) {
     return next(error)
   }
@@ -3474,7 +3483,7 @@ app.get('/api/documents/:documentId/download', requireStudent, async (request, r
     }
 
     const result = await pool.query(
-      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo
+      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo, vd.mime_type, vd.contenido_archivo
        FROM titulacion.documentos d
        JOIN titulacion.proyecto_estudiantes pe ON pe.proyecto_id = d.proyecto_id AND pe.estudiante_id = $1 AND pe.activo
        JOIN titulacion.versiones_documento vd ON vd.documento_id = d.id
@@ -3487,17 +3496,8 @@ app.get('/api/documents/:documentId/download', requireStudent, async (request, r
     const version = result.rows[0]
     if (!version) return response.status(404).json({ message: 'El archivo no está disponible para tu proyecto.' })
 
-    const filePath = storedFilePath(version.ruta_archivo, version.proyecto_id)
-    if (!filePath) return response.status(404).json({ message: 'La ruta del archivo no es válida.' })
-    try {
-      await access(filePath)
-    } catch {
-      return response.status(404).json({ message: 'El archivo ya no se encuentra en el almacenamiento local.' })
-    }
-
-    return response.download(filePath, path.basename(version.nombre_archivo), (error) => {
-      if (error && !response.headersSent) next(error)
-    })
+    if (!await sendStoredDocument(response, version)) return response.status(404).json({ message: 'El archivo no está disponible en el almacenamiento.' })
+    return undefined
   } catch (error) {
     return next(error)
   }
@@ -3602,14 +3602,12 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     const extension = path.extname(request.file.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
     const relativePath = path.posix.join('uploads', 'proyectos', selected.proyecto_id, selected.id, filename)
-    savedFilePath = storedFilePath(relativePath, selected.proyecto_id)
-    await mkdir(path.dirname(savedFilePath), { recursive: true })
-    await writeFile(savedFilePath, request.file.buffer, { flag: 'wx' })
+    savedFilePath = await saveLocalDocumentCopy(relativePath, selected.proyecto_id, request.file.buffer)
 
     const inserted = await databaseClient.query(
       `INSERT INTO titulacion.versiones_documento
-        (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega, contenido_archivo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id AS version_id, numero_version, nombre_archivo, mime_type, tamano_bytes, subida_en, comentario_entrega`,
       [
         selected.id,
@@ -3621,6 +3619,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
         crypto.createHash('sha256').update(request.file.buffer).digest('hex'),
         request.session.usuario_id,
         text(request.body?.comment) || null,
+        request.file.buffer,
       ],
     )
     const linkedObservations = await databaseClient.query(
@@ -3868,10 +3867,8 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
     const extension = path.extname(profileFile.originalname).toLowerCase()
     const filename = `${crypto.randomUUID()}${extension}`
     const relativePath = path.posix.join('uploads', 'proyectos', createdProject.id, filename)
-    const savedFilePath = path.join(process.cwd(), ...relativePath.split('/'))
-    savedFilePaths.push(savedFilePath)
-    await mkdir(path.dirname(savedFilePath), { recursive: true })
-    await writeFile(savedFilePath, profileFile.buffer, { flag: 'wx' })
+    const savedFilePath = await saveLocalDocumentCopy(relativePath, createdProject.id, profileFile.buffer)
+    if (savedFilePath) savedFilePaths.push(savedFilePath)
 
     const document = await databaseClient.query(
       `INSERT INTO titulacion.documentos
@@ -3882,8 +3879,8 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
     )
     await databaseClient.query(
       `INSERT INTO titulacion.versiones_documento
-        (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega)
-       VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8)`,
+        (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega, contenido_archivo)
+       VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         document.rows[0].id,
         versionedDocumentFilename(title, 1, profileFile.originalname),
@@ -3893,14 +3890,14 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
         crypto.createHash('sha256').update(profileFile.buffer).digest('hex'),
         request.session.usuario_id,
         'Perfil adjunto durante el registro del Formulario 1.',
+        profileFile.buffer,
       ],
     )
 
     for (const [index, file] of supportingFiles.entries()) {
       const attachmentPath = path.posix.join('uploads', 'proyectos', createdProject.id, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`)
-      const attachmentAbsolutePath = path.join(process.cwd(), ...attachmentPath.split('/'))
-      savedFilePaths.push(attachmentAbsolutePath)
-      await writeFile(attachmentAbsolutePath, file.buffer, { flag: 'wx' })
+      const attachmentAbsolutePath = await saveLocalDocumentCopy(attachmentPath, createdProject.id, file.buffer)
+      if (attachmentAbsolutePath) savedFilePaths.push(attachmentAbsolutePath)
       const attachment = await databaseClient.query(
         `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
          VALUES ($1, $2, $3, 'ANEXO_FORMULARIO_1', $4) RETURNING id`,
@@ -3908,9 +3905,9 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       )
       await databaseClient.query(
         `INSERT INTO titulacion.versiones_documento
-          (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega)
-         VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'Documento complementario adjunto en el Formulario 1.')`,
-        [attachment.rows[0].id, file.originalname, attachmentPath, file.mimetype || 'application/octet-stream', file.size, crypto.createHash('sha256').update(file.buffer).digest('hex'), request.session.usuario_id],
+          (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega, contenido_archivo)
+         VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'Documento complementario adjunto en el Formulario 1.', $8)`,
+        [attachment.rows[0].id, file.originalname, attachmentPath, file.mimetype || 'application/octet-stream', file.size, crypto.createHash('sha256').update(file.buffer).digest('hex'), request.session.usuario_id, file.buffer],
       )
     }
 
