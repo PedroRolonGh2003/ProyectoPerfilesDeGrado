@@ -2739,6 +2739,9 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
     if (!isUuid(projectId) || !['APROBADO', 'OBSERVADO'].includes(decision) || !formatCriteria || !backgroundCriteria) return response.status(422).json({ message: 'Completa las matrices y selecciona un dictamen válido.' })
     if (decision === 'OBSERVADO' && observations.length === 0) return response.status(422).json({ message: 'Registra al menos una observación para devolver el perfil.' })
     if (decision === 'APROBADO' && observations.length > 0) return response.status(422).json({ message: 'Elimina las observaciones para aprobar el perfil.' })
+    if (decision === 'APROBADO' && (formatCriteria.some((item) => item.value !== 'SI') || backgroundCriteria.some((item) => item.value !== 'BUENO'))) {
+      return response.status(422).json({ message: 'Para aprobar sin observaciones, todos los criterios deben cumplir la guía.' })
+    }
     databaseClient = await pool.connect()
     await databaseClient.query('BEGIN')
     const selected = await databaseClient.query(
@@ -2948,6 +2951,9 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     }
     if (!formatCriteria || !backgroundCriteria) {
       return response.status(422).json({ message: 'Completa todos los criterios de formato y de fondo antes de emitir el dictamen.' })
+    }
+    if (decision === 'APROBADO' && (formatCriteria.some((item) => item.value !== 'SI') || backgroundCriteria.some((item) => item.value !== 'BUENO'))) {
+      return response.status(422).json({ message: 'Para aprobar sin observaciones, todos los criterios deben cumplir la guía.' })
     }
 
     databaseClient = await pool.connect()
