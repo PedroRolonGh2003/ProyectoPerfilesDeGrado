@@ -19,6 +19,13 @@ type IconName =
   | 'upload'
   | 'user'
 
+const formatCriteria = [
+  ['TITULO', 'El título es adecuado'], ['INDICE', 'Presenta índice de contenido'], ['ORDEN_GUIA', 'Orden del contenido según guía'], ['FORMATO', 'Se encuentra en el formato solicitado'], ['NUMERO_HOJAS', 'Número de hojas adecuado'], ['ETAPAS_INVESTIGACION', 'Cuenta con las etapas principales del proceso de investigación'], ['CRONOGRAMA', 'Cronograma acorde a sus actividades y objetivos'], ['CITAS', 'Presenta citas bibliográficas'], ['REFERENCIAS', 'Presenta referencias bibliográficas'], ['REDACCION', 'Redacción y ortografía adecuadas'],
+] as const
+const backgroundCriteria = [
+  ['PROBLEMA', 'El problema está definido con claridad, precisión y pertinencia'], ['JUSTIFICACION', 'La justificación académica, científica, tecnológica, social, económica y legal es clara'], ['FUENTES', 'Las fuentes son confiables y actualizadas'], ['ANALISIS_LITERATURA', 'La literatura está críticamente analizada'], ['PERSPECTIVA_TEORICA', 'La perspectiva teórica del problema es clara'], ['VINCULO_TEORIA', 'La teoría se vincula con el problema y los objetivos'], ['VIABILIDAD_OBJETIVOS', 'Los objetivos son viables, claros y alcanzables'], ['COHERENCIA_OBJETIVOS', 'Existe coherencia entre el objetivo general y los específicos'], ['METODOLOGIA_PERTINENTE', 'La metodología y técnicas son claras y pertinentes'], ['METODOLOGIA_RESPONDE', 'La metodología responde a los objetivos o hipótesis'],
+] as const
+
 type RoleCode = 'ESTUDIANTE' | 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR'
 type RegistrationCareer = { id: string; code: string; name: string }
 
@@ -65,6 +72,7 @@ type TutorAssignment = {
   modality: string
   phase: string
   status: string
+  statusCode?: string
   students: string
   registrations: string
   requestedAt: string
@@ -1141,6 +1149,10 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
 function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
   const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'notifications'>('home')
   const [decliningId, setDecliningId] = useState('')
+  const [selectedEvaluation, setSelectedEvaluation] = useState<TutorAssignment | null>(null)
+  const [formatRatings, setFormatRatings] = useState<Record<string, string>>({})
+  const [backgroundRatings, setBackgroundRatings] = useState<Record<string, string>>({})
+  const [evaluationObservations, setEvaluationObservations] = useState('')
   const [declineReason, setDeclineReason] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
@@ -1179,6 +1191,16 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
     }
   }
 
+  async function submitEvaluation(decision: 'APROBADO' | 'OBSERVADO') {
+    if (!selectedEvaluation) return
+    const formatCriteriaPayload = formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
+    const backgroundCriteriaPayload = backgroundCriteria.map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
+    const observations = evaluationObservations.split('\n').map((item) => item.trim()).filter(Boolean)
+    if (formatCriteriaPayload.some((item) => !item.value) || backgroundCriteriaPayload.some((item) => !item.value) || (decision === 'OBSERVADO' && observations.length === 0)) { setMessage('Completa las matrices y registra observaciones si devuelves el perfil.'); return }
+    setIsSubmitting(true); setMessage('')
+    try { const result = await api<{ message: string }>(`/api/tutor/projects/${selectedEvaluation.projectId}/formulario2`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, observations, formatCriteria: formatCriteriaPayload, backgroundCriteria: backgroundCriteriaPayload }) }); setSelectedEvaluation(null); await onRefresh(); setMessage(result.message) } catch (error) { setMessage(error instanceof Error ? error.message : 'No fue posible guardar la evaluación.') } finally { setIsSubmitting(false) }
+  }
+
   function invitationCard(invitation: TutorAssignment) {
     const isDeclining = decliningId === invitation.id
     return <article className="tutor-card tutor-invitation" key={invitation.id}>
@@ -1198,7 +1220,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
       <h2>{project.title}</h2>
       <p className="tutor-card-description">{project.description}</p>
       <div className="tutor-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase} · {project.status}</span></div>
-      <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />Perfil V{project.profile.version}</a>}</div>
+      <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />Perfil V{project.profile.version}</a>}</div>{project.statusCode === 'PENDIENTE_APROBACION' && <div className="tutor-actions"><button className="primary-button" onClick={() => { setSelectedEvaluation(project); setFormatRatings({}); setBackgroundRatings({}); setEvaluationObservations('') }} type="button"><Icon name="clipboard" />Evaluar Formulario 2</button></div>}
     </article>
   }
 
@@ -1227,7 +1249,9 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
         <div className="student-title-row tutor-title"><div><p className="eyebrow">Acompañamiento académico</p><h1>{heading}</h1><p>{copy}</p></div>{view !== 'notifications' && <button className="notification-summary" onClick={() => setView('notifications')} type="button"><Icon name="bell" /><span><small>Notificaciones sin leer</small><strong>{data.unreadCount}</strong></span></button>}</div>
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
 
-        {view === 'home' && <>
+        {selectedEvaluation && <section className="reviewer-workspace"><button className="text-button reviewer-back" onClick={() => setSelectedEvaluation(null)} type="button">← Volver a mis proyectos</button><div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedEvaluation.code}</span><h2>Evaluación final del tutor</h2><p>{selectedEvaluation.title}</p></div></div><section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 2</p><h2>Formato, forma y fondo</h2></div></div><section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`tutor-format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section><section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{backgroundCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`tutor-background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section><label className="form-field"><span>Observaciones</span><textarea disabled={isSubmitting} onChange={(event) => setEvaluationObservations(event.target.value)} placeholder="Una observación por línea si devuelves el perfil." rows={4} value={evaluationObservations} /></label><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitEvaluation('APROBADO')} type="button"><Icon name="check" />Aprobar sin observaciones</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitEvaluation('OBSERVADO')} type="button">Devolver con observaciones <Icon name="arrow" /></button></div></section></section>}
+
+        {!selectedEvaluation && view === 'home' && <>
           <section className="tutor-stats"><div><small>Invitaciones pendientes</small><strong>{data.invitations.length}</strong><span>Requieren tu respuesta.</span></div><div><small>Proyectos asignados</small><strong>{data.projects.length}</strong><span>Tutorías confirmadas.</span></div><div><small>Notificaciones</small><strong>{data.unreadCount}</strong><span>Actualizaciones sin leer.</span></div></section>
           {data.invitations.length > 0 ? <section className="tutor-section"><div className="tutor-section-heading"><div><h2>Invitaciones pendientes</h2><p>Confirma si puedes acompañar cada propuesta.</p></div><button className="text-button" onClick={() => setView('invitations')} type="button">Ver todas</button></div><div className="tutor-cards">{data.invitations.slice(0, 2).map(invitationCard)}</div></section> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes invitaciones pendientes.</strong><span>Las nuevas solicitudes aparecerán aquí y en la campanita.</span></section>}
           {data.projects.length > 0 && <section className="tutor-section"><div className="tutor-section-heading"><div><h2>Proyectos que acompañas</h2><p>Consulta rápidamente el avance de tus tutorías confirmadas.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div><div className="tutor-cards">{data.projects.slice(0, 2).map(projectCard)}</div></section>}
@@ -1246,6 +1270,8 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
   const [generalComment, setGeneralComment] = useState('')
   const [observationDrafts, setObservationDrafts] = useState<string[]>([''])
+  const [formatRatings, setFormatRatings] = useState<Record<string, string>>({})
+  const [backgroundRatings, setBackgroundRatings] = useState<Record<string, string>>({})
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -1253,6 +1279,8 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
     setSelectedReview(review)
     setGeneralComment('')
     setObservationDrafts([''])
+    setFormatRatings({})
+    setBackgroundRatings({})
     setMessage('')
   }
 
@@ -1260,6 +1288,8 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
     setSelectedReview(null)
     setGeneralComment('')
     setObservationDrafts([''])
+    setFormatRatings({})
+    setBackgroundRatings({})
   }
 
   function updateObservation(index: number, value: string) {
@@ -1273,6 +1303,12 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   async function submitDecision(decision: 'APROBADO' | 'OBSERVADO') {
     if (!selectedReview) return
     const observations = observationDrafts.map((item) => item.trim()).filter(Boolean)
+    const selectedFormat = formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
+    const selectedBackground = backgroundCriteria.map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
+    if (selectedFormat.some((item) => !item.value) || selectedBackground.some((item) => !item.value)) {
+      setMessage('Completa todos los criterios de formato y de fondo antes de emitir el dictamen.')
+      return
+    }
     if (decision === 'OBSERVADO' && observations.length === 0) {
       setMessage('Registra al menos una observación antes de devolver el perfil.')
       return
@@ -1283,7 +1319,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
       const result = await api<{ message: string }>(`/api/reviewer/reviews/${selectedReview.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision, generalComment: generalComment.trim(), observations }),
+        body: JSON.stringify({ decision, generalComment: generalComment.trim(), observations, formatCriteria: selectedFormat, backgroundCriteria: selectedBackground }),
       })
       closeReview()
       await onRefresh()
@@ -1364,6 +1400,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           <div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedReview.code}</span><h2>{selectedReview.title}</h2><p>{selectedReview.description}</p></div><span className="reviewer-decision decision-pendiente">Ronda {selectedReview.roundNumber}</span></div>
           <section className="reviewer-project-context"><div><small>Estudiante(s)</small><strong>{selectedReview.students}</strong><span>{selectedReview.registrations}</span></div><div><small>Objetivo general</small><p>{selectedReview.generalObjective}</p></div><div><small>Fecha límite</small><strong>{formatDate(selectedReview.deadline)}</strong></div></section>
           <section className="reviewer-document-panel"><div><Icon name="file" /><div><small>Documento para revisar</small><strong>{selectedReview.profile.filename}</strong><span>Versión {selectedReview.profile.version} subida el {formatDate(selectedReview.profile.uploadedAt)}</span></div></div><a className="primary-button" href={`/api/reviewer/documents/${selectedReview.profile.documentId}/download?version=${selectedReview.profile.versionId}`}><Icon name="download" />Descargar perfil</a></section>
+          <section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 2</p><h2>Formato, forma y fondo</h2></div></div><p>Completa los criterios establecidos en la guía antes de emitir tu dictamen.</p><section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section><section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{backgroundCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section></section>
           <section className="reviewer-form-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>DICTAMEN DE REVISIÓN</p><h2>Registra tu evaluación</h2></div></div><p>Tu dictamen no podrá modificarse después de guardarlo. La ronda se cerrará cuando ambos revisores hayan respondido.</p><label className="form-field"><span>Comentario general</span><textarea disabled={isSubmitting} onChange={(event) => setGeneralComment(event.target.value)} placeholder="Resume los aspectos principales de tu revisión." rows={3} value={generalComment} /></label><div className="reviewer-observations"><div><strong>Observaciones puntuales</strong><small>Son obligatorias solo si devuelves el perfil.</small></div>{observationDrafts.map((observation, index) => <div className="reviewer-observation-row" key={index}><span>{index + 1}</span><textarea aria-label={`Observación ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObservation(index, event.target.value)} placeholder="Indica con claridad qué debe corregirse." rows={2} value={observation} />{observationDrafts.length > 1 && <button aria-label={`Eliminar observación ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => removeObservation(index)} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || observationDrafts.length >= 20} onClick={() => setObservationDrafts((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir observación</button></div><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitDecision('APROBADO')} type="button"><Icon name="check" />Aprobar perfil</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitDecision('OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Devolver con observaciones'} <Icon name="arrow" /></button></div></section>
         </section>}
 

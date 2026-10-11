@@ -669,6 +669,14 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .reviewer-document-panel .primary-button { flex: 0 0 auto; margin: 0; padding: 10px 13px; text-decoration: none; }
 .reviewer-form-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: 21px; }
 .reviewer-form-card > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
+.review-matrix-card { margin-bottom: 18px; }
+.review-matrix { border-top: 1px solid #eee7e8; margin-top: 20px; padding-top: 18px; }
+.review-matrix h3 { color: #49383d; font-size: 15px; margin: 0 0 12px; }
+.matrix-row { align-items: center; border-bottom: 1px solid #f0ebec; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) auto; padding: 12px 0; }
+.matrix-row > span { color: #5e5054; font-size: 12px; line-height: 1.45; }
+.matrix-row > div { display: flex; gap: 10px; }
+.matrix-row label { align-items: center; color: #6c5d61; display: inline-flex; font-size: 11px; gap: 4px; white-space: nowrap; }
+.matrix-row input { accent-color: var(--univalle-wine); }
 .reviewer-form-card .form-field > span { color: #685a5e; font-size: 11px; }
 .reviewer-observations { border-top: 1px solid #eee8e9; display: grid; gap: 10px; margin-top: 18px; padding-top: 16px; }
 .reviewer-observations > div:first-child { display: grid; gap: 3px; }

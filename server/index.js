@@ -25,6 +25,8 @@ const smtpPassword = process.env.SMTP_PASSWORD
 const smtpFrom = process.env.SMTP_FROM?.trim() || smtpUser
 const smtpSecure = process.env.SMTP_SECURE === 'true' || smtpPort === 465
 const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
+const reviewFormatCriteria = ['TITULO', 'INDICE', 'ORDEN_GUIA', 'FORMATO', 'NUMERO_HOJAS', 'ETAPAS_INVESTIGACION', 'CRONOGRAMA', 'CITAS', 'REFERENCIAS', 'REDACCION']
+const reviewBackgroundCriteria = ['PROBLEMA', 'JUSTIFICACION', 'FUENTES', 'ANALISIS_LITERATURA', 'PERSPECTIVA_TEORICA', 'VINCULO_TEORIA', 'VIABILIDAD_OBJETIVOS', 'COHERENCIA_OBJETIVOS', 'METODOLOGIA_PERTINENTE', 'METODOLOGIA_RESPONDE']
 const databaseUrl = process.env.DATABASE_URL?.trim()
 const initialization = { promise: null }
 
@@ -259,6 +261,13 @@ async function requireAdministrator(request, response, next) {
 
 function text(value) {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function reviewMatrix(value, expectedCodes, allowedValues) {
+  if (!Array.isArray(value) || value.length !== expectedCodes.length) return null
+  const rows = value.map((item) => ({ code: text(item?.code), value: text(item?.value).toUpperCase() }))
+  if (new Set(rows.map((item) => item.code)).size !== expectedCodes.length || rows.some((item) => !expectedCodes.includes(item.code) || !allowedValues.includes(item.value))) return null
+  return expectedCodes.map((code) => rows.find((item) => item.code === code))
 }
 
 function normalizedRoles(value) {
@@ -2537,7 +2546,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       SELECT a.id AS assignment_id, a.proyecto_id, a.fecha_asignacion, a.fecha_limite,
              a.respondida_en, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
              p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
-             f.nombre AS fase_nombre, ep.nombre AS estado_nombre,
+             f.nombre AS fase_nombre, ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
              students.nombres_estudiantes, students.registros_estudiantes,
              profile.documento_id, profile.version_id, profile.nombre_archivo,
              profile.numero_version, profile.subida_en
@@ -2602,6 +2611,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       modality: assignment.modalidad_nombre,
       phase: assignment.fase_nombre,
       status: assignment.estado_nombre,
+      statusCode: assignment.estado_codigo,
       students: assignment.nombres_estudiantes ?? 'Estudiante no disponible',
       registrations: assignment.registros_estudiantes ?? '',
       requestedAt: assignment.fecha_asignacion,
@@ -2715,6 +2725,39 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
   } finally {
     databaseClient?.release()
   }
+})
+
+app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (request, response, next) => {
+  let databaseClient = null
+  try {
+    const projectId = request.params.projectId
+    const decision = text(request.body?.decision).toUpperCase()
+    const generalComment = text(request.body?.generalComment)
+    const observations = Array.isArray(request.body?.observations) ? request.body.observations.map(text).filter(Boolean).slice(0, 20) : []
+    const formatCriteria = reviewMatrix(request.body?.formatCriteria, reviewFormatCriteria, ['SI', 'NO'])
+    const backgroundCriteria = reviewMatrix(request.body?.backgroundCriteria, reviewBackgroundCriteria, ['MALO', 'REGULAR', 'BUENO'])
+    if (!isUuid(projectId) || !['APROBADO', 'OBSERVADO'].includes(decision) || !formatCriteria || !backgroundCriteria) return response.status(422).json({ message: 'Completa las matrices y selecciona un dictamen válido.' })
+    if (decision === 'OBSERVADO' && observations.length === 0) return response.status(422).json({ message: 'Registra al menos una observación para devolver el perfil.' })
+    if (decision === 'APROBADO' && observations.length > 0) return response.status(422).json({ message: 'Elimina las observaciones para aprobar el perfil.' })
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const selected = await databaseClient.query(
+      `SELECT a.id AS assignment_id, p.id AS project_id, p.codigo_seguimiento, p.estado_actual_id, p.fase_actual_id,
+              (SELECT rr.id FROM titulacion.rondas_revision rr JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id JOIN titulacion.documentos d ON d.id = vd.documento_id WHERE d.proyecto_id = p.id ORDER BY rr.numero_ronda DESC LIMIT 1) AS round_id
+       FROM titulacion.asignaciones_proyecto a JOIN titulacion.proyectos p ON p.id = a.proyecto_id JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       WHERE a.proyecto_id = $1 AND a.docente_id = $2 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL AND ep.codigo = 'PENDIENTE_APROBACION'
+       FOR UPDATE OF a, p`, [projectId, request.session.docente_id])
+    const project = selected.rows[0]
+    if (!project?.round_id) { await databaseClient.query('ROLLBACK'); return response.status(409).json({ message: 'Este proyecto aún no está listo para la aprobación final del tutor.' }) }
+    const prior = await databaseClient.query(`SELECT id FROM titulacion.revisiones WHERE ronda_revision_id = $1 AND asignacion_proyecto_id = $2`, [project.round_id, project.assignment_id])
+    if (prior.rows[0]) { await databaseClient.query('ROLLBACK'); return response.status(409).json({ message: 'Ya registraste tu evaluación final para este proyecto.' }) }
+    const review = await databaseClient.query(`INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id, decision, comentario_general, criterios_formato, criterios_fondo, decidida_en) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, now()) RETURNING id`, [project.round_id, project.assignment_id, decision, generalComment || null, JSON.stringify(formatCriteria), JSON.stringify(backgroundCriteria)])
+    if (decision === 'OBSERVADO') for (const [index, detail] of observations.entries()) await databaseClient.query(`INSERT INTO titulacion.observaciones (revision_id, numero, detalle) VALUES ($1, $2, $3)`, [review.rows[0].id, index + 1, detail])
+    const catalog = await databaseClient.query(`SELECT (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id, (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`, [decision === 'APROBADO' ? 'APROBADO_TECNICO' : 'OBSERVADO', decision === 'APROBADO' ? 'APROBACION_PERFIL' : 'REGISTRO'])
+    await recordProjectStatus(databaseClient, { projectId, previousStateId: project.estado_actual_id, nextStateId: catalog.rows[0].state_id, previousPhaseId: project.fase_actual_id, nextPhaseId: catalog.rows[0].phase_id, userId: request.session.usuario_id, reason: decision === 'APROBADO' ? 'Perfil aprobado sin observaciones por tutor y revisores.' : 'Perfil devuelto con observaciones por el tutor.' })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: decision === 'APROBADO' ? 'Perfil aprobado sin observaciones.' : 'Perfil devuelto al estudiante con observaciones.' })
+  } catch (error) { if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined); return next(error) } finally { databaseClient?.release() }
 })
 
 app.get('/api/tutor/documents/:documentId/download', requireTutor, async (request, response, next) => {
@@ -2892,6 +2935,8 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     const observations = Array.isArray(request.body?.observations)
       ? request.body.observations.map(text).filter(Boolean).slice(0, 20)
       : []
+    const formatCriteria = reviewMatrix(request.body?.formatCriteria, reviewFormatCriteria, ['SI', 'NO'])
+    const backgroundCriteria = reviewMatrix(request.body?.backgroundCriteria, reviewBackgroundCriteria, ['MALO', 'REGULAR', 'BUENO'])
     if (!isUuid(reviewId) || !['APROBADO', 'OBSERVADO'].includes(decision)) {
       return response.status(422).json({ message: 'Selecciona un dictamen válido para la revisión.' })
     }
@@ -2900,6 +2945,9 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     }
     if (decision === 'APROBADO' && observations.length > 0) {
       return response.status(422).json({ message: 'Para aprobar el perfil elimina las observaciones o selecciona devolver con observaciones.' })
+    }
+    if (!formatCriteria || !backgroundCriteria) {
+      return response.status(422).json({ message: 'Completa todos los criterios de formato y de fondo antes de emitir el dictamen.' })
     }
 
     databaseClient = await pool.connect()
@@ -2940,9 +2988,10 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
 
     await databaseClient.query(
       `UPDATE titulacion.revisiones
-       SET decision = $2, comentario_general = $3, decidida_en = now()
+       SET decision = $2, comentario_general = $3, criterios_formato = $4::jsonb,
+           criterios_fondo = $5::jsonb, decidida_en = now()
        WHERE id = $1`,
-      [review.review_id, decision, generalComment || null],
+      [review.review_id, decision, generalComment || null, JSON.stringify(formatCriteria), JSON.stringify(backgroundCriteria)],
     )
     if (decision === 'OBSERVADO') {
       for (const [index, detail] of observations.entries()) {
