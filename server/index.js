@@ -28,6 +28,7 @@ const supportedRoles = ['ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR']
 const reviewFormatCriteria = ['TITULO', 'INDICE', 'ORDEN_GUIA', 'FORMATO', 'NUMERO_HOJAS', 'ETAPAS_INVESTIGACION', 'CRONOGRAMA', 'CITAS', 'REFERENCIAS', 'REDACCION']
 const reviewBackgroundCriteria = ['PROBLEMA', 'JUSTIFICACION', 'FUENTES', 'ANALISIS_LITERATURA', 'PERSPECTIVA_TEORICA', 'VINCULO_TEORIA', 'VIABILIDAD_OBJETIVOS', 'COHERENCIA_OBJETIVOS', 'METODOLOGIA_PERTINENTE', 'METODOLOGIA_RESPONDE']
 const privateDefenseCriteria = ['FUENTES_ACTUALIZADAS', 'ANALISIS_LITERATURA', 'METODOLOGIA', 'RESULTADOS_OBJETIVOS', 'CONCLUSIONES_OBJETIVOS']
+const publicDefenseRatifications = ['SI', 'NO', 'PARCIALMENTE']
 const databaseUrl = process.env.DATABASE_URL?.trim()
 const initialization = { promise: null }
 
@@ -592,6 +593,24 @@ async function ensurePrivateDefenseDocument(databaseClient, { projectId, title, 
   return created.rows[0]
 }
 
+async function ensurePublicDefenseDocument(databaseClient, { projectId, title, createdByUserId }) {
+  const phase = await databaseClient.query(`SELECT id FROM titulacion.fases WHERE codigo='DOCUMENTO_PUBLICO' AND activa`)
+  if (!phase.rows[0]) throw new Error('Falta la fase DOCUMENTO_PUBLICO.')
+  const existing = await databaseClient.query(
+    `SELECT id FROM titulacion.documentos
+     WHERE proyecto_id=$1 AND tipo_documento='DOCUMENTO_PUBLICO' AND activo
+     ORDER BY creado_en DESC LIMIT 1`,
+    [projectId],
+  )
+  if (existing.rows[0]) return existing.rows[0]
+  const created = await databaseClient.query(
+    `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
+     VALUES ($1,$2,$3,'DOCUMENTO_PUBLICO',$4) RETURNING id`,
+    [projectId, phase.rows[0].id, `Documento final para defensa pública - ${title}`, createdByUserId],
+  )
+  return created.rows[0]
+}
+
 async function schedulePrivateDefenseReview(databaseClient, { project, documentId, versionId, versionNumber, session }) {
   const assignments = await databaseClient.query(
     `SELECT a.id AS assignment_id, a.tipo, teacher.usuario_id, user_account.correo
@@ -671,6 +690,92 @@ async function schedulePrivateDefenseReview(databaseClient, { project, documentI
   await recordAudit(databaseClient, session, {
     projectId: project.id,
     action: 'ENVIAR_DOCUMENTO_DEFENSA_PRIVADA_A_REVISION',
+    entity: 'rondas_revision',
+    entityId: round.rows[0].id,
+    detail: { documentId, versionId, deadline: deadline.toISOString(), reviewAssignments: participants.map((item) => item.assignment_id) },
+  })
+  return { scheduled: true, roundId: round.rows[0].id }
+}
+
+async function schedulePublicDefenseReview(databaseClient, { project, documentId, versionId, versionNumber, session }) {
+  const assignments = await databaseClient.query(
+    `SELECT a.id AS assignment_id, a.tipo, teacher.usuario_id, user_account.correo
+     FROM titulacion.asignaciones_proyecto a
+     JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
+     JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id AND user_account.activo
+     WHERE a.proyecto_id = $1
+       AND a.tipo IN ('TUTOR', 'REVISOR_1', 'REVISOR_2')
+       AND a.activo AND a.fecha_fin IS NULL
+     ORDER BY a.tipo
+     FOR UPDATE OF a`,
+    [project.id],
+  )
+  const participants = assignments.rows
+  const requiredTypes = new Set(['TUTOR', 'REVISOR_1', 'REVISOR_2'])
+  if (participants.length !== 3 || participants.some((item) => !requiredTypes.has(item.tipo)) || new Set(participants.map((item) => item.tipo)).size !== 3) {
+    throw new Error('El proyecto necesita un tutor confirmado y dos revisores activos antes de enviar el documento a defensa pública.')
+  }
+  const openRound = await databaseClient.query(
+    `SELECT rr.id FROM titulacion.rondas_revision rr
+     JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+     WHERE vd.documento_id = $1 AND rr.cerrada_en IS NULL
+     FOR UPDATE OF rr`,
+    [documentId],
+  )
+  if (openRound.rows[0]) throw new Error('Ya existe una ronda de revisión abierta para este documento.')
+  const catalog = await databaseClient.query(
+    `SELECT
+       (SELECT id FROM titulacion.fases WHERE codigo = 'DOCUMENTO_PUBLICO' AND activa) AS phase_id,
+       (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'EN_DOCUMENTO_PUBLICO') AS state_id`,
+  )
+  if (!catalog.rows[0].phase_id || !catalog.rows[0].state_id) throw new Error('Faltan catálogos para la revisión de defensa pública.')
+  const previous = await databaseClient.query(
+    `SELECT COALESCE(max(rr.numero_ronda), 0)::int AS round_number
+     FROM titulacion.rondas_revision rr
+     JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+     WHERE vd.documento_id = $1`,
+    [documentId],
+  )
+  const deadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+  const round = await databaseClient.query(
+    `INSERT INTO titulacion.rondas_revision
+       (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [versionId, catalog.rows[0].phase_id, previous.rows[0].round_number + 1, session.usuario_id, deadline],
+  )
+  await databaseClient.query(
+    `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
+     SELECT $1, unnest($2::uuid[])`,
+    [round.rows[0].id, participants.map((item) => item.assignment_id)],
+  )
+  await databaseClient.query(
+    `UPDATE titulacion.asignaciones_proyecto SET fecha_limite = $2 WHERE id = ANY($1::uuid[])`,
+    [participants.map((item) => item.assignment_id), deadline],
+  )
+  for (const participant of participants) {
+    await createNotification(databaseClient, {
+      userId: participant.usuario_id,
+      recipientEmail: participant.correo,
+      projectId: project.id,
+      type: 'DEFENSA_PUBLICA_ASIGNADA',
+      title: 'Documento para defensa pública pendiente de revisión',
+      message: `El estudiante envió la versión V${versionNumber} del documento final ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+      link: participant.tipo === 'TUTOR' ? '/tutor' : '/revisor',
+    })
+  }
+  await recordProjectStatus(databaseClient, {
+    projectId: project.id,
+    previousStateId: project.estado_actual_id,
+    nextStateId: catalog.rows[0].state_id,
+    previousPhaseId: project.fase_actual_id,
+    nextPhaseId: catalog.rows[0].phase_id,
+    userId: session.usuario_id,
+    reason: `Documento final V${versionNumber} enviado al tutor y a los dos revisores para defensa pública.`,
+  })
+  await recordAudit(databaseClient, session, {
+    projectId: project.id,
+    action: 'ENVIAR_DOCUMENTO_DEFENSA_PUBLICA_A_REVISION',
     entity: 'rondas_revision',
     entityId: round.rows[0].id,
     detail: { documentId, versionId, deadline: deadline.toISOString(), reviewAssignments: participants.map((item) => item.assignment_id) },
@@ -2723,15 +2828,15 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
           ORDER BY numero_version DESC
           LIMIT 1
         ) vd ON true
-        WHERE d.proyecto_id = p.id AND d.activo AND d.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO')
-        ORDER BY CASE WHEN d.tipo_documento = 'DOCUMENTO_PRIVADO' THEN 0 ELSE 1 END, d.creado_en DESC
+        WHERE d.proyecto_id = p.id AND d.activo AND d.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO')
+        ORDER BY CASE d.tipo_documento WHEN 'DOCUMENTO_PUBLICO' THEN 0 WHEN 'DOCUMENTO_PRIVADO' THEN 1 ELSE 2 END, d.creado_en DESC
         LIMIT 1
       ) profile ON true
       LEFT JOIN LATERAL (
         SELECT r.id AS revision_id, r.decision, rr.fecha_limite, d.tipo_documento AS document_type
         FROM titulacion.rondas_revision rr
         JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
-        JOIN titulacion.documentos d ON d.id = vd.documento_id AND d.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO')
+        JOIN titulacion.documentos d ON d.id = vd.documento_id AND d.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO')
         JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id AND r.asignacion_proyecto_id = a.id
         WHERE d.proyecto_id = p.id AND rr.cerrada_en IS NULL
         ORDER BY rr.numero_ronda DESC
@@ -2752,14 +2857,14 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
         JOIN titulacion.docentes teammate_teacher ON teammate_teacher.id = teammate_assignment.docente_id
         JOIN titulacion.usuarios teammate_user ON teammate_user.id = teammate_teacher.usuario_id
         WHERE summary_document.proyecto_id = p.id
-          AND summary_document.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO')
+          AND summary_document.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO')
           AND summary_round.id = (
             SELECT latest_round.id
             FROM titulacion.rondas_revision latest_round
             JOIN titulacion.versiones_documento latest_version ON latest_version.id = latest_round.version_documento_id
             JOIN titulacion.documentos latest_document ON latest_document.id = latest_version.documento_id
             WHERE latest_document.proyecto_id = p.id
-              AND latest_document.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO')
+              AND latest_document.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO')
             ORDER BY (latest_round.cerrada_en IS NULL) DESC, latest_round.fecha_solicitud DESC
             LIMIT 1
           )
@@ -2929,6 +3034,7 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
     const profileFormatCriteria = reviewMatrix(request.body?.formatCriteria, reviewFormatCriteria, ['SI', 'NO'])
     const profileBackgroundCriteria = reviewMatrix(request.body?.backgroundCriteria, reviewBackgroundCriteria, ['MALO', 'REGULAR', 'BUENO'])
     const privateBackgroundCriteria = reviewMatrix(request.body?.backgroundCriteria, privateDefenseCriteria, ['MALO', 'REGULAR', 'BUENO'])
+    const publicRatification = text(request.body?.publicRatification).toUpperCase()
     if (!isUuid(projectId) || !['APROBADO', 'OBSERVADO'].includes(decision)) return response.status(422).json({ message: 'Completa las matrices y selecciona un dictamen válido.' })
     if (decision === 'OBSERVADO' && observations.length === 0) return response.status(422).json({ message: 'Registra al menos una observación para devolver el perfil.' })
     if (decision === 'APROBADO' && observations.length > 0) return response.status(422).json({ message: 'Elimina las observaciones para aprobar el perfil.' })
@@ -2939,19 +3045,24 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
               (SELECT rr.id FROM titulacion.rondas_revision rr JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id JOIN titulacion.documentos d ON d.id = vd.documento_id WHERE d.proyecto_id = p.id ORDER BY rr.fecha_solicitud DESC LIMIT 1) AS round_id,
               (SELECT d.tipo_documento FROM titulacion.rondas_revision rr JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id JOIN titulacion.documentos d ON d.id = vd.documento_id WHERE d.proyecto_id = p.id ORDER BY rr.fecha_solicitud DESC LIMIT 1) AS document_type
        FROM titulacion.asignaciones_proyecto a JOIN titulacion.proyectos p ON p.id = a.proyecto_id JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
-       WHERE a.proyecto_id = $1 AND a.docente_id = $2 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL AND ep.codigo IN ('EN_REVISION', 'PENDIENTE_APROBACION', 'EN_DOCUMENTO_PRIVADO')
+       WHERE a.proyecto_id = $1 AND a.docente_id = $2 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL AND ep.codigo IN ('EN_REVISION', 'PENDIENTE_APROBACION', 'EN_DOCUMENTO_PRIVADO', 'EN_DOCUMENTO_PUBLICO')
        FOR UPDATE OF a, p`, [projectId, request.session.docente_id])
     const project = selected.rows[0]
     const isPrivateDefense = project?.document_type === 'DOCUMENTO_PRIVADO'
-    const activeFormatCriteria = isPrivateDefense ? [] : profileFormatCriteria
-    const activeBackgroundCriteria = isPrivateDefense ? privateBackgroundCriteria : profileBackgroundCriteria
+    const isPublicDefense = project?.document_type === 'DOCUMENTO_PUBLICO'
+    const activeFormatCriteria = isPrivateDefense || isPublicDefense ? [] : profileFormatCriteria
+    const activeBackgroundCriteria = isPublicDefense
+      ? [{ code: 'RATIFICACION_DEFENSA_PUBLICA', value: publicRatification }]
+      : isPrivateDefense ? privateBackgroundCriteria : profileBackgroundCriteria
     if (!project?.round_id) { await databaseClient.query('ROLLBACK'); return response.status(409).json({ message: 'Este proyecto aún no está listo para la aprobación final del tutor.' }) }
     const prior = await databaseClient.query(`SELECT id, decision FROM titulacion.revisiones WHERE ronda_revision_id = $1 AND asignacion_proyecto_id = $2 FOR UPDATE`, [project.round_id, project.assignment_id])
     const pendingTutorReviewId = prior.rows[0]?.decision === 'PENDIENTE' ? prior.rows[0].id : null
     if (pendingTutorReviewId) prior.rows.length = 0
     if (prior.rows[0]) { await databaseClient.query('ROLLBACK'); return response.status(409).json({ message: 'Ya registraste tu evaluación final para este proyecto.' }) }
     if (!activeFormatCriteria || !activeBackgroundCriteria) { await databaseClient.query('ROLLBACK'); return response.status(422).json({ message: 'Completa todos los criterios requeridos.' }) }
-    if (decision === 'APROBADO' && (activeFormatCriteria.some((item) => item.value !== 'SI') || activeBackgroundCriteria.some((item) => item.value !== 'BUENO'))) { await databaseClient.query('ROLLBACK'); return response.status(422).json({ message: 'Para aprobar, todos los criterios deben cumplir la guia.' }) }
+    if (isPublicDefense && !publicDefenseRatifications.includes(publicRatification)) { await databaseClient.query('ROLLBACK'); return response.status(422).json({ message: 'Selecciona la ratificación para la defensa pública.' }) }
+    if (isPublicDefense && ((decision === 'APROBADO') !== (publicRatification === 'SI'))) { await databaseClient.query('ROLLBACK'); return response.status(422).json({ message: 'La ratificación Sí aprueba; No o Parcialmente requieren devolver el documento con observaciones.' }) }
+    if (!isPublicDefense && decision === 'APROBADO' && (activeFormatCriteria.some((item) => item.value !== 'SI') || activeBackgroundCriteria.some((item) => item.value !== 'BUENO'))) { await databaseClient.query('ROLLBACK'); return response.status(422).json({ message: 'Para aprobar, todos los criterios deben cumplir la guia.' }) }
     const review = pendingTutorReviewId
       ? await databaseClient.query(`UPDATE titulacion.revisiones SET decision=$2, comentario_general=$3, criterios_formato=$4::jsonb, criterios_fondo=$5::jsonb, decidida_en=now() WHERE id=$1 RETURNING id`, [pendingTutorReviewId, decision, generalComment || null, JSON.stringify(activeFormatCriteria), JSON.stringify(activeBackgroundCriteria)])
       : await databaseClient.query(`INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id, decision, comentario_general, criterios_formato, criterios_fondo, decidida_en) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, now()) RETURNING id`, [project.round_id, project.assignment_id, decision, generalComment || null, JSON.stringify(activeFormatCriteria), JSON.stringify(activeBackgroundCriteria)])
@@ -2963,10 +3074,10 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
     }
     const roundDecisions = await databaseClient.query(`SELECT decision FROM titulacion.revisiones WHERE ronda_revision_id=$1`, [project.round_id])
     const hasObservations = roundDecisions.rows.some((item) => item.decision === 'OBSERVADO' || item.decision === 'RECHAZADO')
-    const catalog = await databaseClient.query(`SELECT (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id, (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`, [hasObservations ? 'OBSERVADO' : isPrivateDefense ? 'APROBADO_TECNICO' : 'EN_DOCUMENTO_PRIVADO', hasObservations ? (isPrivateDefense ? 'DOCUMENTO_PRIVADO' : 'REGISTRO') : isPrivateDefense ? 'APROBACION_PERFIL' : 'DOCUMENTO_PRIVADO'])
+    const catalog = await databaseClient.query(`SELECT (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id, (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`, [hasObservations ? 'OBSERVADO' : isPublicDefense ? 'APROBADO_INSTITUCIONAL' : isPrivateDefense ? 'EN_DOCUMENTO_PUBLICO' : 'EN_DOCUMENTO_PRIVADO', hasObservations ? (isPublicDefense ? 'DOCUMENTO_PUBLICO' : isPrivateDefense ? 'DOCUMENTO_PRIVADO' : 'REGISTRO') : isPublicDefense ? 'DOCUMENTO_PUBLICO' : isPrivateDefense ? 'DOCUMENTO_PUBLICO' : 'DOCUMENTO_PRIVADO'])
     await databaseClient.query(`UPDATE titulacion.rondas_revision SET cerrada_en=now() WHERE id=$1`, [project.round_id])
     await recordProjectStatus(databaseClient, { projectId, previousStateId: project.estado_actual_id, nextStateId: catalog.rows[0].state_id, previousPhaseId: project.fase_actual_id, nextPhaseId: catalog.rows[0].phase_id, userId: request.session.usuario_id, reason: hasObservations ? 'Perfil devuelto con observaciones del tutor o de los revisores.' : 'Perfil aprobado sin observaciones por tutor y revisores.' })
-    if (!hasObservations && !isPrivateDefense) {
+    if (!hasObservations && !isPrivateDefense && !isPublicDefense) {
       await ensurePrivateDefenseDocument(databaseClient, { projectId, title: project.titulo_tentativo, createdByUserId: request.session.usuario_id })
       const students = await databaseClient.query(
         `SELECT u.id AS usuario_id, u.correo
@@ -2987,8 +3098,29 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
         queueEmail: true,
       })
     }
+    if (!hasObservations && isPrivateDefense) {
+      await ensurePublicDefenseDocument(databaseClient, { projectId, title: project.titulo_tentativo, createdByUserId: request.session.usuario_id })
+      const students = await databaseClient.query(
+        `SELECT u.id AS usuario_id, u.correo
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
+         WHERE pe.proyecto_id = $1 AND pe.activo`,
+        [projectId],
+      )
+      for (const student of students.rows) await createNotification(databaseClient, {
+        userId: student.usuario_id,
+        recipientEmail: student.correo,
+        projectId,
+        type: 'DOCUMENTO_PUBLICO_HABILITADO',
+        title: 'Documento para defensa pública habilitado',
+        message: `El documento para defensa privada de ${project.codigo_seguimiento} fue aprobado. Ya puedes adjuntar el documento final para defensa pública.`,
+        link: '/documentos',
+        queueEmail: true,
+      })
+    }
     await databaseClient.query('COMMIT')
-    return response.json({ message: decision === 'APROBADO' ? (isPrivateDefense ? 'Documento aprobado para defensa privada.' : 'Perfil aprobado; se habilitó el documento para defensa privada.') : 'Documento devuelto al estudiante con observaciones.' })
+    return response.json({ message: decision === 'APROBADO' ? (isPublicDefense ? 'Documento aprobado para defensa pública.' : isPrivateDefense ? 'Documento aprobado para defensa privada; se habilitó el documento final.' : 'Perfil aprobado; se habilitó el documento para defensa privada.') : 'Documento devuelto al estudiante con observaciones.' })
   } catch (error) { if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined); return next(error) } finally { databaseClient?.release() }
 })
 
@@ -3163,6 +3295,7 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     const profileFormatCriteria = reviewMatrix(request.body?.formatCriteria, reviewFormatCriteria, ['SI', 'NO'])
     const profileBackgroundCriteria = reviewMatrix(request.body?.backgroundCriteria, reviewBackgroundCriteria, ['MALO', 'REGULAR', 'BUENO'])
     const privateBackgroundCriteria = reviewMatrix(request.body?.backgroundCriteria, privateDefenseCriteria, ['MALO', 'REGULAR', 'BUENO'])
+    const publicRatification = text(request.body?.publicRatification).toUpperCase()
     if (!isUuid(reviewId) || !['APROBADO', 'OBSERVADO'].includes(decision)) {
       return response.status(422).json({ message: 'Selecciona un dictamen válido para la revisión.' })
     }
@@ -3208,13 +3341,24 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
       return response.status(409).json({ message: 'Ya emitiste un dictamen para esta revisión.' })
     }
     const isPrivateDefense = review.document_type === 'DOCUMENTO_PRIVADO'
-    const formatCriteria = isPrivateDefense ? [] : profileFormatCriteria
-    const backgroundCriteria = isPrivateDefense ? privateBackgroundCriteria : profileBackgroundCriteria
+    const isPublicDefense = review.document_type === 'DOCUMENTO_PUBLICO'
+    const formatCriteria = isPrivateDefense || isPublicDefense ? [] : profileFormatCriteria
+    const backgroundCriteria = isPublicDefense
+      ? [{ code: 'RATIFICACION_DEFENSA_PUBLICA', value: publicRatification }]
+      : isPrivateDefense ? privateBackgroundCriteria : profileBackgroundCriteria
     if (!formatCriteria || !backgroundCriteria) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Completa todos los criterios requeridos antes de emitir el dictamen.' })
     }
-    if (decision === 'APROBADO' && (formatCriteria.some((item) => item.value !== 'SI') || backgroundCriteria.some((item) => item.value !== 'BUENO'))) {
+    if (isPublicDefense && !publicDefenseRatifications.includes(publicRatification)) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'Selecciona la ratificación para la defensa pública.' })
+    }
+    if (isPublicDefense && ((decision === 'APROBADO') !== (publicRatification === 'SI'))) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'La ratificación Sí aprueba; No o Parcialmente requieren devolver el documento con observaciones.' })
+    }
+    if (!isPublicDefense && decision === 'APROBADO' && (formatCriteria.some((item) => item.value !== 'SI') || backgroundCriteria.some((item) => item.value !== 'BUENO'))) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Para aprobar sin observaciones, todos los criterios deben cumplir la guía.' })
     }
@@ -3238,7 +3382,10 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     await databaseClient.query(
       `UPDATE titulacion.notificaciones
        SET leida_en = COALESCE(leida_en, now())
-       WHERE usuario_id = $1 AND proyecto_id = $2 AND tipo = 'REVISION_ASIGNADA' AND leida_en IS NULL`,
+       WHERE usuario_id = $1
+         AND proyecto_id = $2
+         AND tipo IN ('REVISION_ASIGNADA', 'DEFENSA_PRIVADA_ASIGNADA', 'DEFENSA_PUBLICA_ASIGNADA')
+         AND leida_en IS NULL`,
       [request.session.usuario_id, review.project_id],
     )
 
@@ -3255,7 +3402,7 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
         `SELECT
            (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id,
            (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`,
-        [hasObservations ? 'OBSERVADO' : isPrivateDefense ? 'APROBADO_TECNICO' : 'EN_DOCUMENTO_PRIVADO', hasObservations ? (isPrivateDefense ? 'DOCUMENTO_PRIVADO' : 'REGISTRO') : isPrivateDefense ? 'APROBACION_PERFIL' : 'DOCUMENTO_PRIVADO'],
+         [hasObservations ? 'OBSERVADO' : isPublicDefense ? 'APROBADO_INSTITUCIONAL' : isPrivateDefense ? 'EN_DOCUMENTO_PUBLICO' : 'EN_DOCUMENTO_PRIVADO', hasObservations ? (isPublicDefense ? 'DOCUMENTO_PUBLICO' : isPrivateDefense ? 'DOCUMENTO_PRIVADO' : 'REGISTRO') : isPublicDefense ? 'DOCUMENTO_PUBLICO' : isPrivateDefense ? 'DOCUMENTO_PUBLICO' : 'DOCUMENTO_PRIVADO'],
       )
       if (!catalog.rows[0].state_id || !catalog.rows[0].phase_id) throw new Error('Faltan catálogos para cerrar la ronda de revisión.')
       await databaseClient.query(
@@ -3286,12 +3433,21 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
         userId: request.session.usuario_id,
         reason: hasObservations
           ? `Ronda ${review.numero_ronda} cerrada con observaciones de los revisores.`
-          : isPrivateDefense
+           : isPublicDefense
+             ? `Documento final ratificado para defensa pública por tutor y revisores.`
+             : isPrivateDefense
             ? `Documento para defensa privada aprobado por tutor y revisores.`
             : `Perfil aprobado por tutor y revisores; se habilitó el documento para defensa privada.`,
       })
-      if (!hasObservations && !isPrivateDefense) {
+      if (!hasObservations && !isPrivateDefense && !isPublicDefense) {
         await ensurePrivateDefenseDocument(databaseClient, {
+          projectId: review.project_id,
+          title: review.codigo_seguimiento,
+          createdByUserId: request.session.usuario_id,
+        })
+      }
+      if (!hasObservations && isPrivateDefense) {
+        await ensurePublicDefenseDocument(databaseClient, {
           projectId: review.project_id,
           title: review.codigo_seguimiento,
           createdByUserId: request.session.usuario_id,
@@ -3310,18 +3466,20 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
           userId: student.usuario_id,
           recipientEmail: student.correo,
           projectId: review.project_id,
-          type: hasObservations ? 'REVISION_DEVUELTA' : isPrivateDefense ? 'DEFENSA_PRIVADA_APROBADA' : 'DOCUMENTO_PRIVADO_HABILITADO',
-          title: hasObservations ? 'Documento devuelto con observaciones' : isPrivateDefense ? 'Documento aprobado para defensa privada' : 'Documento para defensa privada habilitado',
+          type: hasObservations ? 'REVISION_DEVUELTA' : isPublicDefense ? 'DEFENSA_PUBLICA_APROBADA' : isPrivateDefense ? 'DOCUMENTO_PUBLICO_HABILITADO' : 'DOCUMENTO_PRIVADO_HABILITADO',
+          title: hasObservations ? 'Documento devuelto con observaciones' : isPublicDefense ? 'Documento aprobado para defensa pública' : isPrivateDefense ? 'Documento para defensa pública habilitado' : 'Documento para defensa privada habilitado',
           message: hasObservations
             ? `El documento ${review.codigo_seguimiento} recibió observaciones. Revísalas y adjunta una nueva versión.`
-            : isPrivateDefense
+            : isPublicDefense
+              ? `El documento final ${review.codigo_seguimiento} fue ratificado para defensa pública por tutor y revisores.`
+              : isPrivateDefense
               ? `El documento ${review.codigo_seguimiento} fue aprobado por tutor y revisores para la defensa privada.`
               : `El perfil ${review.codigo_seguimiento} fue aprobado. Ya puedes adjuntar el documento para defensa privada.`,
-          link: hasObservations || !isPrivateDefense ? '/documentos' : '/student',
-          queueEmail: hasObservations,
+          link: hasObservations || isPrivateDefense || !isPublicDefense ? '/documentos' : '/student',
+          queueEmail: hasObservations || isPrivateDefense || isPublicDefense,
         })
       }
-      roundResult = hasObservations ? 'observed' : isPrivateDefense ? 'private-defense-approved' : 'profile-approved'
+      roundResult = hasObservations ? 'observed' : isPublicDefense ? 'public-defense-approved' : isPrivateDefense ? 'private-defense-approved' : 'profile-approved'
     }
     await recordAudit(databaseClient, request.session, {
       projectId: review.project_id,
@@ -3699,6 +3857,7 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
         canUploadVersion: document.permite_edicion_estudiante && (
           (document.tipo_documento === 'PERFIL_PROYECTO' && document.fase_codigo === 'REGISTRO')
           || (document.tipo_documento === 'DOCUMENTO_PRIVADO' && document.fase_codigo === 'DOCUMENTO_PRIVADO')
+          || (document.tipo_documento === 'DOCUMENTO_PUBLICO' && document.fase_codigo === 'DOCUMENTO_PUBLICO')
         ),
         createdAt: document.creado_en,
         totalVersions: document.total_versiones,
@@ -3785,6 +3944,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     }
     const canUploadSelectedDocument = (selected.tipo_documento === 'PERFIL_PROYECTO' && selected.fase_codigo === 'REGISTRO')
       || (selected.tipo_documento === 'DOCUMENTO_PRIVADO' && selected.fase_codigo === 'DOCUMENTO_PRIVADO')
+      || (selected.tipo_documento === 'DOCUMENTO_PUBLICO' && selected.fase_codigo === 'DOCUMENTO_PUBLICO')
     if (!canUploadSelectedDocument) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Este documento no puede recibir una nueva versión en la fase actual.' })
@@ -3898,6 +4058,9 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
       [selected.proyecto_id],
     )
     for (const tutor of tutors.rows) {
+      // La ronda de defensa pública ya avisa al tutor y a ambos revisores.
+      // Evitamos duplicar ese aviso con el mensaje genérico de actualización.
+      if (selected.tipo_documento === 'DOCUMENTO_PUBLICO') continue
       await createNotification(databaseClient, {
         userId: tutor.usuario_id,
         projectId: selected.proyecto_id,
@@ -3909,7 +4072,15 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
         link: '/tutor/projects',
       })
     }
-    const correctionReview = selected.tipo_documento === 'DOCUMENTO_PRIVADO'
+    const correctionReview = selected.tipo_documento === 'DOCUMENTO_PUBLICO'
+      ? await schedulePublicDefenseReview(databaseClient, {
+        project,
+        documentId: selected.id,
+        versionId: inserted.rows[0].version_id,
+        versionNumber: inserted.rows[0].numero_version,
+        session: request.session,
+      })
+      : selected.tipo_documento === 'DOCUMENTO_PRIVADO'
       ? await schedulePrivateDefenseReview(databaseClient, {
         project,
         documentId: selected.id,
@@ -3927,7 +4098,9 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     await databaseClient.query('COMMIT')
     return response.status(201).json({
       message: correctionReview.scheduled
-        ? selected.tipo_documento === 'DOCUMENTO_PRIVADO'
+        ? selected.tipo_documento === 'DOCUMENTO_PUBLICO'
+          ? `Documento final V${inserted.rows[0].numero_version} enviado al tutor y a los dos revisores para defensa pública.`
+          : selected.tipo_documento === 'DOCUMENTO_PRIVADO'
           ? `Se registró la versión ${inserted.rows[0].numero_version} y se envió al tutor y a los dos revisores para defensa privada.`
           : `Se registró la versión ${inserted.rows[0].numero_version} y se reenviaron las correcciones a los mismos revisores.`
         : linkedObservations.rowCount > 0

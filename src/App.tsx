@@ -1207,6 +1207,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
   const [selectedEvaluation, setSelectedEvaluation] = useState<TutorAssignment | null>(null)
   const [formatRatings, setFormatRatings] = useState<Record<string, string>>({})
   const [backgroundRatings, setBackgroundRatings] = useState<Record<string, string>>({})
+  const [publicRatification, setPublicRatification] = useState('')
   const [evaluationObservations, setEvaluationObservations] = useState('')
   const [declineReason, setDeclineReason] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -1249,12 +1250,13 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
   async function submitEvaluation(decision: 'APROBADO' | 'OBSERVADO') {
     if (!selectedEvaluation) return
     const isPrivateDefense = selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO'
-    const formatCriteriaPayload = isPrivateDefense ? [] : formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
-    const backgroundCriteriaPayload = (isPrivateDefense ? privateDefenseCriteria : backgroundCriteria).map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
+    const isPublicDefense = selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PUBLICO'
+    const formatCriteriaPayload = isPrivateDefense || isPublicDefense ? [] : formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
+    const backgroundCriteriaPayload = isPublicDefense ? [] : (isPrivateDefense ? privateDefenseCriteria : backgroundCriteria).map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
     const observations = evaluationObservations.split('\n').map((item) => item.trim()).filter(Boolean)
-    if (formatCriteriaPayload.some((item) => !item.value) || backgroundCriteriaPayload.some((item) => !item.value) || (decision === 'OBSERVADO' && observations.length === 0)) { setMessage('Completa las matrices y registra observaciones si devuelves el perfil.'); return }
+    if (formatCriteriaPayload.some((item) => !item.value) || backgroundCriteriaPayload.some((item) => !item.value) || (isPublicDefense && !publicRatification) || (decision === 'OBSERVADO' && observations.length === 0)) { setMessage(isPublicDefense ? 'Selecciona la ratificación y registra observaciones para No o Parcialmente.' : 'Completa las matrices y registra observaciones si devuelves el perfil.'); return }
     setIsSubmitting(true); setMessage('')
-    try { const result = await api<{ message: string }>(`/api/tutor/projects/${selectedEvaluation.projectId}/formulario2`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, observations, formatCriteria: formatCriteriaPayload, backgroundCriteria: backgroundCriteriaPayload }) }); setSelectedEvaluation(null); await onRefresh(); setMessage(result.message) } catch (error) { setMessage(error instanceof Error ? error.message : 'No fue posible guardar la evaluación.') } finally { setIsSubmitting(false) }
+    try { const result = await api<{ message: string }>(`/api/tutor/projects/${selectedEvaluation.projectId}/formulario2`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision, observations, formatCriteria: formatCriteriaPayload, backgroundCriteria: backgroundCriteriaPayload, publicRatification }) }); setSelectedEvaluation(null); await onRefresh(); setMessage(result.message) } catch (error) { setMessage(error instanceof Error ? error.message : 'No fue posible guardar la evaluación.') } finally { setIsSubmitting(false) }
   }
 
   function invitationCard(invitation: TutorAssignment) {
@@ -1278,14 +1280,14 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
       <p className="tutor-card-description">{project.description}</p>
       {project.teamReviews.length > 0 && <ReviewProgress reviews={project.teamReviews} />}
       <div className="tutor-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase} · {project.status}</span></div>
-      <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />{project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Documento privado' : 'Perfil'} V{project.profile.version}</a>}</div>{project.statusCode === 'PENDIENTE_APROBACION' && <div className="tutor-actions"><button className="primary-button" onClick={() => { setSelectedEvaluation(project); setFormatRatings({}); setBackgroundRatings({}); setEvaluationObservations('') }} type="button"><Icon name="clipboard" />{project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Evaluar Formulario 2'}</button></div>}
+      <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />{project.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'Documento final' : project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Documento privado' : 'Perfil'} V{project.profile.version}</a>}</div>{project.canReviewProfile && <div className="tutor-actions"><button className="primary-button" onClick={() => { setSelectedEvaluation(project); setFormatRatings({}); setBackgroundRatings({}); setPublicRatification(''); setEvaluationObservations('') }} type="button"><Icon name="clipboard" />{project.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'Evaluar defensa pública' : project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Evaluar Formulario 2'}</button></div>}
     </article>
   }
 
   const reviewedProjects = data.projects.filter((project) => project.teamReviews.some((review) => review.decision !== 'PENDIENTE'))
   const defenseProjects = data.projects.filter((project) => defenseType === 'PRIVATE'
     ? project.reviewDocumentType === 'DOCUMENTO_PRIVADO' || project.profile?.type === 'DOCUMENTO_PRIVADO' || project.statusCode === 'EN_DOCUMENTO_PRIVADO'
-    : project.reviewDocumentType === 'DOCUMENTO_PUBLICO' || project.profile?.type === 'DOCUMENTO_PUBLICO')
+    : project.reviewDocumentType === 'DOCUMENTO_PUBLICO' || project.profile?.type === 'DOCUMENTO_PUBLICO' || project.statusCode === 'EN_DOCUMENTO_PUBLICO')
   const heading = view === 'home' ? 'Inicio' : view === 'invitations' ? 'Invitaciones de tutoría' : view === 'projects' ? 'Mis proyectos' : view === 'reviewed' ? 'Proyectos revisados' : view === 'defenses' ? 'Defensas' : 'Notificaciones'
   const copy = view === 'home' ? 'Revisa las solicitudes y el estado de los proyectos que acompañas.' : view === 'invitations' ? 'Responde cada solicitud para confirmar o declinar la tutoría.' : view === 'projects' ? 'Consulta los proyectos cuya tutoría aceptaste.' : view === 'reviewed' ? 'Consulta los dictámenes emitidos, el estado de cada proyecto y las revisiones pendientes.' : view === 'defenses' ? 'Revisa y emite el dictamen para documentos de defensa privada o pública.' : 'Mantente al tanto de las solicitudes y actualizaciones de tus proyectos.'
 
@@ -1314,7 +1316,16 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
         {selectedEvaluation?.canReviewProfile && <p className="eyebrow">REVISION DEL PERFIL COMO TUTOR</p>}
 
-        {selectedEvaluation && <section className="reviewer-workspace"><button className="text-button reviewer-back" onClick={() => setSelectedEvaluation(null)} type="button">← Volver a mis proyectos</button><div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedEvaluation.code}</span><h2>Evaluación final del tutor</h2><p>{selectedEvaluation.title}</p></div></div><section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'FORMULARIO 3' : 'FORMULARIO 2'}</p><h2>{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Revisión antes de defensa privada' : 'Formato, forma y fondo'}</h2></div></div>{selectedEvaluation.reviewDocumentType !== 'DOCUMENTO_PRIVADO' && <section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`tutor-format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section>}<section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{(selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? privateDefenseCriteria : backgroundCriteria).map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`tutor-background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section><label className="form-field"><span>Observaciones</span><textarea disabled={isSubmitting} onChange={(event) => setEvaluationObservations(event.target.value)} placeholder="Una observación por línea si devuelves el documento." rows={4} value={evaluationObservations} /></label><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitEvaluation('APROBADO')} type="button"><Icon name="check" />Aprobar sin observaciones</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitEvaluation('OBSERVADO')} type="button">Devolver con observaciones <Icon name="arrow" /></button></div></section></section>}
+        {selectedEvaluation && <section className="reviewer-workspace">
+          <button className="text-button reviewer-back" onClick={() => setSelectedEvaluation(null)} type="button">← Volver a mis proyectos</button>
+          <div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedEvaluation.code}</span><h2>Evaluación final del tutor</h2><p>{selectedEvaluation.title}</p></div></div>
+          <section className="reviewer-form-card review-matrix-card">
+            <div className="admin-operation-heading"><Icon name="clipboard" /><div><p>{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'FORMULARIO 4' : selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'FORMULARIO 3' : 'FORMULARIO 2'}</p><h2>{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'Ratificación antes de defensa pública' : selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Revisión antes de defensa privada' : 'Formato, forma y fondo'}</h2></div></div>
+            {selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? <section className="review-matrix"><h3>Ratificación para defensa pública <b>*</b></h3><p>Habiéndose verificado las correcciones sugeridas en la defensa privada, ¿el postulante está facultado para ingresar a defensa pública?</p><div className="matrix-row"><span>Dictamen</span><div>{(['SI', 'NO', 'PARCIALMENTE'] as const).map((value) => <label key={value}><input checked={publicRatification === value} disabled={isSubmitting} name="tutor-public-ratification" onChange={() => setPublicRatification(value)} type="radio" />{value === 'SI' ? 'Sí' : value === 'NO' ? 'No' : 'Parcialmente'}</label>)}</div></div></section> : <>{selectedEvaluation.reviewDocumentType !== 'DOCUMENTO_PRIVADO' && <section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`tutor-format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section>}<section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{(selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? privateDefenseCriteria : backgroundCriteria).map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`tutor-background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section></>}
+            <label className="form-field"><span>Observaciones</span><textarea disabled={isSubmitting} onChange={(event) => setEvaluationObservations(event.target.value)} placeholder="Una observación por línea si devuelves el documento." rows={4} value={evaluationObservations} /></label>
+            <div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitEvaluation(selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? (publicRatification === 'SI' ? 'APROBADO' : 'OBSERVADO') : 'APROBADO')} type="button"><Icon name="check" />{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'Guardar ratificación' : 'Aprobar sin observaciones'}</button>{selectedEvaluation.reviewDocumentType !== 'DOCUMENTO_PUBLICO' && <button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitEvaluation('OBSERVADO')} type="button">Devolver con observaciones <Icon name="arrow" /></button>}</div>
+          </section>
+        </section>}
 
         {!selectedEvaluation && view === 'home' && <>
           <section className="tutor-stats"><div><small>Invitaciones pendientes</small><strong>{data.invitations.length}</strong><span>Requieren tu respuesta.</span></div><div><small>Proyectos asignados</small><strong>{data.projects.length}</strong><span>Tutorías confirmadas.</span></div><div><small>Notificaciones</small><strong>{data.unreadCount}</strong><span>Actualizaciones sin leer.</span></div></section>
@@ -1340,6 +1351,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   const [observationDrafts, setObservationDrafts] = useState<string[]>([''])
   const [formatRatings, setFormatRatings] = useState<Record<string, string>>({})
   const [backgroundRatings, setBackgroundRatings] = useState<Record<string, string>>({})
+  const [publicRatification, setPublicRatification] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
 
@@ -1349,6 +1361,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
     setObservationDrafts([''])
     setFormatRatings({})
     setBackgroundRatings({})
+    setPublicRatification('')
     setMessage('')
   }
 
@@ -1358,6 +1371,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
     setObservationDrafts([''])
     setFormatRatings({})
     setBackgroundRatings({})
+    setPublicRatification('')
   }
 
   function updateObservation(index: number, value: string) {
@@ -1372,10 +1386,11 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
     if (!selectedReview) return
     const observations = observationDrafts.map((item) => item.trim()).filter(Boolean)
     const isPrivateDefense = selectedReview.profile.type === 'DOCUMENTO_PRIVADO'
-    const selectedFormat = isPrivateDefense ? [] : formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
-    const selectedBackground = (isPrivateDefense ? privateDefenseCriteria : backgroundCriteria).map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
-    if (selectedFormat.some((item) => !item.value) || selectedBackground.some((item) => !item.value)) {
-      setMessage('Completa todos los criterios de formato y de fondo antes de emitir el dictamen.')
+    const isPublicDefense = selectedReview.profile.type === 'DOCUMENTO_PUBLICO'
+    const selectedFormat = isPrivateDefense || isPublicDefense ? [] : formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
+    const selectedBackground = isPublicDefense ? [] : (isPrivateDefense ? privateDefenseCriteria : backgroundCriteria).map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
+    if (selectedFormat.some((item) => !item.value) || selectedBackground.some((item) => !item.value) || (isPublicDefense && !publicRatification)) {
+      setMessage(isPublicDefense ? 'Selecciona la ratificación para defensa pública.' : 'Completa todos los criterios de formato y de fondo antes de emitir el dictamen.')
       return
     }
     if (decision === 'OBSERVADO' && observations.length === 0) {
@@ -1388,7 +1403,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
       const result = await api<{ message: string }>(`/api/reviewer/reviews/${selectedReview.id}/decision`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision, generalComment: generalComment.trim(), observations, formatCriteria: selectedFormat, backgroundCriteria: selectedBackground }),
+        body: JSON.stringify({ decision, generalComment: generalComment.trim(), observations, formatCriteria: selectedFormat, backgroundCriteria: selectedBackground, publicRatification }),
       })
       closeReview()
       await onRefresh()
@@ -1428,7 +1443,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
       <div className="tutor-project-meta"><span><Icon name="user" />{review.students}</span><span><Icon name="clipboard" />{review.modality}</span><span><Icon name="check" />{review.phase} · {review.status}</span></div>
       <div className="reviewer-card-info"><div><small>Entrega de revisión</small><strong className={isOverdue ? 'is-overdue' : ''}>{formatDate(review.deadline)}{isOverdue ? ' · Vencida' : ''}</strong></div><div><small>Perfil asignado</small><a className="document-download reviewer-document-link" href={`/api/reviewer/documents/${review.profile.documentId}/download?version=${review.profile.versionId}`}><Icon name="download" />V{review.profile.version} · Descargar</a></div></div>
       {review.decision !== 'PENDIENTE' && <div className={isObserved ? 'reviewer-result is-observed' : 'reviewer-result'}><strong>{isObserved ? `${review.observations.length} observación${review.observations.length === 1 ? '' : 'es'} registrada${review.observations.length === 1 ? '' : 's'}` : 'Dictamen emitido sin observaciones'}</strong>{review.generalComment && <p>{review.generalComment}</p>}</div>}
-      {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />{review.profile.type === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Revisar perfil'}</button></div>}
+      {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />{review.profile.type === 'DOCUMENTO_PUBLICO' ? 'Evaluar defensa pública' : review.profile.type === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Revisar perfil'}</button></div>}
     </article>
   }
 
@@ -1476,6 +1491,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           <section className="reviewer-form-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>DICTAMEN DE REVISIÓN</p><h2>Registra tu evaluación</h2></div></div><p>Tu dictamen no podrá modificarse después de guardarlo. La ronda se cerrará cuando ambos revisores hayan respondido.</p><label className="form-field"><span>Comentario general</span><textarea disabled={isSubmitting} onChange={(event) => setGeneralComment(event.target.value)} placeholder="Resume los aspectos principales de tu revisión." rows={3} value={generalComment} /></label><div className="reviewer-observations"><div><strong>Observaciones puntuales</strong><small>Son obligatorias solo si devuelves el perfil.</small></div>{observationDrafts.map((observation, index) => <div className="reviewer-observation-row" key={index}><span>{index + 1}</span><textarea aria-label={`Observación ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObservation(index, event.target.value)} placeholder="Indica con claridad qué debe corregirse." rows={2} value={observation} />{observationDrafts.length > 1 && <button aria-label={`Eliminar observación ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => removeObservation(index)} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || observationDrafts.length >= 20} onClick={() => setObservationDrafts((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir observación</button></div><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitDecision('APROBADO')} type="button"><Icon name="check" />Aprobar perfil</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitDecision('OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Devolver con observaciones'} <Icon name="arrow" /></button></div></section>
         </section>}
 
+        {selectedReview?.profile.type === 'DOCUMENTO_PUBLICO' && <section className="reviewer-form-card public-defense-ratification"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 4</p><h2>Ratificación para defensa pública</h2></div></div><p>Habiéndose verificado las correcciones sugeridas en la defensa privada, indica si el postulante está facultado para ingresar a defensa pública.</p><div className="review-matrix"><h3>Ratificación <b>*</b></h3><div className="matrix-row"><span>Dictamen</span><div>{(['SI', 'NO', 'PARCIALMENTE'] as const).map((value) => <label key={value}><input checked={publicRatification === value} disabled={isSubmitting} name="reviewer-public-ratification" onChange={() => setPublicRatification(value)} type="radio" />{value === 'SI' ? 'Sí' : value === 'NO' ? 'No' : 'Parcialmente'}</label>)}</div></div></div><label className="form-field"><span>Observación de devolución</span><textarea disabled={isSubmitting} onChange={(event) => updateObservation(0, event.target.value)} placeholder="Obligatoria si marcas No o Parcialmente." rows={3} value={observationDrafts[0] ?? ''} /></label><button className="primary-button" disabled={isSubmitting} onClick={() => void submitDecision(publicRatification === 'SI' ? 'APROBADO' : 'OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Guardar ratificación'} <Icon name="arrow" /></button></section>}
         {!selectedReview && view === 'home' && <>
           <section className="tutor-stats reviewer-stats"><div><small>Revisiones pendientes</small><strong>{data.summary.pending}</strong><span>Requieren tu dictamen.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren atención prioritaria.</span></div><div><small>Dictámenes emitidos</small><strong>{data.summary.completed}</strong><span>Historial de tus revisiones.</span></div></section>
           {data.pendingReviews.length > 0 ? <section className="tutor-section"><div className="tutor-section-heading"><div><h2>Próximas revisiones</h2><p>Descarga el perfil y registra tu dictamen antes del plazo.</p></div><button className="text-button" onClick={() => setView('pending')} type="button">Ver todas</button></div><div className="tutor-cards">{data.pendingReviews.slice(0, 2).map((review) => reviewCard(review))}</div></section> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán aquí y en la campanita.</span></section>}

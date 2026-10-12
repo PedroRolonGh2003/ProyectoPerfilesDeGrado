@@ -698,6 +698,11 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .reviewer-form-card { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: 21px; }
 .reviewer-form-card > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
 .review-matrix-card { margin-bottom: 18px; }
+
+/* El Formulario 4 sustituye las matrices de perfil y defensa privada. */
+.reviewer-workspace:has(+ .public-defense-ratification) .review-matrix-card,
+.reviewer-workspace:has(+ .public-defense-ratification) .review-matrix-card + .reviewer-form-card { display: none; }
+.reviewer-workspace + .public-defense-ratification { margin-top: 0; }
 .review-matrix { border-top: 1px solid #eee7e8; margin-top: 20px; padding-top: 18px; }
 .review-matrix h3 { color: #49383d; font-size: 15px; margin: 0 0 12px; }
 .matrix-row { align-items: center; border-bottom: 1px solid #f0ebec; display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) auto; padding: 12px 0; }
