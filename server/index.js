@@ -2693,7 +2693,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
              p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
              f.nombre AS fase_nombre, ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
              students.nombres_estudiantes, students.registros_estudiantes,
-             profile.documento_id, profile.version_id, profile.nombre_archivo,
+             profile.documento_id, profile.tipo_documento AS profile_document_type, profile.version_id, profile.nombre_archivo,
              profile.numero_version, profile.subida_en,
              current_review.revision_id, current_review.decision AS review_decision,
              current_review.fecha_limite AS review_deadline,
@@ -2804,7 +2804,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       deadline: assignment.fecha_limite,
       profile: assignment.documento_id ? {
         documentId: assignment.documento_id,
-        type: assignment.tipo_documento,
+        type: assignment.profile_document_type,
         versionId: assignment.version_id,
         filename: assignment.nombre_archivo,
         version: assignment.numero_version,
@@ -2813,7 +2813,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       reviewId: assignment.revision_id,
       reviewDecision: assignment.review_decision,
       reviewDeadline: assignment.review_deadline,
-      reviewDocumentType: assignment.document_type,
+      reviewDocumentType: assignment.document_type ?? assignment.profile_document_type,
       canReviewProfile: assignment.review_decision === 'PENDIENTE',
       teamReviews: assignment.team_reviews,
     })

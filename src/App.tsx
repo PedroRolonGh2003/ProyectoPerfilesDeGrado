@@ -1283,7 +1283,9 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
   }
 
   const reviewedProjects = data.projects.filter((project) => project.teamReviews.some((review) => review.decision !== 'PENDIENTE'))
-  const defenseProjects = data.projects.filter((project) => defenseType === 'PRIVATE' ? project.reviewDocumentType === 'DOCUMENTO_PRIVADO' : project.reviewDocumentType === 'DOCUMENTO_PUBLICO')
+  const defenseProjects = data.projects.filter((project) => defenseType === 'PRIVATE'
+    ? project.reviewDocumentType === 'DOCUMENTO_PRIVADO' || project.profile?.type === 'DOCUMENTO_PRIVADO' || project.statusCode === 'EN_DOCUMENTO_PRIVADO'
+    : project.reviewDocumentType === 'DOCUMENTO_PUBLICO' || project.profile?.type === 'DOCUMENTO_PUBLICO')
   const heading = view === 'home' ? 'Inicio' : view === 'invitations' ? 'Invitaciones de tutoría' : view === 'projects' ? 'Mis proyectos' : view === 'reviewed' ? 'Proyectos revisados' : view === 'defenses' ? 'Defensas' : 'Notificaciones'
   const copy = view === 'home' ? 'Revisa las solicitudes y el estado de los proyectos que acompañas.' : view === 'invitations' ? 'Responde cada solicitud para confirmar o declinar la tutoría.' : view === 'projects' ? 'Consulta los proyectos cuya tutoría aceptaste.' : view === 'reviewed' ? 'Consulta los dictámenes emitidos, el estado de cada proyecto y las revisiones pendientes.' : view === 'defenses' ? 'Revisa y emite el dictamen para documentos de defensa privada o pública.' : 'Mantente al tanto de las solicitudes y actualizaciones de tus proyectos.'
 
