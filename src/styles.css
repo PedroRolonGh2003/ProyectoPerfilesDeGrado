@@ -651,6 +651,16 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .reviewer-result { background: #f1f8f3; border: 1px solid #d9eadc; border-radius: 8px; color: #3c6d49; font-size: 11px; margin-top: 15px; padding: 10px 12px; }
 .reviewer-result.is-observed { background: #fff5f6; border-color: #f1d9dd; color: #93444b; }
 .reviewer-result p { color: #786a6e; line-height: 1.45; margin: 5px 0 0; }
+.review-progress { border: 1px solid #eadfe2; border-radius: 9px; font-size: 11px; margin-top: 13px; padding: 10px 12px; }
+.review-progress.is-approved { background: #f1f8f3; border-color: #d9eadc; color: #27653b; }
+.review-progress.is-observed { background: #fff5f6; border-color: #f1d9dd; color: #93444b; }
+.review-progress.is-pending { background: #fff9e9; border-color: #f1e2b9; color: #87611b; }
+.review-progress-members { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.review-progress-member { background: #fff; border: 1px solid currentColor; border-radius: 999px; font-size: 10px; padding: 4px 7px; }
+.review-progress-member.decision-aprobado { color: #367144; }
+.review-progress-member.decision-observado, .review-progress-member.decision-rechazado { color: #a34c54; }
+.review-progress-member.decision-pendiente { color: #9a6f1c; }
+.review-progress small { display: block; font-weight: 700; }
 .reviewer-workspace { padding-bottom: 30px; }
 .reviewer-back { margin-bottom: 16px; }
 .reviewer-workspace-heading { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; margin-bottom: 18px; }

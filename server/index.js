@@ -2695,7 +2695,8 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
              profile.documento_id, profile.version_id, profile.nombre_archivo,
              profile.numero_version, profile.subida_en,
              current_review.revision_id, current_review.decision AS review_decision,
-             current_review.fecha_limite AS review_deadline
+             current_review.fecha_limite AS review_deadline,
+             COALESCE(review_summary.items, '[]'::json) AS team_reviews
       FROM titulacion.asignaciones_proyecto a
       JOIN titulacion.proyectos p ON p.id = a.proyecto_id
       JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -2735,6 +2736,33 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
         ORDER BY rr.numero_ronda DESC
         LIMIT 1
       ) current_review ON true
+      LEFT JOIN LATERAL (
+        SELECT json_agg(json_build_object(
+          'assignmentType', teammate_assignment.tipo,
+          'reviewer', trim(concat(teammate_user.nombres, ' ', teammate_user.apellidos)),
+          'decision', teammate_review.decision,
+          'decidedAt', teammate_review.decidida_en
+        ) ORDER BY teammate_assignment.tipo) AS items
+        FROM titulacion.rondas_revision summary_round
+        JOIN titulacion.versiones_documento summary_version ON summary_version.id = summary_round.version_documento_id
+        JOIN titulacion.documentos summary_document ON summary_document.id = summary_version.documento_id
+        JOIN titulacion.revisiones teammate_review ON teammate_review.ronda_revision_id = summary_round.id
+        JOIN titulacion.asignaciones_proyecto teammate_assignment ON teammate_assignment.id = teammate_review.asignacion_proyecto_id
+        JOIN titulacion.docentes teammate_teacher ON teammate_teacher.id = teammate_assignment.docente_id
+        JOIN titulacion.usuarios teammate_user ON teammate_user.id = teammate_teacher.usuario_id
+        WHERE summary_document.proyecto_id = p.id
+          AND summary_document.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO')
+          AND summary_round.id = (
+            SELECT latest_round.id
+            FROM titulacion.rondas_revision latest_round
+            JOIN titulacion.versiones_documento latest_version ON latest_version.id = latest_round.version_documento_id
+            JOIN titulacion.documentos latest_document ON latest_document.id = latest_version.documento_id
+            WHERE latest_document.proyecto_id = p.id
+              AND latest_document.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO')
+            ORDER BY (latest_round.cerrada_en IS NULL) DESC, latest_round.fecha_solicitud DESC
+            LIMIT 1
+          )
+      ) review_summary ON true
       WHERE a.docente_id = $1 AND a.tipo = 'TUTOR'`
 
     const [invitations, projects, notifications, unread] = await Promise.all([
@@ -2786,6 +2814,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       reviewDeadline: assignment.review_deadline,
       reviewDocumentType: assignment.document_type,
       canReviewProfile: assignment.review_decision === 'PENDIENTE',
+      teamReviews: assignment.team_reviews,
     })
 
     return response.json({
