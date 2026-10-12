@@ -2796,7 +2796,7 @@ app.get('/api/tutor/documents/:documentId/download', requireTutor, async (reques
       return response.status(400).json({ message: 'El documento solicitado no es válido.' })
     }
     const result = await pool.query(
-      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo
+      `SELECT d.proyecto_id, vd.nombre_archivo, vd.ruta_archivo, vd.mime_type, vd.contenido_archivo
        FROM titulacion.documentos d
        JOIN titulacion.asignaciones_proyecto a ON a.proyecto_id = d.proyecto_id
          AND a.docente_id = $1 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL
