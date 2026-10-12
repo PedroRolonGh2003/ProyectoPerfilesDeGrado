@@ -171,11 +171,13 @@ type AdminProject = {
 }
 type AdminDashboard = {
   user: AdministratorUser
-  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number; newProjects: number }
+  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number; newProjects: number; newTeachers: number }
   statuses: { code: string; name: string }[]
   projects: AdminProject[]
   newProjects: AdminProject[]
+  newTeachers: PendingTeacher[]
 }
+type PendingTeacher = { id: string; firstName: string; lastName: string; fullName: string; email: string; createdAt: string; confirmedAt: string }
 type AdminUser = {
   id: string
   firstName: string
@@ -424,7 +426,7 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
 }
 
 function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () => Promise<void>; onPasswordReset: () => void }) {
-  const [view, setView] = useState<'login' | 'signup' | 'confirmation-pending' | 'password-recovery' | 'password-reset'>('login')
+  const [view, setView] = useState<'login' | 'signup' | 'confirmation-pending' | 'role-assignment-pending' | 'password-recovery' | 'password-reset'>('login')
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [firstName, setFirstName] = useState('')
@@ -509,7 +511,12 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
       })
       await onAuthenticated()
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'No fue posible iniciar sesión.')
+      const errorMessage = error instanceof Error ? error.message : 'No fue posible iniciar sesión.'
+      if (/Administración debe asignarte un rol/i.test(errorMessage)) {
+        setPendingConfirmationEmail(identifier.trim().toLowerCase())
+        setView('role-assignment-pending')
+      }
+      setMessage(errorMessage)
     } finally {
       setIsSubmitting(false)
     }
@@ -685,8 +692,8 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
           <div className="mobile-brand"><BrandLogo /><strong>UNIVALLE</strong></div>
           <header className="form-heading">
             <p className="eyebrow">Acceso al sistema</p>
-            <h2>{view === 'signup' ? 'Crea tu cuenta' : view === 'confirmation-pending' ? 'Confirma tu correo' : view === 'password-recovery' ? 'Recupera tu acceso' : view === 'password-reset' ? 'Nueva contraseña' : 'Bienvenido'}</h2>
-            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : view === 'confirmation-pending' ? 'Tu cuenta se activará cuando confirmes el enlace enviado.' : view === 'password-recovery' ? 'Te enviaremos un enlace a tu correo institucional.' : view === 'password-reset' ? 'Define una contraseña nueva y segura para continuar.' : 'Ingresa con tus credenciales institucionales.'}</p>
+            <h2>{view === 'signup' ? 'Crea tu cuenta' : view === 'confirmation-pending' ? 'Confirma tu correo' : view === 'role-assignment-pending' ? 'Roles pendientes' : view === 'password-recovery' ? 'Recupera tu acceso' : view === 'password-reset' ? 'Nueva contraseña' : 'Bienvenido'}</h2>
+            <p>{view === 'signup' ? 'Te enviaremos un enlace para confirmar tu correo institucional.' : view === 'confirmation-pending' ? 'Tu cuenta se activará cuando confirmes el enlace enviado.' : view === 'role-assignment-pending' ? 'Tu correo fue confirmado y tu solicitud ya fue enviada a Administración.' : view === 'password-recovery' ? 'Te enviaremos un enlace a tu correo institucional.' : view === 'password-reset' ? 'Define una contraseña nueva y segura para continuar.' : 'Ingresa con tus credenciales institucionales.'}</p>
           </header>
 
           {view === 'confirmation-pending' ? (
@@ -698,6 +705,14 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
               <button className="submit-button" disabled={isSubmitting} onClick={() => void resendConfirmation()} type="button"><span>{isSubmitting ? 'Reenviando…' : 'Reenviar correo'}</span><Icon name="arrow" /></button>
               <button className="text-button" disabled={isSubmitting} onClick={() => { setMessage(''); setView('login') }} type="button">Volver a iniciar sesión</button>
               <p className={message ? 'form-message is-visible' : 'form-message'}>{message}</p>
+            </section>
+          ) : view === 'role-assignment-pending' ? (
+            <section className="confirmation-pending role-assignment-pending" aria-live="polite">
+              <span className="confirmation-icon"><Icon name="user" /></span>
+              <h3>Aún no tienes roles asignados</h3>
+              <p>El correo <strong>{pendingConfirmationEmail}</strong> ya fue confirmado. Administración recibió una notificación para asignarte el rol de Tutor, Revisor o ambos.</p>
+              <p className="confirmation-tip">Cuando Administración complete la asignación, podrás ingresar con estas mismas credenciales.</p>
+              <button className="text-button" disabled={isSubmitting} onClick={() => { setMessage(''); setView('login') }} type="button">Volver a iniciar sesión</button>
             </section>
           ) : view === 'password-recovery' ? (
             <form onSubmit={requestPasswordReset} noValidate>
@@ -1726,6 +1741,46 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
   </form>
 }
 
+function PendingTeacherRoleForm({ teacher, careers, onCancel, onSave }: { teacher: PendingTeacher; careers: { id: string; code: string; name: string }[]; onCancel: () => void; onSave: (payload: { roles: ('TUTOR' | 'REVISOR')[]; careerId: string; teacherCode: string; specialty: string }) => Promise<void> }) {
+  const [roles, setRoles] = useState<('TUTOR' | 'REVISOR')[]>([])
+  const [careerId, setCareerId] = useState('')
+  const [teacherCode, setTeacherCode] = useState('')
+  const [specialty, setSpecialty] = useState('')
+  const [message, setMessage] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  function toggleRole(role: 'TUTOR' | 'REVISOR') {
+    setRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : [...current, role])
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (roles.length === 0 || !careerId || teacherCode.trim().length < 4) {
+      setMessage('Selecciona al menos un rol, la carrera y un código docente de al menos 4 caracteres.')
+      return
+    }
+    setMessage('')
+    setIsSubmitting(true)
+    try {
+      await onSave({ roles, careerId, teacherCode: teacherCode.trim(), specialty: specialty.trim() })
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible asignar los roles docentes.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return <form className="admin-operation-card admin-pending-teacher-form" onSubmit={(event) => void submit(event)}>
+    <div className="admin-operation-heading"><Icon name="user" /><div><p>ASIGNACIÓN DE DOCENTE</p><h2>{teacher.fullName}</h2></div></div>
+    <p><strong>{teacher.email}</strong> confirmó su correo institucional. Define los roles que habilitarán su acceso.</p>
+    <fieldset className="admin-role-fields"><legend>Roles docentes <b>*</b></legend><div><label className="admin-role-check role-tutor"><input checked={roles.includes('TUTOR')} disabled={isSubmitting} onChange={() => toggleRole('TUTOR')} type="checkbox" /><span>Tutor</span></label><label className="admin-role-check role-revisor"><input checked={roles.includes('REVISOR')} disabled={isSubmitting} onChange={() => toggleRole('REVISOR')} type="checkbox" /><span>Revisor</span></label></div></fieldset>
+    <div className="admin-user-form-grid"><label className="form-field"><span>Carrera <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setCareerId(event.target.value)} required value={careerId}><option value="">Selecciona una carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.name}</option>)}</select></label><label className="form-field"><span>Código docente <b>*</b></span><input disabled={isSubmitting} minLength={4} onChange={(event) => setTeacherCode(event.target.value)} required value={teacherCode} /></label></div>
+    <label className="form-field"><span>Especialidad</span><input disabled={isSubmitting} onChange={(event) => setSpecialty(event.target.value)} placeholder="Ej.: Ingeniería de software" value={specialty} /></label>
+    {message && <p className="student-message is-visible tutor-message">{message}</p>}
+    <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={onCancel} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Asignando…' : 'Asignar roles y habilitar acceso'}</button></div>
+  </form>
+}
+
 function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: ProjectCatalog; onCancel: () => void; onSave: (body: FormData) => Promise<void> }) {
   const [studentId, setStudentId] = useState('')
   const [managementId, setManagementId] = useState('')
@@ -1788,8 +1843,8 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
   </form>
 }
 
-function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: 'new-projects' | null; onNavigationHandled: () => void }) {
-  const [view, setView] = useState<'home' | 'projects' | 'new-projects' | 'users'>('home')
+function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: 'new-projects' | 'new-teachers' | null; onNavigationHandled: () => void }) {
+  const [view, setView] = useState<'home' | 'projects' | 'new-projects' | 'new-teachers' | 'users'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -1799,6 +1854,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
   const [userRole, setUserRole] = useState<RoleCode | ''>('')
   const [userStatus, setUserStatus] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL')
   const [editingUser, setEditingUser] = useState<AdminUser | null | undefined>(undefined)
+  const [assigningTeacher, setAssigningTeacher] = useState<PendingTeacher | null>(null)
   const [projectCatalog, setProjectCatalog] = useState<ProjectCatalog | null>(null)
   const [isCreatingProject, setIsCreatingProject] = useState(false)
   const [message, setMessage] = useState('')
@@ -1814,11 +1870,15 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
     const matchesStatus = userStatus === 'ALL' || (userStatus === 'ACTIVE' ? user.active : !user.active)
     return matchesSearch && matchesRole && matchesStatus
   })
-  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'new-projects' ? 'Nuevos proyectos' : 'Usuarios'
+  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'new-projects' ? 'Nuevos proyectos' : view === 'new-teachers' ? 'Nuevos docentes' : 'Usuarios'
 
   useEffect(() => {
     if (navigationTarget === 'new-projects') {
       setView('new-projects')
+      onNavigationHandled()
+    }
+    if (navigationTarget === 'new-teachers') {
+      setView('new-teachers')
       onNavigationHandled()
     }
   }, [navigationTarget, onNavigationHandled])
@@ -1880,8 +1940,28 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
     setSelectedProjectId(result.project.id)
   }
 
+  async function assignTeacherRoles(teacher: PendingTeacher, payload: { roles: ('TUTOR' | 'REVISOR')[]; careerId: string; teacherCode: string; specialty: string }) {
+    const result = await api<{ message: string }>(`/api/admin/users/${teacher.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        firstName: teacher.firstName,
+        lastName: teacher.lastName,
+        email: teacher.email,
+        phone: '',
+        password: '',
+        active: true,
+        registration: '',
+        ...payload,
+      }),
+    })
+    setMessage(result.message)
+    setAssigningTeacher(null)
+    await Promise.all([onRefresh(), loadUsers()])
+  }
+
   useEffect(() => {
-    if (view === 'users' && !usersData && !isLoadingUsers) void loadUsers()
+    if ((view === 'users' || view === 'new-teachers') && !usersData && !isLoadingUsers) void loadUsers()
   }, [view, usersData, isLoadingUsers])
 
   if (selectedProjectId) return <AdminProjectWorkspace onBack={() => setSelectedProjectId('')} onLogout={onLogout} onRefresh={onRefresh} projectId={selectedProjectId} sessionActions={sessionActions} user={data.user} />
@@ -1915,6 +1995,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
         <nav aria-label="Navegación de Administración" className="student-nav">
           <button className={view === 'home' ? 'is-active' : ''} onClick={() => setView('home')} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
           <button className={view === 'new-projects' ? 'is-active' : ''} onClick={() => setView('new-projects')} type="button"><Icon name="bell" /><span>Nuevos proyectos</span>{data.summary.newProjects > 0 && <b className="nav-count">{data.summary.newProjects}</b>}</button>
+          <button className={view === 'new-teachers' ? 'is-active' : ''} onClick={() => setView('new-teachers')} type="button"><Icon name="user" /><span>Nuevos docentes</span>{data.summary.newTeachers > 0 && <b className="nav-count">{data.summary.newTeachers}</b>}</button>
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
           <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
           <button type="button"><Icon name="help" /><span>Ayuda</span></button>
@@ -1927,19 +2008,25 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
-        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'new-projects' ? 'Proyectos recién registrados que aún no tienen revisores asignados.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'new-projects' ? 'Proyectos recién registrados que aún no tienen revisores asignados.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
 
-        {view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.newProjects > 0 ? 'requires-attention' : ''}><small>Sin revisores</small><strong>{data.summary.newProjects}</strong><span>Requieren asignación.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
+        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.newProjects > 0 ? 'requires-attention' : ''}><small>Sin revisores</small><strong>{data.summary.newProjects}</strong><span>Requieren asignación.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
 
         {view === 'home' && <>
           <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
+          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Nuevos docentes</h2><p>Correos confirmados que requieren rol de Tutor, Revisor o ambos.</p></div><button className="text-button" onClick={() => setView('new-teachers')} type="button">Ver docentes</button></div>{data.newTeachers.length > 0 ? <div className="admin-pending-teacher-list">{data.newTeachers.slice(0, 4).map((teacher) => <article className="admin-pending-teacher" key={teacher.id}><div><span className="admin-status status-observado">Roles pendientes</span><h3>{teacher.fullName}</h3><p>{teacher.email}</p></div><button className="secondary-button" onClick={() => { setMessage(''); setAssigningTeacher(teacher) }} type="button">Asignar roles</button></article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay docentes pendientes.</strong><span>Los docentes confirmados aparecerán aquí hasta recibir sus roles.</span></section>}</section>
           <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Nuevos proyectos</h2><p>Registros sin revisores asignados, listos para completar su equipo de evaluación.</p></div><button className="text-button" onClick={() => setView('new-projects')} type="button">Ver nuevos</button></div>{data.newProjects.length > 0 ? <div className="admin-project-list">{data.newProjects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay proyectos nuevos pendientes.</strong><span>Los proyectos desaparecerán de esta lista al asignar sus dos revisores.</span></section>}</section>
           <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Proyectos recientes</h2><p>Prioriza los casos con una revisión vencida o con tutoría pendiente.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div>{data.projects.length > 0 ? <div className="admin-project-list">{data.projects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No hay proyectos registrados.</strong><span>Los registros del Formulario 1 aparecerán aquí.</span></section>}</section>
         </>}
 
         {view === 'new-projects' && <>{data.newProjects.length > 0 ? <div className="admin-project-list">{data.newProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay proyectos nuevos pendientes.</strong><span>Los proyectos registrados por estudiantes aparecerán aquí hasta que tengan sus dos revisores asignados.</span></section>}</>}
+
+        {view === 'new-teachers' && <>
+          {assigningTeacher && <PendingTeacherRoleForm careers={usersData?.careers ?? []} onCancel={() => setAssigningTeacher(null)} onSave={(payload) => assignTeacherRoles(assigningTeacher, payload)} teacher={assigningTeacher} />}
+          {data.newTeachers.length > 0 ? <div className="admin-pending-teacher-list">{data.newTeachers.map((teacher) => <article className="admin-pending-teacher" key={teacher.id}><div><span className="admin-status status-observado">Roles pendientes</span><h2>{teacher.fullName}</h2><p>{teacher.email}</p><small>Correo confirmado: {formatDate(teacher.confirmedAt)}</small></div><button className="primary-button" onClick={() => { setMessage(''); setAssigningTeacher(teacher) }} type="button">Asignar roles</button></article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay docentes pendientes de roles.</strong><span>Los nuevos docentes aparecerán aquí después de confirmar su correo institucional.</span></section>}
+        </>}
 
         {view === 'projects' && <>
           {isCreatingProject && (projectCatalog ? <AdminProjectCreateForm catalog={projectCatalog} onCancel={() => setIsCreatingProject(false)} onSave={createProject} /> : <section className="admin-operation-card"><p>Cargando estudiantes, gestiones y modalidades disponibles…</p></section>)}
@@ -1967,7 +2054,7 @@ function App() {
   const [isSwitchingRole, setIsSwitchingRole] = useState(false)
   const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
-  const [adminNavigationTarget, setAdminNavigationTarget] = useState<'new-projects' | null>(null)
+  const [adminNavigationTarget, setAdminNavigationTarget] = useState<'new-projects' | 'new-teachers' | null>(null)
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
@@ -2031,6 +2118,9 @@ function App() {
     }
     if (notification.role === 'ADMINISTRADOR' && notification.link === '/admin/nuevos-proyectos') {
       setAdminNavigationTarget('new-projects')
+    }
+    if (notification.role === 'ADMINISTRADOR' && notification.link === '/admin/nuevos-docentes') {
+      setAdminNavigationTarget('new-teachers')
     }
     if (data && notification.role !== data.user.role) {
       await handleRoleChange(notification.role)

@@ -1285,7 +1285,7 @@ app.post('/api/auth/confirm-email', async (request, response, next) => {
     databaseClient = await pool.connect()
     await databaseClient.query('BEGIN')
     const confirmation = await databaseClient.query(
-      `SELECT ect.id, ect.usuario_id, u.correo
+      `SELECT ect.id, ect.usuario_id, u.correo, u.nombres, u.apellidos
        FROM titulacion.email_confirmation_tokens ect
        JOIN titulacion.usuarios u ON u.id = ect.usuario_id AND u.activo = false
        WHERE ect.token_hash = $1 AND ect.usado_en IS NULL AND ect.expires_at > now()
@@ -1297,6 +1297,7 @@ app.post('/api/auth/confirm-email', async (request, response, next) => {
       return response.status(410).json({ message: 'El enlace de confirmación venció, ya fue utilizado o no es válido.' })
     }
 
+    const kind = accountKind(confirmation.rows[0].correo)
     await databaseClient.query(
       `UPDATE titulacion.usuarios
        SET activo = true, email_confirmado_en = now(), actualizado_en = now()
@@ -1309,9 +1310,28 @@ app.post('/api/auth/confirm-email', async (request, response, next) => {
        WHERE id = $1`,
       [confirmation.rows[0].id],
     )
+    if (kind === 'DOCENTE') {
+      const administrators = await databaseClient.query(
+        `SELECT u.id AS usuario_id, u.correo
+         FROM titulacion.usuarios u
+         JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+         JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = 'ADMINISTRADOR'
+         WHERE u.activo`,
+      )
+      const teacherName = `${confirmation.rows[0].nombres} ${confirmation.rows[0].apellidos}`.trim()
+      for (const administrator of administrators.rows) {
+        await createNotification(databaseClient, {
+          userId: administrator.usuario_id,
+          recipientEmail: administrator.correo,
+          type: 'DOCENTE_CONFIRMADO_SIN_ROL',
+          title: 'Nuevo docente confirmado',
+          message: `${teacherName} confirmó su correo institucional y espera la asignación de roles.`,
+          link: '/admin/nuevos-docentes',
+          queueEmail: true,
+        })
+      }
+    }
     await databaseClient.query('COMMIT')
-
-    const kind = accountKind(confirmation.rows[0].correo)
     if (kind === 'ESTUDIANTE') {
       const student = await databaseClient.query(
         `SELECT
@@ -1846,7 +1866,7 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
     )
     const [allRoleRows, targetRoleRows] = await Promise.all([
       databaseClient.query(
-        `SELECT ur.id, r.codigo
+        `SELECT ur.id, ur.activo, r.codigo
          FROM titulacion.usuario_roles ur
          JOIN titulacion.roles r ON r.id = ur.rol_id
          WHERE ur.usuario_id = $1
@@ -1856,6 +1876,7 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
       databaseClient.query(`SELECT id, codigo FROM titulacion.roles WHERE activo AND codigo = ANY($1::text[])`, [roles]),
     ])
     if (targetRoleRows.rows.length !== roles.length) throw new Error('No fue posible validar todos los roles seleccionados.')
+    const wasPendingTeacher = needsTeacher && !allRoleRows.rows.some((item) => item.activo && ['TUTOR', 'REVISOR'].includes(item.codigo))
     for (const existingRole of allRoleRows.rows) {
       if (!roles.includes(existingRole.codigo)) {
         await databaseClient.query(
@@ -1921,6 +1942,16 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
     }
     if (!active) {
       await databaseClient.query(`UPDATE titulacion.sesiones_usuario SET cerrada_en = COALESCE(cerrada_en, now()) WHERE usuario_id = $1`, [userId])
+    }
+    if (active && wasPendingTeacher) {
+      await createNotification(databaseClient, {
+        userId,
+        recipientEmail: email,
+        type: 'ROLES_DOCENTE_ASIGNADOS',
+        title: 'Roles docentes asignados',
+        message: 'Administración asignó tus roles docentes. Ya puedes iniciar sesión en el sistema.',
+        queueEmail: true,
+      })
     }
     await recordAudit(databaseClient, request.session, {
       action: active ? 'ACTUALIZAR_USUARIO' : 'DESACTIVAR_USUARIO',
@@ -2141,7 +2172,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
     }
 
     const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
-    const [projects, statuses] = await Promise.all([
+    const [projects, statuses, pendingTeachers] = await Promise.all([
       pool.query(
         `WITH vista_proyectos AS (
            SELECT p.id,
@@ -2218,6 +2249,22 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
          FROM titulacion.estados_proyecto
          ORDER BY nombre`,
       ),
+      pool.query(
+        `SELECT u.id, u.nombres, u.apellidos, u.correo, u.creado_en, u.email_confirmado_en
+         FROM titulacion.usuarios u
+         WHERE u.activo
+           AND u.email_confirmado_en IS NOT NULL
+           AND lower(u.correo) ~ '^[^@]+@univalle\\.edu$'
+           AND NOT EXISTS (
+             SELECT 1
+             FROM titulacion.usuario_roles ur
+             JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo
+             WHERE ur.usuario_id = u.id
+               AND ur.activo
+               AND r.codigo IN ('ESTUDIANTE', 'TUTOR', 'REVISOR', 'ADMINISTRADOR')
+           )
+         ORDER BY u.email_confirmado_en DESC, u.apellidos, u.nombres`,
+      ),
     ])
 
     const projectRows = projects.rows.map((project) => ({
@@ -2251,6 +2298,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       overdue: total.overdue + (project.isOverdue ? 1 : 0),
       newProjects: total.newProjects + (project.reviewerCount === 0 && !project.isFinal ? 1 : 0),
     }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0, newProjects: 0 })
+    summary.newTeachers = pendingTeachers.rows.length
 
     return response.json({
       user: sanitizeUser(request.session),
@@ -2258,6 +2306,15 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       statuses: statuses.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
       projects: projectRows,
       newProjects,
+      newTeachers: pendingTeachers.rows.map((teacher) => ({
+        id: teacher.id,
+        firstName: teacher.nombres,
+        lastName: teacher.apellidos,
+        fullName: `${teacher.nombres} ${teacher.apellidos}`.trim(),
+        email: teacher.correo,
+        createdAt: teacher.creado_en,
+        confirmedAt: teacher.email_confirmado_en,
+      })),
     })
   } catch (error) {
     return next(error)
