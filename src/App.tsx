@@ -25,6 +25,13 @@ const formatCriteria = [
 const backgroundCriteria = [
   ['PROBLEMA', 'El problema está definido con claridad, precisión y pertinencia'], ['JUSTIFICACION', 'La justificación académica, científica, tecnológica, social, económica y legal es clara'], ['FUENTES', 'Las fuentes son confiables y actualizadas'], ['ANALISIS_LITERATURA', 'La literatura está críticamente analizada'], ['PERSPECTIVA_TEORICA', 'La perspectiva teórica del problema es clara'], ['VINCULO_TEORIA', 'La teoría se vincula con el problema y los objetivos'], ['VIABILIDAD_OBJETIVOS', 'Los objetivos son viables, claros y alcanzables'], ['COHERENCIA_OBJETIVOS', 'Existe coherencia entre el objetivo general y los específicos'], ['METODOLOGIA_PERTINENTE', 'La metodología y técnicas son claras y pertinentes'], ['METODOLOGIA_RESPONDE', 'La metodología responde a los objetivos o hipótesis'],
 ] as const
+const privateDefenseCriteria = [
+  ['FUENTES_ACTUALIZADAS', 'Las fuentes bibliográficas son confiables y actualizadas'],
+  ['ANALISIS_LITERATURA', 'La literatura está analizada críticamente y se relaciona con el problema, objetivos o hipótesis'],
+  ['METODOLOGIA', 'La metodología es adecuada, precisa y está correctamente descrita'],
+  ['RESULTADOS_OBJETIVOS', 'Los resultados se relacionan con los objetivos planteados'],
+  ['CONCLUSIONES_OBJETIVOS', 'Las conclusiones se relacionan con los objetivos planteados'],
+] as const
 
 type RoleCode = 'ESTUDIANTE' | 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR'
 type RegistrationCareer = { id: string; code: string; name: string }
@@ -78,10 +85,11 @@ type TutorAssignment = {
   requestedAt: string
   respondedAt: string | null
   deadline: string | null
-  profile: { documentId: string; versionId: string | null; filename: string | null; version: number | null; uploadedAt: string | null } | null
+  profile: { documentId: string; type: string; versionId: string | null; filename: string | null; version: number | null; uploadedAt: string | null } | null
   reviewId: string | null
   reviewDecision: 'PENDIENTE' | 'APROBADO' | 'OBSERVADO' | 'RECHAZADO' | null
   reviewDeadline: string | null
+  reviewDocumentType?: string | null
   canReviewProfile: boolean
 }
 type AppNotification = {
@@ -127,7 +135,7 @@ type ReviewerReview = {
   generalComment: string | null
   decidedAt: string | null
   canSubmit: boolean
-  profile: { documentId: string; versionId: string; filename: string; version: number; uploadedAt: string }
+  profile: { documentId: string; type: string; versionId: string; filename: string; version: number; uploadedAt: string }
   observations: ReviewerObservation[]
   teamReviews: { assignmentType: string; reviewer: string; decision: string; decidedAt: string | null }[]
 }
@@ -951,7 +959,9 @@ function formatFileSize(bytes: number) {
 }
 
 function documentLabel(type: string) {
-  return type === 'PERFIL_PROYECTO' ? 'Perfil de proyecto' : type.replaceAll('_', ' ')
+  if (type === 'PERFIL_PROYECTO') return 'Perfil de proyecto'
+  if (type === 'DOCUMENTO_PRIVADO') return 'Documento para defensa privada'
+  return type.replaceAll('_', ' ')
 }
 
 function HomeView({ data, onLogout, onProject, onDocuments, sessionActions }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void; sessionActions: ReactNode }) {
@@ -1199,8 +1209,9 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
 
   async function submitEvaluation(decision: 'APROBADO' | 'OBSERVADO') {
     if (!selectedEvaluation) return
-    const formatCriteriaPayload = formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
-    const backgroundCriteriaPayload = backgroundCriteria.map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
+    const isPrivateDefense = selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO'
+    const formatCriteriaPayload = isPrivateDefense ? [] : formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
+    const backgroundCriteriaPayload = (isPrivateDefense ? privateDefenseCriteria : backgroundCriteria).map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
     const observations = evaluationObservations.split('\n').map((item) => item.trim()).filter(Boolean)
     if (formatCriteriaPayload.some((item) => !item.value) || backgroundCriteriaPayload.some((item) => !item.value) || (decision === 'OBSERVADO' && observations.length === 0)) { setMessage('Completa las matrices y registra observaciones si devuelves el perfil.'); return }
     setIsSubmitting(true); setMessage('')
@@ -1257,7 +1268,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
         {selectedEvaluation?.canReviewProfile && <p className="eyebrow">REVISION DEL PERFIL COMO TUTOR</p>}
 
-        {selectedEvaluation && <section className="reviewer-workspace"><button className="text-button reviewer-back" onClick={() => setSelectedEvaluation(null)} type="button">← Volver a mis proyectos</button><div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedEvaluation.code}</span><h2>Evaluación final del tutor</h2><p>{selectedEvaluation.title}</p></div></div><section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 2</p><h2>Formato, forma y fondo</h2></div></div><section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`tutor-format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section><section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{backgroundCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`tutor-background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section><label className="form-field"><span>Observaciones</span><textarea disabled={isSubmitting} onChange={(event) => setEvaluationObservations(event.target.value)} placeholder="Una observación por línea si devuelves el perfil." rows={4} value={evaluationObservations} /></label><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitEvaluation('APROBADO')} type="button"><Icon name="check" />Aprobar sin observaciones</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitEvaluation('OBSERVADO')} type="button">Devolver con observaciones <Icon name="arrow" /></button></div></section></section>}
+        {selectedEvaluation && <section className="reviewer-workspace"><button className="text-button reviewer-back" onClick={() => setSelectedEvaluation(null)} type="button">← Volver a mis proyectos</button><div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedEvaluation.code}</span><h2>Evaluación final del tutor</h2><p>{selectedEvaluation.title}</p></div></div><section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'FORMULARIO 3' : 'FORMULARIO 2'}</p><h2>{selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Revisión antes de defensa privada' : 'Formato, forma y fondo'}</h2></div></div>{selectedEvaluation.reviewDocumentType !== 'DOCUMENTO_PRIVADO' && <section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`tutor-format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section>}<section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{(selectedEvaluation.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? privateDefenseCriteria : backgroundCriteria).map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`tutor-background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section><label className="form-field"><span>Observaciones</span><textarea disabled={isSubmitting} onChange={(event) => setEvaluationObservations(event.target.value)} placeholder="Una observación por línea si devuelves el documento." rows={4} value={evaluationObservations} /></label><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitEvaluation('APROBADO')} type="button"><Icon name="check" />Aprobar sin observaciones</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitEvaluation('OBSERVADO')} type="button">Devolver con observaciones <Icon name="arrow" /></button></div></section></section>}
 
         {!selectedEvaluation && view === 'home' && <>
           <section className="tutor-stats"><div><small>Invitaciones pendientes</small><strong>{data.invitations.length}</strong><span>Requieren tu respuesta.</span></div><div><small>Proyectos asignados</small><strong>{data.projects.length}</strong><span>Tutorías confirmadas.</span></div><div><small>Notificaciones</small><strong>{data.unreadCount}</strong><span>Actualizaciones sin leer.</span></div></section>
@@ -1311,8 +1322,9 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   async function submitDecision(decision: 'APROBADO' | 'OBSERVADO') {
     if (!selectedReview) return
     const observations = observationDrafts.map((item) => item.trim()).filter(Boolean)
-    const selectedFormat = formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
-    const selectedBackground = backgroundCriteria.map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
+    const isPrivateDefense = selectedReview.profile.type === 'DOCUMENTO_PRIVADO'
+    const selectedFormat = isPrivateDefense ? [] : formatCriteria.map(([code]) => ({ code, value: formatRatings[code] ?? '' }))
+    const selectedBackground = (isPrivateDefense ? privateDefenseCriteria : backgroundCriteria).map(([code]) => ({ code, value: backgroundRatings[code] ?? '' }))
     if (selectedFormat.some((item) => !item.value) || selectedBackground.some((item) => !item.value)) {
       setMessage('Completa todos los criterios de formato y de fondo antes de emitir el dictamen.')
       return
@@ -1408,7 +1420,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           <div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedReview.code}</span><h2>{selectedReview.title}</h2><p>{selectedReview.description}</p></div><span className="reviewer-decision decision-pendiente">Ronda {selectedReview.roundNumber}</span></div>
           <section className="reviewer-project-context"><div><small>Estudiante(s)</small><strong>{selectedReview.students}</strong><span>{selectedReview.registrations}</span></div><div><small>Objetivo general</small><p>{selectedReview.generalObjective}</p></div><div><small>Fecha límite</small><strong>{formatDate(selectedReview.deadline)}</strong></div></section>
           <section className="reviewer-document-panel"><div><Icon name="file" /><div><small>Documento para revisar</small><strong>{selectedReview.profile.filename}</strong><span>Versión {selectedReview.profile.version} subida el {formatDate(selectedReview.profile.uploadedAt)}</span></div></div><a className="primary-button" href={`/api/reviewer/documents/${selectedReview.profile.documentId}/download?version=${selectedReview.profile.versionId}`}><Icon name="download" />Descargar perfil</a></section>
-          <section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 2</p><h2>Formato, forma y fondo</h2></div></div><p>Completa los criterios establecidos en la guía antes de emitir tu dictamen.</p><section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section><section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{backgroundCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section></section>
+          <section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>{selectedReview.profile.type === 'DOCUMENTO_PRIVADO' ? 'FORMULARIO 3' : 'FORMULARIO 2'}</p><h2>{selectedReview.profile.type === 'DOCUMENTO_PRIVADO' ? 'Revisión antes de defensa privada' : 'Formato, forma y fondo'}</h2></div></div><p>Completa los criterios establecidos antes de emitir tu dictamen.</p>{selectedReview.profile.type !== 'DOCUMENTO_PRIVADO' && <section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section>}<section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{(selectedReview.profile.type === 'DOCUMENTO_PRIVADO' ? privateDefenseCriteria : backgroundCriteria).map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section></section>
           <section className="reviewer-form-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>DICTAMEN DE REVISIÓN</p><h2>Registra tu evaluación</h2></div></div><p>Tu dictamen no podrá modificarse después de guardarlo. La ronda se cerrará cuando ambos revisores hayan respondido.</p><label className="form-field"><span>Comentario general</span><textarea disabled={isSubmitting} onChange={(event) => setGeneralComment(event.target.value)} placeholder="Resume los aspectos principales de tu revisión." rows={3} value={generalComment} /></label><div className="reviewer-observations"><div><strong>Observaciones puntuales</strong><small>Son obligatorias solo si devuelves el perfil.</small></div>{observationDrafts.map((observation, index) => <div className="reviewer-observation-row" key={index}><span>{index + 1}</span><textarea aria-label={`Observación ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObservation(index, event.target.value)} placeholder="Indica con claridad qué debe corregirse." rows={2} value={observation} />{observationDrafts.length > 1 && <button aria-label={`Eliminar observación ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => removeObservation(index)} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || observationDrafts.length >= 20} onClick={() => setObservationDrafts((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir observación</button></div><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitDecision('APROBADO')} type="button"><Icon name="check" />Aprobar perfil</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitDecision('OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Devolver con observaciones'} <Icon name="arrow" /></button></div></section>
         </section>}
 
