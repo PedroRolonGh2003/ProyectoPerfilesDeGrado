@@ -244,6 +244,7 @@ type Project = {
   management: string
   modality: string
   phase: string
+  phaseCode: string | null
   status: string
   statusCode: string
   registeredAt: string
@@ -751,6 +752,9 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
 }
 
 function projectStatusPresentation(statusCode: string) {
+  if (statusCode === 'EN_DOCUMENTO_PRIVADO') {
+    return { tone: 'approved', label: 'Documento para defensa privada habilitado', message: 'Tu perfil fue aprobado. Ya puedes subir el documento para defensa privada desde Documentos.' }
+  }
   if (['OBSERVADO', 'RECHAZADO'].includes(statusCode)) {
     return { tone: 'rejected', label: 'Rechazado con observaciones', message: 'Tu perfil requiere correcciones. Revisa los motivos indicados por los revisores.' }
   }
@@ -763,9 +767,18 @@ function projectStatusPresentation(statusCode: string) {
 function ExistingProject({ project, message, rejectionReasons, reviewProgress }: { project: Project; message: string; rejectionReasons: ProjectRejectionReason[]; reviewProgress: Bootstrap['reviewProgress'] }) {
   const status = projectStatusPresentation(project.statusCode)
   const pending = reviewProgress.filter((item) => item.decision === 'PENDIENTE').map((item) => item.type === 'TUTOR' ? 'Revision del tutor' : item.type === 'REVISOR_1' ? 'Revision del Revisor 1' : 'Revision del Revisor 2')
+  const phases = [
+    { code: 'REGISTRO', label: 'Perfil', detail: 'Registro' },
+    { code: 'REVISION_PERFIL', label: 'Perfil', detail: 'Revisión' },
+    { code: 'DOCUMENTO_PRIVADO', label: 'Defensa privada', detail: 'Documento y dictamen' },
+    { code: 'DOCUMENTO_PUBLICO', label: 'Defensa pública', detail: 'Documento final' },
+    { code: 'CIERRE', label: 'Cierre', detail: 'Titulación' },
+  ]
+  const activePhase = phases.findIndex((phase) => phase.code === project.phaseCode)
   return (
     <>
       <section className={`student-callout project-status-callout is-${status.tone}`}><Icon name="check" /><div><span className="project-status-badge">{status.label}</span><strong>{status.label}</strong><p>{message || status.message}{pending.length > 0 ? ` Falta: ${pending.join(', ')}.` : ''}</p></div></section>
+      <section className="project-phase-timeline" aria-label="Fases del proyecto"><div><p>AVANCE DEL PROYECTO</p><h2>Fases de titulación</h2></div><ol>{phases.map((phase, index) => <li className={index < activePhase ? 'is-complete' : index === activePhase ? 'is-current' : ''} key={phase.code}><span>{index < activePhase ? '✓' : index + 1}</span><div><strong>{phase.label}</strong><small>{phase.detail}</small></div></li>)}</ol></section>
       <section className="form-section project-summary">
         <div className="section-heading"><span>F1</span><div><h2>{project.title}</h2><p>Código de seguimiento: <strong>{project.code}</strong></p></div></div>
         <div className="project-summary-grid">

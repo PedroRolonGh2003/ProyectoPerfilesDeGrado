@@ -457,6 +457,7 @@ function projectPayload(row) {
     management: row.gestion_nombre,
     modality: row.modalidad_nombre,
     phase: row.fase_nombre,
+    phaseCode: row.fase_codigo ?? null,
     status: row.estado_nombre,
     statusCode: row.estado_codigo,
     registeredAt: row.registrado_en,
@@ -2979,8 +2980,8 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
         userId: student.usuario_id,
         recipientEmail: student.correo,
         projectId,
-        type: 'PERFIL_APROBADO_REVISION',
-        title: 'Perfil aprobado en revisión',
+        type: 'DOCUMENTO_PRIVADO_HABILITADO',
+        title: 'Documento para defensa privada habilitado',
         message: `El perfil ${project.codigo_seguimiento} fue aprobado. Ya puedes adjuntar el documento para defensa privada.`,
         link: '/documentos',
         queueEmail: true,
@@ -3309,8 +3310,8 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
           userId: student.usuario_id,
           recipientEmail: student.correo,
           projectId: review.project_id,
-          type: hasObservations ? 'REVISION_DEVUELTA' : isPrivateDefense ? 'DEFENSA_PRIVADA_APROBADA' : 'PERFIL_APROBADO_REVISION',
-          title: hasObservations ? 'Documento devuelto con observaciones' : isPrivateDefense ? 'Documento aprobado para defensa privada' : 'Perfil aprobado en revisión',
+          type: hasObservations ? 'REVISION_DEVUELTA' : isPrivateDefense ? 'DEFENSA_PRIVADA_APROBADA' : 'DOCUMENTO_PRIVADO_HABILITADO',
+          title: hasObservations ? 'Documento devuelto con observaciones' : isPrivateDefense ? 'Documento aprobado para defensa privada' : 'Documento para defensa privada habilitado',
           message: hasObservations
             ? `El documento ${review.codigo_seguimiento} recibió observaciones. Revísalas y adjunta una nueva versión.`
             : isPrivateDefense
@@ -3408,7 +3409,7 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
       pool.query(
         `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
                 p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
-                m.nombre AS modalidad_nombre, f.nombre AS fase_nombre,
+                m.nombre AS modalidad_nombre, f.nombre AS fase_nombre, f.codigo AS fase_codigo,
                 ep.nombre AS estado_nombre, ep.codigo AS estado_codigo
          FROM titulacion.proyecto_estudiantes pe
          JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
