@@ -1201,7 +1201,8 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
 }
 
 function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
-  const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'reviewed' | 'notifications'>('home')
+  const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'reviewed' | 'defenses' | 'notifications'>('home')
+  const [defenseType, setDefenseType] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE')
   const [decliningId, setDecliningId] = useState('')
   const [selectedEvaluation, setSelectedEvaluation] = useState<TutorAssignment | null>(null)
   const [formatRatings, setFormatRatings] = useState<Record<string, string>>({})
@@ -1277,13 +1278,14 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
       <p className="tutor-card-description">{project.description}</p>
       {project.teamReviews.length > 0 && <ReviewProgress reviews={project.teamReviews} />}
       <div className="tutor-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase} · {project.status}</span></div>
-      <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />Perfil V{project.profile.version}</a>}</div>{project.statusCode === 'PENDIENTE_APROBACION' && <div className="tutor-actions"><button className="primary-button" onClick={() => { setSelectedEvaluation(project); setFormatRatings({}); setBackgroundRatings({}); setEvaluationObservations('') }} type="button"><Icon name="clipboard" />Evaluar Formulario 2</button></div>}
+      <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />{project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Documento privado' : 'Perfil'} V{project.profile.version}</a>}</div>{project.statusCode === 'PENDIENTE_APROBACION' && <div className="tutor-actions"><button className="primary-button" onClick={() => { setSelectedEvaluation(project); setFormatRatings({}); setBackgroundRatings({}); setEvaluationObservations('') }} type="button"><Icon name="clipboard" />{project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Evaluar Formulario 2'}</button></div>}
     </article>
   }
 
   const reviewedProjects = data.projects.filter((project) => project.teamReviews.some((review) => review.decision !== 'PENDIENTE'))
-  const heading = view === 'home' ? 'Inicio' : view === 'invitations' ? 'Invitaciones de tutoría' : view === 'projects' ? 'Mis proyectos' : view === 'reviewed' ? 'Proyectos revisados' : 'Notificaciones'
-  const copy = view === 'home' ? 'Revisa las solicitudes y el estado de los proyectos que acompañas.' : view === 'invitations' ? 'Responde cada solicitud para confirmar o declinar la tutoría.' : view === 'projects' ? 'Consulta los proyectos cuya tutoría aceptaste.' : view === 'reviewed' ? 'Consulta los dictámenes emitidos, el estado de cada proyecto y las revisiones pendientes.' : 'Mantente al tanto de las solicitudes y actualizaciones de tus proyectos.'
+  const defenseProjects = data.projects.filter((project) => defenseType === 'PRIVATE' ? project.reviewDocumentType === 'DOCUMENTO_PRIVADO' : project.reviewDocumentType === 'DOCUMENTO_PUBLICO')
+  const heading = view === 'home' ? 'Inicio' : view === 'invitations' ? 'Invitaciones de tutoría' : view === 'projects' ? 'Mis proyectos' : view === 'reviewed' ? 'Proyectos revisados' : view === 'defenses' ? 'Defensas' : 'Notificaciones'
+  const copy = view === 'home' ? 'Revisa las solicitudes y el estado de los proyectos que acompañas.' : view === 'invitations' ? 'Responde cada solicitud para confirmar o declinar la tutoría.' : view === 'projects' ? 'Consulta los proyectos cuya tutoría aceptaste.' : view === 'reviewed' ? 'Consulta los dictámenes emitidos, el estado de cada proyecto y las revisiones pendientes.' : view === 'defenses' ? 'Revisa y emite el dictamen para documentos de defensa privada o pública.' : 'Mantente al tanto de las solicitudes y actualizaciones de tus proyectos.'
 
   return <main className="student-page tutor-page">
     <aside className="student-sidebar tutor-sidebar">
@@ -1295,6 +1297,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
           <button className={view === 'invitations' ? 'is-active' : ''} onClick={() => setView('invitations')} type="button"><Icon name="user" /><span>Invitaciones</span>{data.invitations.length > 0 && <b className="nav-count">{data.invitations.length}</b>}</button>
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Mis proyectos</span></button>
           <button className={view === 'reviewed' ? 'is-active' : ''} onClick={() => setView('reviewed')} type="button"><Icon name="check" /><span>Proyectos revisados</span></button>
+          <button className={view === 'defenses' ? 'is-active' : ''} onClick={() => setView('defenses')} type="button"><Icon name="file" /><span>Defensas</span></button>
           <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
       </div>
@@ -1320,6 +1323,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
         {view === 'invitations' && (data.invitations.length > 0 ? <div className="tutor-cards">{data.invitations.map(invitationCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>Ya respondiste todas las invitaciones.</strong><span>Las nuevas solicitudes se mostrarán automáticamente en esta sección.</span></section>)}
         {view === 'projects' && (data.projects.length > 0 ? <div className="tutor-cards">{data.projects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no tienes proyectos confirmados.</strong><span>Cuando aceptes una tutoría, el proyecto aparecerá aquí.</span></section>)}
         {view === 'reviewed' && (reviewedProjects.length > 0 ? <div className="tutor-cards">{reviewedProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>Aún no hay proyectos revisados.</strong><span>Los proyectos aparecerán aquí cuando tutor o revisores emitan un dictamen.</span></section>)}
+        {view === 'defenses' && <><div className="defense-tabs"><button className={defenseType === 'PRIVATE' ? 'is-active' : ''} onClick={() => setDefenseType('PRIVATE')} type="button">Defensa privada</button><button className={defenseType === 'PUBLIC' ? 'is-active' : ''} onClick={() => setDefenseType('PUBLIC')} type="button">Defensa pública</button></div>{defenseProjects.length > 0 ? <div className="tutor-cards">{defenseProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="file" /><strong>No tienes documentos para esta defensa.</strong><span>Las entregas del estudiante aparecerán aquí para su revisión.</span></section>}</>}
         {view === 'notifications' && <section className="notification-list">{notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las solicitudes y avisos del proceso aparecerán aquí.</span></div> : notifications.map((notification) => <article className={`${notification.readAt ? 'notification-item' : 'notification-item is-unread'} role-${notification.role.toLowerCase()}`} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
       </div>
     </section>
@@ -1327,7 +1331,8 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
 }
 
 function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: ReviewerDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
-  const [view, setView] = useState<'home' | 'pending' | 'completed' | 'notifications'>('home')
+  const [view, setView] = useState<'home' | 'pending' | 'completed' | 'defenses' | 'notifications'>('home')
+  const [defenseType, setDefenseType] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE')
   const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
   const [generalComment, setGeneralComment] = useState('')
   const [observationDrafts, setObservationDrafts] = useState<string[]>([''])
@@ -1421,11 +1426,12 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
       <div className="tutor-project-meta"><span><Icon name="user" />{review.students}</span><span><Icon name="clipboard" />{review.modality}</span><span><Icon name="check" />{review.phase} · {review.status}</span></div>
       <div className="reviewer-card-info"><div><small>Entrega de revisión</small><strong className={isOverdue ? 'is-overdue' : ''}>{formatDate(review.deadline)}{isOverdue ? ' · Vencida' : ''}</strong></div><div><small>Perfil asignado</small><a className="document-download reviewer-document-link" href={`/api/reviewer/documents/${review.profile.documentId}/download?version=${review.profile.versionId}`}><Icon name="download" />V{review.profile.version} · Descargar</a></div></div>
       {review.decision !== 'PENDIENTE' && <div className={isObserved ? 'reviewer-result is-observed' : 'reviewer-result'}><strong>{isObserved ? `${review.observations.length} observación${review.observations.length === 1 ? '' : 'es'} registrada${review.observations.length === 1 ? '' : 's'}` : 'Dictamen emitido sin observaciones'}</strong>{review.generalComment && <p>{review.generalComment}</p>}</div>}
-      {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />Revisar perfil</button></div>}
+      {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />{review.profile.type === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Revisar perfil'}</button></div>}
     </article>
   }
 
-  const heading = selectedReview ? 'Emitir dictamen' : view === 'home' ? 'Inicio' : view === 'pending' ? 'Revisiones pendientes' : view === 'completed' ? 'Proyectos revisados' : 'Notificaciones'
+  const defenseReviews = [...data.pendingReviews, ...data.completedReviews].filter((review) => defenseType === 'PRIVATE' ? review.profile.type === 'DOCUMENTO_PRIVADO' : review.profile.type === 'DOCUMENTO_PUBLICO')
+  const heading = selectedReview ? 'Emitir dictamen' : view === 'home' ? 'Inicio' : view === 'pending' ? 'Revisiones pendientes' : view === 'completed' ? 'Proyectos revisados' : view === 'defenses' ? 'Defensas' : 'Notificaciones'
   const copy = selectedReview
     ? 'Revisa el perfil asignado y registra un dictamen definitivo para esta ronda.'
     : view === 'home'
@@ -1445,6 +1451,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           <button className={!selectedReview && view === 'home' ? 'is-active' : ''} onClick={() => { closeReview(); setView('home') }} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
           <button className={!selectedReview && view === 'pending' ? 'is-active' : ''} onClick={() => { closeReview(); setView('pending') }} type="button"><Icon name="clipboard" /><span>Por revisar</span>{data.summary.pending > 0 && <b className="nav-count">{data.summary.pending}</b>}</button>
           <button className={!selectedReview && view === 'completed' ? 'is-active' : ''} onClick={() => { closeReview(); setView('completed') }} type="button"><Icon name="check" /><span>Proyectos revisados</span></button>
+          <button className={!selectedReview && view === 'defenses' ? 'is-active' : ''} onClick={() => { closeReview(); setView('defenses') }} type="button"><Icon name="file" /><span>Defensas</span></button>
           <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
       </div>
@@ -1473,6 +1480,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
         </>}
         {!selectedReview && view === 'pending' && (data.pendingReviews.length > 0 ? <div className="tutor-cards">{data.pendingReviews.map((review) => reviewCard(review))}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán automáticamente en esta sección.</span></section>)}
         {!selectedReview && view === 'completed' && (data.completedReviews.length > 0 ? <div className="tutor-cards">{data.completedReviews.map((review) => reviewCard(review, false))}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no emitiste dictámenes.</strong><span>Cuando finalices una revisión aparecerá en este historial.</span></section>)}
+        {!selectedReview && view === 'defenses' && <><div className="defense-tabs"><button className={defenseType === 'PRIVATE' ? 'is-active' : ''} onClick={() => setDefenseType('PRIVATE')} type="button">Defensa privada</button><button className={defenseType === 'PUBLIC' ? 'is-active' : ''} onClick={() => setDefenseType('PUBLIC')} type="button">Defensa pública</button></div>{defenseReviews.length > 0 ? <div className="tutor-cards">{defenseReviews.map((review) => reviewCard(review, review.canSubmit))}</div> : <section className="tutor-empty"><Icon name="file" /><strong>No tienes documentos para esta defensa.</strong><span>Las nuevas asignaciones aparecerán aquí.</span></section>}</>}
         {!selectedReview && view === 'notifications' && <section className="notification-list">{notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las asignaciones y cambios del proceso aparecerán aquí.</span></div> : notifications.map((notification) => <article className={`${notification.readAt ? 'notification-item' : 'notification-item is-unread'} role-${notification.role.toLowerCase()}`} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
       </div>
     </section>

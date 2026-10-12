@@ -676,6 +676,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .review-progress-member.decision-observado, .review-progress-member.decision-rechazado { color: #a34c54; }
 .review-progress-member.decision-pendiente { color: #9a6f1c; }
 .review-progress small { display: block; font-weight: 700; }
+.defense-tabs { display: flex; gap: 9px; margin: 0 0 18px; }
+.defense-tabs button { background: #fff; border: 1px solid #e5dadd; border-radius: 999px; color: #695c60; cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; padding: 9px 15px; }
+.defense-tabs button.is-active { background: #ae0050; border-color: #ae0050; color: #fff; }
 .reviewer-workspace { padding-bottom: 30px; }
 .reviewer-back { margin-bottom: 16px; }
 .reviewer-workspace-heading { align-items: flex-start; display: flex; gap: 18px; justify-content: space-between; margin-bottom: 18px; }
