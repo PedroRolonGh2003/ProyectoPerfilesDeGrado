@@ -176,6 +176,8 @@ try {
   const before = await detailBefore.json()
   assert.equal(before.profiles[0].versionId, profileVersionId, 'El perfil no se muestra para programar revisión')
   assert.ok(before.staff.some((item) => item.id === accounts.reviewer1.teacherId) && before.staff.some((item) => item.id === accounts.reviewer2.teacherId), 'No se cargaron los revisores temporales')
+  const dashboardBeforeAssignment = await expect(await fetch(`${apiUrl}/api/admin/dashboard`, { headers: { Cookie: adminCookie } }), 200, 'Bandeja de nuevos proyectos antes de asignar revisores')
+  assert.ok((await dashboardBeforeAssignment.json()).newProjects.some((item) => item.id === projectId), 'El proyecto sin revisores no aparece en Nuevos proyectos')
 
   const updatedTitle = 'Proyecto temporal actualizado por QA de Administración'
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ title: updatedTitle, description: 'Descripción actualizada por la prueba automatizada de gestión administrativa.', generalObjective: 'Verificar la actualización auditable de los datos del proyecto.' }) }), 200, 'Actualización de datos del proyecto')
@@ -191,6 +193,8 @@ try {
   await expect(await fetch(`${apiUrl}/api/tutor/invitations/${invitation.id}/respond`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: tutorCookie }, body: JSON.stringify({ decision: 'ACEPTAR' }) }), 200, 'Aceptación de tutoría')
   const reviewersAssignment = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }) }), 200, 'Asignación de los dos revisores')
   assert.equal((await reviewersAssignment.json()).changed, 2, 'No se registraron los dos revisores')
+  const dashboardAfterAssignment = await expect(await fetch(`${apiUrl}/api/admin/dashboard`, { headers: { Cookie: adminCookie } }), 200, 'Actualización de Nuevos proyectos tras asignar revisores')
+  assert.ok(!(await dashboardAfterAssignment.json()).newProjects.some((item) => item.id === projectId), 'El proyecto con revisores sigue apareciendo en Nuevos proyectos')
 
   const deadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const round = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ versionId: profileVersionId, deadline }) }), 201, 'Programación de ronda de revisión')

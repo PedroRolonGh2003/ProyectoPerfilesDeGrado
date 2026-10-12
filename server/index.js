@@ -2159,6 +2159,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
                   tutor.nombre AS tutor,
                   tutor.pendiente AS tutoria_pendiente,
                   tutor.confirmada AS tutoria_confirmada,
+                  reviewers.asignados AS revisores_asignados,
                   reviews.fecha_limite_revision,
                   reviews.revisiones_pendientes,
                   reviews.revision_vencida
@@ -2185,6 +2186,15 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
              JOIN titulacion.usuarios u ON u.id = d.usuario_id
              WHERE a.proyecto_id = p.id
            ) tutor ON true
+           LEFT JOIN LATERAL (
+             SELECT count(*) FILTER (
+                      WHERE a.tipo IN ('REVISOR_1', 'REVISOR_2')
+                        AND a.activo
+                        AND a.fecha_fin IS NULL
+                    )::int AS asignados
+             FROM titulacion.asignaciones_proyecto a
+             WHERE a.proyecto_id = p.id
+           ) reviewers ON true
            LEFT JOIN LATERAL (
              SELECT min(rr.fecha_limite) FILTER (WHERE rr.cerrada_en IS NULL) AS fecha_limite_revision,
                     count(r.id) FILTER (WHERE r.decidida_en IS NULL)::int AS revisiones_pendientes,
@@ -2228,7 +2238,10 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       reviewDeadline: project.fecha_limite_revision,
       pendingReviews: Number(project.revisiones_pendientes ?? 0),
       isOverdue: project.revision_vencida,
+      reviewerCount: Number(project.revisores_asignados ?? 0),
     }))
+
+    const newProjects = projectRows.filter((project) => !project.isFinal && project.reviewerCount === 0)
 
     const summary = projectRows.reduce((total, project) => ({
       total: total.total + 1,
@@ -2236,13 +2249,15 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       inReview: total.inReview + (project.statusCode === 'EN_REVISION' ? 1 : 0),
       observed: total.observed + (project.statusCode === 'OBSERVADO' ? 1 : 0),
       overdue: total.overdue + (project.isOverdue ? 1 : 0),
-    }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0 })
+      newProjects: total.newProjects + (project.reviewerCount === 0 && !project.isFinal ? 1 : 0),
+    }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0, newProjects: 0 })
 
     return response.json({
       user: sanitizeUser(request.session),
       summary,
       statuses: statuses.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
       projects: projectRows,
+      newProjects,
     })
   } catch (error) {
     return next(error)
@@ -4407,6 +4422,24 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       title: 'Nueva invitación de tutoría',
       message: `Tienes una invitación para acompañar el proyecto ${createdProject.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
       link: '/tutor/invitaciones',
+      queueEmail: true,
+    })
+
+    const administrators = await databaseClient.query(
+      `SELECT DISTINCT u.id AS usuario_id, u.correo
+       FROM titulacion.usuarios u
+       JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+       JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = 'ADMINISTRADOR'
+       WHERE u.activo`,
+    )
+    for (const administrator of administrators.rows) await createNotification(databaseClient, {
+      userId: administrator.usuario_id,
+      recipientEmail: administrator.correo,
+      projectId: createdProject.id,
+      type: 'NUEVO_PROYECTO_REGISTRADO',
+      title: 'Nuevo proyecto registrado',
+      message: `El estudiante registró el proyecto ${createdProject.codigo_seguimiento}. Asigna los revisores cuando el tutor acepte la invitación.`,
+      link: '/admin/nuevos-proyectos',
       queueEmail: true,
     })
 

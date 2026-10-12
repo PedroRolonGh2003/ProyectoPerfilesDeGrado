@@ -167,12 +167,14 @@ type AdminProject = {
   reviewDeadline: string | null
   pendingReviews: number
   isOverdue: boolean
+  reviewerCount: number
 }
 type AdminDashboard = {
   user: AdministratorUser
-  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number }
+  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number; newProjects: number }
   statuses: { code: string; name: string }[]
   projects: AdminProject[]
+  newProjects: AdminProject[]
 }
 type AdminUser = {
   id: string
@@ -1809,8 +1811,8 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
   </form>
 }
 
-function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
-  const [view, setView] = useState<'home' | 'projects' | 'users'>('home')
+function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: 'new-projects' | null; onNavigationHandled: () => void }) {
+  const [view, setView] = useState<'home' | 'projects' | 'new-projects' | 'users'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -1835,7 +1837,14 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: Admi
     const matchesStatus = userStatus === 'ALL' || (userStatus === 'ACTIVE' ? user.active : !user.active)
     return matchesSearch && matchesRole && matchesStatus
   })
-  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : 'Usuarios'
+  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'new-projects' ? 'Nuevos proyectos' : 'Usuarios'
+
+  useEffect(() => {
+    if (navigationTarget === 'new-projects') {
+      setView('new-projects')
+      onNavigationHandled()
+    }
+  }, [navigationTarget, onNavigationHandled])
 
   async function loadUsers() {
     setIsLoadingUsers(true)
@@ -1928,6 +1937,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: Admi
         <p className="student-role">ADMINISTRACIÓN</p>
         <nav aria-label="Navegación de Administración" className="student-nav">
           <button className={view === 'home' ? 'is-active' : ''} onClick={() => setView('home')} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
+          <button className={view === 'new-projects' ? 'is-active' : ''} onClick={() => setView('new-projects')} type="button"><Icon name="bell" /><span>Nuevos proyectos</span>{data.summary.newProjects > 0 && <b className="nav-count">{data.summary.newProjects}</b>}</button>
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
           <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
           <button type="button"><Icon name="help" /><span>Ayuda</span></button>
@@ -1940,16 +1950,19 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions }: { data: Admi
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
-        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'new-projects' ? 'Proyectos recién registrados que aún no tienen revisores asignados.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
 
-        {view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div><small>En registro</small><strong>{data.summary.registered}</strong><span>Requieren gestión inicial.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
+        {view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.newProjects > 0 ? 'requires-attention' : ''}><small>Sin revisores</small><strong>{data.summary.newProjects}</strong><span>Requieren asignación.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
 
         {view === 'home' && <>
           <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
+          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Nuevos proyectos</h2><p>Registros sin revisores asignados, listos para completar su equipo de evaluación.</p></div><button className="text-button" onClick={() => setView('new-projects')} type="button">Ver nuevos</button></div>{data.newProjects.length > 0 ? <div className="admin-project-list">{data.newProjects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay proyectos nuevos pendientes.</strong><span>Los proyectos desaparecerán de esta lista al asignar sus dos revisores.</span></section>}</section>
           <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Proyectos recientes</h2><p>Prioriza los casos con una revisión vencida o con tutoría pendiente.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div>{data.projects.length > 0 ? <div className="admin-project-list">{data.projects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No hay proyectos registrados.</strong><span>Los registros del Formulario 1 aparecerán aquí.</span></section>}</section>
         </>}
+
+        {view === 'new-projects' && <>{data.newProjects.length > 0 ? <div className="admin-project-list">{data.newProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay proyectos nuevos pendientes.</strong><span>Los proyectos registrados por estudiantes aparecerán aquí hasta que tengan sus dos revisores asignados.</span></section>}</>}
 
         {view === 'projects' && <>
           {isCreatingProject && (projectCatalog ? <AdminProjectCreateForm catalog={projectCatalog} onCancel={() => setIsCreatingProject(false)} onSave={createProject} /> : <section className="admin-operation-card"><p>Cargando estudiantes, gestiones y modalidades disponibles…</p></section>)}
@@ -1977,6 +1990,7 @@ function App() {
   const [isSwitchingRole, setIsSwitchingRole] = useState(false)
   const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
+  const [adminNavigationTarget, setAdminNavigationTarget] = useState<'new-projects' | null>(null)
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
@@ -2038,6 +2052,9 @@ function App() {
       await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
       setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item))
     }
+    if (notification.role === 'ADMINISTRADOR' && notification.link === '/admin/nuevos-proyectos') {
+      setAdminNavigationTarget('new-projects')
+    }
     if (data && notification.role !== data.user.role) {
       await handleRoleChange(notification.role)
       return
@@ -2052,7 +2069,7 @@ function App() {
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
   if (!data || isPasswordResetFlow) return <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
   if ('pendingReviews' in data) return <ReviewerPortal data={data} notifications={notifications} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  if ('summary' in data) return <AdminPortal data={data} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('summary' in data) return <AdminPortal data={data} navigationTarget={adminNavigationTarget} onNavigationHandled={() => setAdminNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   if ('invitations' in data) return <TutorPortal data={data} notifications={notifications} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   return view === 'home'
     ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
