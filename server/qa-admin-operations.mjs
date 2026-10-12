@@ -179,10 +179,7 @@ try {
   const dashboardBeforeAssignment = await expect(await fetch(`${apiUrl}/api/admin/dashboard`, { headers: { Cookie: adminCookie } }), 200, 'Bandeja de nuevos proyectos antes de asignar revisores')
   assert.ok((await dashboardBeforeAssignment.json()).newProjects.some((item) => item.id === projectId), 'El proyecto sin revisores no aparece en Nuevos proyectos')
 
-  const updatedTitle = 'Proyecto temporal actualizado por QA de Administración'
-  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ title: updatedTitle, description: 'Descripción actualizada por la prueba automatizada de gestión administrativa.', generalObjective: 'Verificar la actualización auditable de los datos del proyecto.' }) }), 200, 'Actualización de datos del proyecto')
-  const updatedData = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Consulta posterior de datos actualizados')
-  assert.equal((await updatedData.json()).project.title, updatedTitle, 'La actualización del título no llegó a PostgreSQL')
+  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ title: 'Cambio no autorizado', description: 'Este cambio no debe poder aplicarse desde Administración.', generalObjective: 'Comprobar la protección de los datos del estudiante.' }) }), 403, 'Bloqueo de edición de datos del estudiante')
 
   const tutorAssignment = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/assignments`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ tutorId: accounts.tutor.teacherId }) }), 200, 'Invitación administrativa al tutor')
   assert.equal((await tutorAssignment.json()).changed, 1, 'No se registró la invitación al tutor')

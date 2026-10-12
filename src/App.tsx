@@ -1512,9 +1512,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
-  const [projectTitle, setProjectTitle] = useState('')
-  const [projectDescription, setProjectDescription] = useState('')
-  const [projectObjective, setProjectObjective] = useState('')
   const [tutorId, setTutorId] = useState('')
   const [reviewer1Id, setReviewer1Id] = useState('')
   const [reviewer2Id, setReviewer2Id] = useState('')
@@ -1537,9 +1534,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
     try {
       const payload = await api<AdminProjectDetail>(`/api/admin/projects/${projectId}`)
       setDetail(payload)
-      setProjectTitle(payload.project.title)
-      setProjectDescription(payload.project.description)
-      setProjectObjective(payload.project.generalObjective)
       setTutorId(payload.assignments.find((item) => item.type === 'TUTOR')?.teacherId ?? '')
       setReviewer1Id(payload.assignments.find((item) => item.type === 'REVISOR_1')?.teacherId ?? '')
       setReviewer2Id(payload.assignments.find((item) => item.type === 'REVISOR_2')?.teacherId ?? '')
@@ -1583,22 +1577,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
       await loadDetail()
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible actualizar los responsables.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  async function saveProjectData(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setIsSubmitting(true)
-    setMessage('')
-    try {
-      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: projectTitle, description: projectDescription, generalObjective: projectObjective }) })
-      setMessage(result.message)
-      await onRefresh()
-      await loadDetail()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar los datos del proyecto.')
     } finally {
       setIsSubmitting(false)
     }
@@ -1670,8 +1648,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
         <div className="student-title-row admin-title"><div><p className="eyebrow">Gestión del proyecto</p><h1>{detail.project.title}</h1><p>{detail.project.code} · {detail.project.management} · {detail.project.modality}</p></div><span className={`admin-status status-${detail.project.statusCode.toLocaleLowerCase()}`}>{detail.project.phase} · {detail.project.status}</span></div>
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
         <section className="admin-project-context"><div><small>Estudiante{detail.students.length === 1 ? '' : 's'}</small><strong>{detail.students.map((item) => item.name).join(', ') || 'Sin estudiante asignado'}</strong><span>{detail.students.map((item) => item.registration).join(', ')}</span></div><div><small>Objetivo general</small><p>{detail.project.generalObjective}</p></div></section>
-
-        {!isCancelled && <form className="admin-operation-card admin-project-edit" onSubmit={(event) => void saveProjectData(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>DATOS DEL PROYECTO</p><h2>Validar y actualizar propuesta</h2></div></div><p>Administración puede corregir los datos académicos registrados en el Formulario 1. Cada ajuste queda auditado.</p><label className="form-field"><span>Título del proyecto <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setProjectTitle(event.target.value)} value={projectTitle} /></label><label className="form-field"><span>Descripción <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setProjectDescription(event.target.value)} rows={3} value={projectDescription} /></label><label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setProjectObjective(event.target.value)} rows={2} value={projectObjective} /></label><button className="secondary-button" disabled={isSubmitting} type="submit">Guardar datos</button></form>}
 
         {!isCancelled && <div className="admin-operation-grid">
           <form className="admin-operation-card" onSubmit={(event) => void submitTutor(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>PASO 1 · TUTORÍA</p><h2>Tutor propuesto</h2></div></div><p>El estudiante propone un tutor al registrar su proyecto. Administración puede enviar o reemplazar la invitación si fuese necesario.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className={tutorConfirmed ? 'admin-assignment-state is-confirmed' : 'admin-assignment-state'}>{tutorConfirmed ? `Tutor confirmado: ${tutorAssignment?.teacher}` : tutorAssignment ? `Esperando respuesta de ${tutorAssignment.teacher}.` : 'Aún no se propuso un tutor.'}</p><button className="secondary-button" disabled={isSubmitting || !tutorId} type="submit">{tutorAssignment ? 'Cambiar tutor propuesto' : 'Enviar invitación al tutor'}</button></form>

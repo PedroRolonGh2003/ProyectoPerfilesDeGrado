@@ -2423,47 +2423,8 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
   }
 })
 
-app.patch('/api/admin/projects/:projectId', requireAdministrator, async (request, response, next) => {
-  const databaseClient = await pool.connect()
-  try {
-    const { projectId } = request.params
-    const title = text(request.body?.title)
-    const description = text(request.body?.description)
-    const generalObjective = text(request.body?.generalObjective)
-    if (!isUuid(projectId) || title.length < 10 || description.length < 20 || generalObjective.length < 10) {
-      return response.status(422).json({ message: 'Completa el título, la descripción y el objetivo general con la información mínima requerida.' })
-    }
-    await databaseClient.query('BEGIN')
-    const project = await lockedProject(databaseClient, projectId)
-    if (!project) {
-      await databaseClient.query('ROLLBACK')
-      return response.status(404).json({ message: 'El proyecto no existe.' })
-    }
-    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
-      await databaseClient.query('ROLLBACK')
-      return response.status(409).json({ message: 'No puedes modificar los datos de un proyecto cerrado.' })
-    }
-    await databaseClient.query(
-      `UPDATE titulacion.proyectos
-       SET titulo_tentativo = $2, descripcion = $3, objetivo_general = $4, actualizado_en = now()
-       WHERE id = $1`,
-      [projectId, title, description, generalObjective],
-    )
-    await recordAudit(databaseClient, request.session, {
-      projectId,
-      action: 'ACTUALIZAR_DATOS_PROYECTO',
-      entity: 'proyectos',
-      entityId: projectId,
-      detail: { title },
-    })
-    await databaseClient.query('COMMIT')
-    return response.json({ message: 'Los datos del proyecto fueron actualizados.' })
-  } catch (error) {
-    await databaseClient.query('ROLLBACK').catch(() => undefined)
-    return next(error)
-  } finally {
-    databaseClient.release()
-  }
+app.patch('/api/admin/projects/:projectId', requireAdministrator, (_request, response) => {
+  return response.status(403).json({ message: 'Administración no puede modificar los datos registrados por el estudiante en el Formulario 1.' })
 })
 
 app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, async (request, response, next) => {
