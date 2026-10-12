@@ -8,14 +8,19 @@ import pg from 'pg'
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const apiUrl = `http://127.0.0.1:${port}`
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT ?? 5432),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  options: '-c search_path=titulacion,public',
-})
+const pool = new Pool(process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false },
+    }
+  : {
+      host: process.env.DB_HOST,
+      port: Number(process.env.DB_PORT ?? 5432),
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      options: '-c search_path=titulacion,public',
+    })
 
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const password = 'AdminOperationsQA-2026'
@@ -25,6 +30,7 @@ let profileDocumentId = ''
 let profileVersionId = ''
 let adminCookie = ''
 let studentCookie = ''
+let tutorCookie = ''
 
 async function expect(response, status, label) {
   assert.equal(response.status, status, `${label}: se esperaba HTTP ${status} y se recibió ${response.status}`)
@@ -34,19 +40,19 @@ async function expect(response, status, label) {
 async function createAccount(client, { key, firstName, lastName, roleCode, profile }) {
   const email = `qa.admin.operations.${key}.${suffix}@univalle.edu`
   const user = await client.query(
-    `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo, email_confirmado_en)
+     VALUES ($1, $2, $3, $4, true, now())
      RETURNING id`,
     [firstName, lastName, email, await bcrypt.hash(password, 10)],
   )
   const role = await client.query(`SELECT id FROM titulacion.roles WHERE codigo = $1 AND activo`, [roleCode])
   assert.ok(role.rows[0], `No existe el rol ${roleCode} para QA`)
-  await client.query('INSERT INTO titulacion.usuario_roles (usuario_id, rol_id) VALUES ($1, $2)', [user.rows[0].id, role.rows[0].id])
+  await client.query('INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo) VALUES ($1, $2, true)', [user.rows[0].id, role.rows[0].id])
   accounts[key] = { userId: user.rows[0].id, email, roleCode, teacherId: '', studentId: '' }
   if (profile.kind === 'student') {
     const student = await client.query(
-      `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario)
-       VALUES ($1, $2, $3)
+      `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
+       VALUES ($1, $2, $3, true)
        RETURNING id`,
       [user.rows[0].id, profile.careerId, `QA-ADMIN-OPS-${suffix}`],
     )
@@ -54,8 +60,8 @@ async function createAccount(client, { key, firstName, lastName, roleCode, profi
   }
   if (profile.kind === 'teacher') {
     const teacher = await client.query(
-      `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad)
-       VALUES ($1, $2, $3, 'Pruebas automatizadas')
+      `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad, activo)
+       VALUES ($1, $2, $3, 'Pruebas automatizadas', true)
        RETURNING id`,
       [user.rows[0].id, profile.careerId, `QA-AO-${key}-${suffix}`],
     )
@@ -162,6 +168,8 @@ try {
   adminCookie = adminLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
   const studentLogin = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.student.email, password }) }), 200, 'Inicio de estudiante de control')
   studentCookie = studentLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
+  const tutorLogin = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.tutor.email, password }) }), 200, 'Inicio de tutor de control')
+  tutorCookie = tutorLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: studentCookie } }), 403, 'Bloqueo operativo para estudiante')
 
   const detailBefore = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Carga de detalle administrativo')
@@ -174,8 +182,15 @@ try {
   const updatedData = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Consulta posterior de datos actualizados')
   assert.equal((await updatedData.json()).project.title, updatedTitle, 'La actualización del título no llegó a PostgreSQL')
 
-  const assignments = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/assignments`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ tutorId: accounts.tutor.teacherId, reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }) }), 200, 'Asignación de tutor y revisores')
-  assert.ok((await assignments.json()).changed >= 3, 'No se registraron los tres responsables')
+  const tutorAssignment = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/assignments`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ tutorId: accounts.tutor.teacherId }) }), 200, 'Invitación administrativa al tutor')
+  assert.equal((await tutorAssignment.json()).changed, 1, 'No se registró la invitación al tutor')
+  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }) }), 409, 'Bloqueo de revisores antes de aceptar tutoría')
+  const tutorDashboard = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: tutorCookie } }), 200, 'Bandeja de invitaciones del tutor')
+  const invitation = (await tutorDashboard.json()).invitations.find((item) => item.projectId === projectId)
+  assert.ok(invitation, 'La invitación no llegó al tutor')
+  await expect(await fetch(`${apiUrl}/api/tutor/invitations/${invitation.id}/respond`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: tutorCookie }, body: JSON.stringify({ decision: 'ACEPTAR' }) }), 200, 'Aceptación de tutoría')
+  const reviewersAssignment = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }) }), 200, 'Asignación de los dos revisores')
+  assert.equal((await reviewersAssignment.json()).changed, 2, 'No se registraron los dos revisores')
 
   const deadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const round = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ versionId: profileVersionId, deadline }) }), 201, 'Programación de ronda de revisión')
@@ -184,7 +199,7 @@ try {
   const roundData = await afterRound.json()
   assert.equal(roundData.project.statusCode, 'EN_REVISION', 'El proyecto no pasó a EN_REVISION')
   assert.equal(roundData.project.phaseCode, 'REVISION_PERFIL', 'El proyecto no pasó a la fase de revisión de perfil')
-  assert.equal(roundData.rounds[0].reviews.length, 2, 'La ronda no contiene las dos revisiones pendientes')
+  assert.equal(roundData.rounds[0].reviews.length, 3, 'La ronda no contiene las revisiones pendientes de tutor y revisores')
 
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ statusCode: 'OBSERVADO', phaseCode: 'REVISION_PERFIL', reason: 'QA confirma el cambio trazable de estado.' }) }), 200, 'Cambio trazable de estado')
   const state = await pool.query(`SELECT ep.codigo FROM titulacion.proyectos p JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id WHERE p.id = $1`, [projectId])
@@ -205,6 +220,7 @@ try {
 } finally {
   if (adminCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: adminCookie } }).catch(() => undefined)
   if (studentCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: studentCookie } }).catch(() => undefined)
+  if (tutorCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: tutorCookie } }).catch(() => undefined)
   await cleanup()
   await pool.end()
 }

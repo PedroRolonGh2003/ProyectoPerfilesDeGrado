@@ -572,6 +572,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-operation-heading p { color: var(--univalle-wine); font-size: 9px; font-weight: 700; letter-spacing: .08em; margin: 1px 0 5px; }
 .admin-operation-heading h2 { color: #4b3e42; font-size: 14px; margin: 0; }
 .admin-operation-card > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
+.admin-assignment-state { background: #fff7e8; border: 1px solid #f0d7a4; border-radius: 7px; color: #76561d !important; font-size: 11px; line-height: 1.45; margin: 3px 0 14px !important; padding: 9px 10px; }
+.admin-assignment-state.is-confirmed { background: #ecf8ef; border-color: #bfe2c8; color: #21613a !important; }
 .admin-operation-card .form-field { margin-bottom: 13px; }
 .admin-operation-card .form-field > span { color: #685a5e; font-size: 11px; }
 .admin-operation-card .form-field select, .admin-operation-card .form-field input, .admin-operation-card .form-field textarea { font-size: 12px; }

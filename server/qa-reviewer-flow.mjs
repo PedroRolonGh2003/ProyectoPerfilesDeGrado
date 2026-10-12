@@ -32,6 +32,12 @@ let documentId = ''
 let versionId = ''
 let storedPath = ''
 let cookies = {}
+const formatCriteria = ['TITULO', 'INDICE', 'ORDEN_GUIA', 'FORMATO', 'NUMERO_HOJAS', 'ETAPAS_INVESTIGACION', 'CRONOGRAMA', 'CITAS', 'REFERENCIAS', 'REDACCION']
+const backgroundCriteria = ['PROBLEMA', 'JUSTIFICACION', 'FUENTES', 'ANALISIS_LITERATURA', 'PERSPECTIVA_TEORICA', 'VINCULO_TEORIA', 'VIABILIDAD_OBJETIVOS', 'COHERENCIA_OBJETIVOS', 'METODOLOGIA_PERTINENTE', 'METODOLOGIA_RESPONDE']
+const approvedFormat = formatCriteria.map((code) => ({ code, value: 'SI' }))
+const approvedBackground = backgroundCriteria.map((code) => ({ code, value: 'BUENO' }))
+const observedFormat = approvedFormat.map((item, index) => ({ ...item, value: index === 0 ? 'NO' : item.value }))
+const observedBackground = approvedBackground.map((item, index) => ({ ...item, value: index === 0 ? 'REGULAR' : item.value }))
 
 async function expect(response, status, label) {
   assert.equal(response.status, status, `${label}: se esperaba HTTP ${status} y se recibió ${response.status}`)
@@ -41,19 +47,19 @@ async function expect(response, status, label) {
 async function createAccount(client, { key, roleCode, profile }) {
   const email = `qa.reviewer.${key}.${suffix}@univalle.edu`
   const user = await client.query(
-    `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash)
-     VALUES ('QA', $1, $2, $3)
+    `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo, email_confirmado_en)
+     VALUES ('QA', $1, $2, $3, true, now())
      RETURNING id`,
     [`Revisión ${key}`, email, await bcrypt.hash(password, 10)],
   )
   const role = await client.query(`SELECT id FROM titulacion.roles WHERE codigo = $1 AND activo`, [roleCode])
   assert.ok(role.rows[0], `No existe el rol ${roleCode} para QA`)
-  await client.query('INSERT INTO titulacion.usuario_roles (usuario_id, rol_id) VALUES ($1, $2)', [user.rows[0].id, role.rows[0].id])
+  await client.query('INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo) VALUES ($1, $2, true)', [user.rows[0].id, role.rows[0].id])
   accounts[key] = { userId: user.rows[0].id, email, studentId: '', teacherId: '' }
   if (profile.kind === 'student') {
     const student = await client.query(
-      `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario)
-       VALUES ($1, $2, $3)
+      `INSERT INTO titulacion.estudiantes (usuario_id, carrera_id, registro_universitario, activo)
+       VALUES ($1, $2, $3, true)
        RETURNING id`,
       [user.rows[0].id, profile.careerId, `QA-REV-S-${suffix}`],
     )
@@ -61,8 +67,8 @@ async function createAccount(client, { key, roleCode, profile }) {
   }
   if (profile.kind === 'teacher') {
     const teacher = await client.query(
-      `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad)
-       VALUES ($1, $2, $3, 'Pruebas automatizadas')
+      `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad, activo)
+       VALUES ($1, $2, $3, 'Pruebas automatizadas', true)
        RETURNING id`,
       [user.rows[0].id, profile.careerId, `QA-REV-${key}-${suffix}`],
     )
@@ -186,13 +192,23 @@ async function cleanup() {
 try {
   await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`), 401, 'Protección del portal de revisor')
   await setup()
-  for (const key of ['admin', 'student', 'reviewer1', 'reviewer2']) await login(key)
+  for (const key of ['admin', 'student', 'tutor', 'reviewer1', 'reviewer2']) await login(key)
   await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.student } }), 403, 'Bloqueo del portal para estudiante')
 
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/assignments`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookies.admin },
-    body: JSON.stringify({ tutorId: accounts.tutor.teacherId, reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }),
-  }), 200, 'Asignación administrativa de responsables')
+    body: JSON.stringify({ tutorId: accounts.tutor.teacherId }),
+  }), 200, 'Invitación administrativa al tutor')
+  const tutorDashboard = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: cookies.tutor } }), 200, 'Bandeja de invitaciones del tutor')
+  const invitation = (await tutorDashboard.json()).invitations.find((item) => item.projectId === projectId)
+  assert.ok(invitation, 'La invitación no llegó al tutor')
+  await expect(await fetch(`${apiUrl}/api/tutor/invitations/${invitation.id}/respond`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.tutor }, body: JSON.stringify({ decision: 'ACEPTAR' }),
+  }), 200, 'Aceptación de tutoría')
+  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookies.admin },
+    body: JSON.stringify({ reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }),
+  }), 200, 'Asignación administrativa de revisores')
   const deadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString().slice(0, 10)
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.admin },
@@ -211,7 +227,7 @@ try {
   const review1 = dashboard.pendingReviews[0]
   await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${review1.id}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer1 },
-    body: JSON.stringify({ decision: 'OBSERVADO', generalComment: 'El perfil requiere correcciones de forma y alcance.', observations: ['Precisar el objetivo general.', 'Completar la justificación del problema.'] }),
+    body: JSON.stringify({ decision: 'OBSERVADO', generalComment: 'El perfil requiere correcciones de forma y alcance.', observations: ['Precisar el objetivo general.', 'Completar la justificación del problema.'], formatCriteria: observedFormat, backgroundCriteria: observedBackground }),
   }), 200, 'Registro de observaciones del primer revisor')
   const afterFirst = await pool.query(
     `SELECT ep.codigo AS status, rr.cerrada_en, (SELECT count(*)::int FROM titulacion.observaciones o JOIN titulacion.revisiones r ON r.id = o.revision_id WHERE r.id = $2) AS observations
@@ -228,15 +244,19 @@ try {
   assert.equal(afterFirst.rows[0].observations, 2, 'No se guardaron las observaciones del revisor')
   await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${review1.id}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer1 },
-    body: JSON.stringify({ decision: 'OBSERVADO', observations: ['No debe duplicarse.'] }),
+    body: JSON.stringify({ decision: 'OBSERVADO', observations: ['No debe duplicarse.'], formatCriteria: observedFormat, backgroundCriteria: observedBackground }),
   }), 409, 'Bloqueo de segundo dictamen')
 
   const reviewer2Dashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer2 } }), 200, 'Bandeja del segundo revisor')
   const review2 = (await reviewer2Dashboard.json()).pendingReviews[0]
   await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${review2.id}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer2 },
-    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'El perfil cumple con los criterios revisados.', observations: [] }),
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'El perfil cumple con los criterios revisados.', observations: [], formatCriteria: approvedFormat, backgroundCriteria: approvedBackground }),
   }), 200, 'Aprobación del segundo revisor')
+  await expect(await fetch(`${apiUrl}/api/tutor/projects/${projectId}/formulario2`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.tutor },
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'El tutor valida el perfil y mantiene las observaciones registradas por el revisor.', observations: [], formatCriteria: approvedFormat, backgroundCriteria: approvedBackground }),
+  }), 200, 'Dictamen del tutor sobre el perfil')
   const finalState = await pool.query(
     `SELECT ep.codigo AS status, f.codigo AS phase, rr.cerrada_en,
             (SELECT count(*)::int FROM titulacion.cola_correos_notificacion q JOIN titulacion.notificaciones n ON n.id = q.notificacion_id WHERE n.proyecto_id = p.id AND n.tipo = 'REVISION_DEVUELTA') AS email_queue
@@ -258,19 +278,15 @@ try {
   assert.ok(studentDocument?.observations?.length === 2, 'El estudiante no puede ver las observaciones del perfil')
   const observation = studentDocument.observations[0]
   assert.equal(observation.status, 'ABIERTA', 'La observación nueva debe quedar abierta')
-  await expect(await fetch(`${apiUrl}/api/documents/${documentId}/observations/${observation.id}`, {
-    method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookies.student },
-    body: JSON.stringify({ response: 'Se precisó el objetivo general y se documentó el ajuste en el perfil.' }),
-  }), 200, 'Respuesta del estudiante a la observación')
-  for (const remainingObservation of studentDocument.observations.slice(1)) {
-    await expect(await fetch(`${apiUrl}/api/documents/${documentId}/observations/${remainingObservation.id}`, {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookies.student },
-      body: JSON.stringify({ response: 'La corrección fue aplicada y queda documentada en la versión enviada.' }),
-    }), 200, 'Respuesta del estudiante a la observación restante')
-  }
   const correction = new FormData()
   correction.set('document', new Blob([Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'correccion-qa.docx')
   correction.set('comment', 'Corrección del objetivo general para QA.')
+  correction.set('observationResponses', JSON.stringify(studentDocument.observations.map((item, index) => ({
+    id: item.id,
+    response: index === 0
+      ? 'Se precisó el objetivo general y se documentó el ajuste en el perfil.'
+      : 'La corrección fue aplicada y queda documentada en la versión enviada.',
+  }))))
   const uploadedCorrection = await expect(await fetch(`${apiUrl}/api/documents/${documentId}/versions`, {
     method: 'POST', headers: { Cookie: cookies.student }, body: correction,
   }), 201, 'Carga de versión corregida por estudiante')
@@ -295,12 +311,16 @@ try {
   assert.ok(correctionReview2, 'El mismo segundo revisor no recibió la versión corregida')
   await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${correctionReview1.id}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer1 },
-    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La corrección atiende las observaciones.', observations: [] }),
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La corrección atiende las observaciones.', observations: [], formatCriteria: approvedFormat, backgroundCriteria: approvedBackground }),
   }), 200, 'Aprobación de la corrección por el primer revisor')
   await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${correctionReview2.id}/decision`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.reviewer2 },
-    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La corrección fue validada.', observations: [] }),
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La corrección fue validada.', observations: [], formatCriteria: approvedFormat, backgroundCriteria: approvedBackground }),
   }), 200, 'Aprobación de la corrección por el segundo revisor')
+  await expect(await fetch(`${apiUrl}/api/tutor/projects/${projectId}/formulario2`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.tutor },
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'El tutor valida la versión corregida.', observations: [], formatCriteria: approvedFormat, backgroundCriteria: approvedBackground }),
+  }), 200, 'Aprobación de la corrección por el tutor')
   const closed = await pool.query(
     `SELECT count(*)::int AS total
      FROM titulacion.observaciones o
@@ -310,7 +330,7 @@ try {
   )
   assert.equal(closed.rows[0].total, 2, 'Las observaciones no se cerraron tras aprobar la corrección')
   const completedDashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer1 } }), 200, 'Historial del primer revisor')
-  assert.equal((await completedDashboard.json()).completedReviews.length, 1, 'El dictamen no pasó al historial del revisor')
+  assert.equal((await completedDashboard.json()).completedReviews.length, 2, 'Los dos dictámenes no pasaron al historial del revisor')
   console.log('QA revisor aprobado: bandeja, descarga, dictamen, devolución, respuesta y versión corregida verificados.')
 } finally {
   for (const cookie of Object.values(cookies)) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } }).catch(() => undefined)

@@ -1554,12 +1554,28 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
 
   useEffect(() => { void loadDetail() }, [projectId])
 
+  async function submitTutor(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/assignments`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tutorId }) })
+      setMessage(result.message)
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible enviar la invitación al tutor.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   async function submitAssignments(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setIsSubmitting(true)
     setMessage('')
     try {
-      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/assignments`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tutorId, reviewer1Id, reviewer2Id }) })
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/reviewers`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reviewer1Id, reviewer2Id }) })
       setMessage(result.message)
       await onRefresh()
       await loadDetail()
@@ -1638,6 +1654,8 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const tutors = detail?.staff.filter((item) => item.roles.includes('TUTOR')) ?? []
   const reviewers = detail?.staff.filter((item) => item.roles.includes('REVISOR')) ?? []
   const isCancelled = detail?.project.statusCode === 'ANULADO'
+  const tutorAssignment = detail?.assignments.find((item) => item.type === 'TUTOR')
+  const tutorConfirmed = Boolean(tutorAssignment?.active && tutorAssignment.respondedAt && !tutorAssignment.finishedAt)
 
   return <main className="student-page admin-page">
     <aside className="student-sidebar admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></aside>
@@ -1654,7 +1672,8 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
         {!isCancelled && <form className="admin-operation-card admin-project-edit" onSubmit={(event) => void saveProjectData(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>DATOS DEL PROYECTO</p><h2>Validar y actualizar propuesta</h2></div></div><p>Administración puede corregir los datos académicos registrados en el Formulario 1. Cada ajuste queda auditado.</p><label className="form-field"><span>Título del proyecto <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setProjectTitle(event.target.value)} value={projectTitle} /></label><label className="form-field"><span>Descripción <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setProjectDescription(event.target.value)} rows={3} value={projectDescription} /></label><label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setProjectObjective(event.target.value)} rows={2} value={projectObjective} /></label><button className="secondary-button" disabled={isSubmitting} type="submit">Guardar datos</button></form>}
 
         {!isCancelled && <div className="admin-operation-grid">
-          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>RESPONSABLES</p><h2>Tutor y revisores</h2></div></div><p>Define los docentes responsables. Un nuevo tutor recibe una invitación y los revisores quedan listos para la siguiente ronda.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting} type="submit">Guardar responsables</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void submitTutor(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>PASO 1 · TUTORÍA</p><h2>Tutor propuesto</h2></div></div><p>El estudiante propone un tutor al registrar su proyecto. Administración puede enviar o reemplazar la invitación si fuese necesario.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className={tutorConfirmed ? 'admin-assignment-state is-confirmed' : 'admin-assignment-state'}>{tutorConfirmed ? `Tutor confirmado: ${tutorAssignment?.teacher}` : tutorAssignment ? `Esperando respuesta de ${tutorAssignment.teacher}.` : 'Aún no se propuso un tutor.'}</p><button className="secondary-button" disabled={isSubmitting || !tutorId} type="submit">{tutorAssignment ? 'Cambiar tutor propuesto' : 'Enviar invitación al tutor'}</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · REVISIÓN</p><h2>Asignar revisores</h2></div></div><p>{tutorConfirmed ? 'El tutor aceptó la invitación. Define los dos revisores que participarán en las rondas de evaluación.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">Asignar y notificar revisores</button></form>
           <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>REVISIÓN DEL PERFIL</p><h2>Programar ronda</h2></div></div><p>Envía una versión del perfil a Revisor 1 y Revisor 2 con un único plazo de respuesta.</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label>{detail.profiles[0] && <a className="document-download admin-document-link" href={`/api/admin/documents/${detail.profiles[0].documentId}/download?versionId=${detail.profiles[0].versionId}`}><Icon name="download" />Descargar última versión</a>}<label className="form-field"><span>Fecha límite <b>*</b></span><input disabled={isSubmitting} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setReviewDeadline(event.target.value)} type="date" value={reviewDeadline} /></label><button className="primary-button" disabled={isSubmitting || detail.profiles.length === 0} type="submit">Iniciar revisión</button></form>
         </div>}
 

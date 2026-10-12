@@ -823,6 +823,7 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
      JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
      JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id AND user_account.activo
      WHERE r.ronda_revision_id = $1
+       AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
      ORDER BY a.tipo
      FOR UPDATE OF r, a`,
     [previousRound.id],
@@ -2455,12 +2456,9 @@ app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, asyn
   try {
     const { projectId } = request.params
     const tutorId = text(request.body?.tutorId)
-    const reviewer1Id = text(request.body?.reviewer1Id)
-    const reviewer2Id = text(request.body?.reviewer2Id)
-    if (!isUuid(projectId) || !isUuid(tutorId) || !isUuid(reviewer1Id) || !isUuid(reviewer2Id)) {
-      return response.status(422).json({ message: 'Selecciona un tutor y los dos revisores del proyecto.' })
+    if (!isUuid(projectId) || !isUuid(tutorId)) {
+      return response.status(422).json({ message: 'Selecciona un tutor válido para el proyecto.' })
     }
-    if (reviewer1Id === reviewer2Id) return response.status(422).json({ message: 'Revisor 1 y Revisor 2 deben ser docentes diferentes.' })
 
     await databaseClient.query('BEGIN')
     const project = await lockedProject(databaseClient, projectId)
@@ -2473,29 +2471,92 @@ app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, asyn
       return response.status(409).json({ message: 'No puedes cambiar responsables en un proyecto cerrado.' })
     }
 
-    const [tutor, reviewer1, reviewer2] = await Promise.all([
-      staffWithRole(databaseClient, { teacherId: tutorId, careerId: project.carrera_id, roleCode: 'TUTOR' }),
+    const tutor = await staffWithRole(databaseClient, { teacherId: tutorId, careerId: project.carrera_id, roleCode: 'TUTOR' })
+    if (!tutor) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'El tutor debe estar activo y habilitado en la carrera del proyecto.' })
+    }
+
+    const change = await replaceProjectAssignment(databaseClient, { project, type: 'TUTOR', staff: tutor, assignedByUserId: request.session.usuario_id })
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'ASIGNAR_TUTOR',
+      entity: 'asignaciones_proyecto',
+      detail: { tutorId, changed: change.changed },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: change.changed ? 'Se envió la invitación al tutor. Podrás asignar revisores cuando la acepte.' : 'El tutor ya tiene una invitación o tutoría activa para este proyecto.', changed: Number(change.changed) })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const reviewer1Id = text(request.body?.reviewer1Id)
+    const reviewer2Id = text(request.body?.reviewer2Id)
+    if (!isUuid(projectId) || !isUuid(reviewer1Id) || !isUuid(reviewer2Id)) {
+      return response.status(422).json({ message: 'Selecciona los dos revisores del proyecto.' })
+    }
+    if (reviewer1Id === reviewer2Id) return response.status(422).json({ message: 'Revisor 1 y Revisor 2 deben ser docentes diferentes.' })
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes asignar revisores en un proyecto cerrado.' })
+    }
+
+    const tutorAssignment = await databaseClient.query(
+      `SELECT docente_id
+       FROM titulacion.asignaciones_proyecto
+       WHERE proyecto_id = $1
+         AND tipo = 'TUTOR'
+         AND activo
+         AND respondida_en IS NOT NULL
+         AND fecha_fin IS NULL
+       FOR UPDATE`,
+      [projectId],
+    )
+    if (!tutorAssignment.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Espera a que el tutor propuesto acepte la invitación antes de asignar revisores.' })
+    }
+    if ([reviewer1Id, reviewer2Id].includes(tutorAssignment.rows[0].docente_id)) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'El tutor confirmado no puede ocupar una de las dos plazas de revisor.' })
+    }
+
+    const [reviewer1, reviewer2] = await Promise.all([
       staffWithRole(databaseClient, { teacherId: reviewer1Id, careerId: project.carrera_id, roleCode: 'REVISOR' }),
       staffWithRole(databaseClient, { teacherId: reviewer2Id, careerId: project.carrera_id, roleCode: 'REVISOR' }),
     ])
-    if (!tutor || !reviewer1 || !reviewer2) {
+    if (!reviewer1 || !reviewer2) {
       await databaseClient.query('ROLLBACK')
-      return response.status(422).json({ message: 'Los responsables seleccionados deben estar activos y habilitados en la carrera del proyecto.' })
+      return response.status(422).json({ message: 'Los revisores deben estar activos y habilitados en la carrera del proyecto.' })
     }
 
     const changes = await Promise.all([
-      replaceProjectAssignment(databaseClient, { project, type: 'TUTOR', staff: tutor, assignedByUserId: request.session.usuario_id }),
       replaceProjectAssignment(databaseClient, { project, type: 'REVISOR_1', staff: reviewer1, assignedByUserId: request.session.usuario_id }),
       replaceProjectAssignment(databaseClient, { project, type: 'REVISOR_2', staff: reviewer2, assignedByUserId: request.session.usuario_id }),
     ])
     await recordAudit(databaseClient, request.session, {
       projectId,
-      action: 'ASIGNAR_RESPONSABLES',
+      action: 'ASIGNAR_REVISORES',
       entity: 'asignaciones_proyecto',
-      detail: { tutorId, reviewer1Id, reviewer2Id, changed: changes.filter((item) => item.changed).length },
+      detail: { reviewer1Id, reviewer2Id, changed: changes.filter((item) => item.changed).length },
     })
     await databaseClient.query('COMMIT')
-    return response.json({ message: 'Los responsables del proyecto fueron actualizados.', changed: changes.filter((item) => item.changed).length })
+    return response.json({ message: 'Revisor 1 y Revisor 2 fueron asignados y notificados.', changed: changes.filter((item) => item.changed).length })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -3011,6 +3072,27 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
         : `El tutor declinó la tutoría de tu proyecto ${selected.codigo_seguimiento}. Motivo: ${reason}`,
       link: '/student',
     })
+    if (accepted) {
+      const administrators = await databaseClient.query(
+        `SELECT DISTINCT u.id AS usuario_id, u.correo
+         FROM titulacion.usuarios u
+         JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+         JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = 'ADMINISTRADOR'
+         WHERE u.activo`,
+      )
+      for (const administrator of administrators.rows) {
+        await createNotification(databaseClient, {
+          userId: administrator.usuario_id,
+          recipientEmail: administrator.correo,
+          projectId: selected.proyecto_id,
+          type: 'TUTOR_CONFIRMADO_PENDIENTE_REVISORES',
+          title: 'Tutor confirmado: asigna los revisores',
+          message: `El tutor aceptó el proyecto ${selected.codigo_seguimiento}. Ya puedes asignar Revisor 1 y Revisor 2.`,
+          link: '/admin',
+          queueEmail: true,
+        })
+      }
+    }
     await databaseClient.query('COMMIT')
     return response.json({
       message: accepted ? 'Aceptaste la tutoría. El proyecto ya está disponible en Mis proyectos.' : 'Declinaste la tutoría. Administración podrá reasignar el proyecto.',
@@ -3076,7 +3158,38 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
     const hasObservations = roundDecisions.rows.some((item) => item.decision === 'OBSERVADO' || item.decision === 'RECHAZADO')
     const catalog = await databaseClient.query(`SELECT (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id, (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`, [hasObservations ? 'OBSERVADO' : isPublicDefense ? 'APROBADO_INSTITUCIONAL' : isPrivateDefense ? 'EN_DOCUMENTO_PUBLICO' : 'EN_DOCUMENTO_PRIVADO', hasObservations ? (isPublicDefense ? 'DOCUMENTO_PUBLICO' : isPrivateDefense ? 'DOCUMENTO_PRIVADO' : 'REGISTRO') : isPublicDefense ? 'DOCUMENTO_PUBLICO' : isPrivateDefense ? 'DOCUMENTO_PUBLICO' : 'DOCUMENTO_PRIVADO'])
     await databaseClient.query(`UPDATE titulacion.rondas_revision SET cerrada_en=now() WHERE id=$1`, [project.round_id])
+    if (!hasObservations) {
+      await databaseClient.query(
+        `UPDATE titulacion.observaciones o
+         SET estado = 'CERRADA', cerrada_por_usuario_id = $1, cerrada_en = now()
+         WHERE o.version_documento_respuesta_id = (
+           SELECT version_documento_id FROM titulacion.rondas_revision WHERE id = $2
+         )
+           AND o.estado = 'RESPONDIDA'`,
+        [request.session.usuario_id, project.round_id],
+      )
+    }
     await recordProjectStatus(databaseClient, { projectId, previousStateId: project.estado_actual_id, nextStateId: catalog.rows[0].state_id, previousPhaseId: project.fase_actual_id, nextPhaseId: catalog.rows[0].phase_id, userId: request.session.usuario_id, reason: hasObservations ? 'Perfil devuelto con observaciones del tutor o de los revisores.' : 'Perfil aprobado sin observaciones por tutor y revisores.' })
+    if (hasObservations) {
+      const students = await databaseClient.query(
+        `SELECT u.id AS usuario_id, u.correo
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id AND u.activo
+         WHERE pe.proyecto_id = $1 AND pe.activo`,
+        [projectId],
+      )
+      for (const student of students.rows) await createNotification(databaseClient, {
+        userId: student.usuario_id,
+        recipientEmail: student.correo,
+        projectId,
+        type: 'REVISION_DEVUELTA',
+        title: 'Documento devuelto con observaciones',
+        message: `El documento ${project.codigo_seguimiento} recibió observaciones. Revísalas y adjunta una nueva versión.`,
+        link: '/documentos',
+        queueEmail: true,
+      })
+    }
     if (!hasObservations && !isPrivateDefense && !isPublicDefense) {
       await ensurePrivateDefenseDocument(databaseClient, { projectId, title: project.titulo_tentativo, createdByUserId: request.session.usuario_id })
       const students = await databaseClient.query(
