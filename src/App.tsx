@@ -79,6 +79,10 @@ type TutorAssignment = {
   respondedAt: string | null
   deadline: string | null
   profile: { documentId: string; versionId: string | null; filename: string | null; version: number | null; uploadedAt: string | null } | null
+  reviewId: string | null
+  reviewDecision: 'PENDIENTE' | 'APROBADO' | 'OBSERVADO' | 'RECHAZADO' | null
+  reviewDeadline: string | null
+  canReviewProfile: boolean
 }
 type AppNotification = {
   id: string
@@ -248,6 +252,7 @@ type Bootstrap = {
   tutors: Tutor[]
   project: Project | null
   rejectionReasons: ProjectRejectionReason[]
+  reviewProgress: { type: 'TUTOR' | 'REVISOR_1' | 'REVISOR_2'; decision: string }[]
 }
 type DocumentVersion = {
   id: string
@@ -745,11 +750,12 @@ function projectStatusPresentation(statusCode: string) {
   return { tone: 'pending', label: 'Pendiente de revisión', message: 'Tu perfil está en espera de la revisión académica correspondiente.' }
 }
 
-function ExistingProject({ project, message, rejectionReasons }: { project: Project; message: string; rejectionReasons: ProjectRejectionReason[] }) {
+function ExistingProject({ project, message, rejectionReasons, reviewProgress }: { project: Project; message: string; rejectionReasons: ProjectRejectionReason[]; reviewProgress: Bootstrap['reviewProgress'] }) {
   const status = projectStatusPresentation(project.statusCode)
+  const pending = reviewProgress.filter((item) => item.decision === 'PENDIENTE').map((item) => item.type === 'TUTOR' ? 'Revision del tutor' : item.type === 'REVISOR_1' ? 'Revision del Revisor 1' : 'Revision del Revisor 2')
   return (
     <>
-      <section className={`student-callout project-status-callout is-${status.tone}`}><Icon name="check" /><div><span className="project-status-badge">{status.label}</span><strong>{status.label}</strong><p>{message || status.message}</p></div></section>
+      <section className={`student-callout project-status-callout is-${status.tone}`}><Icon name="check" /><div><span className="project-status-badge">{status.label}</span><strong>{status.label}</strong><p>{message || status.message}{pending.length > 0 ? ` Falta: ${pending.join(', ')}.` : ''}</p></div></section>
       <section className="form-section project-summary">
         <div className="section-heading"><span>F1</span><div><h2>{project.title}</h2><p>Código de seguimiento: <strong>{project.code}</strong></p></div></div>
         <div className="project-summary-grid">
@@ -884,7 +890,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
           <div className="breadcrumb">Inicio <span>/</span> Mi proyecto <span>/</span> Formulario 1</div>
           <div className="student-title-row"><div><p className="eyebrow">Fase 1 · Perfil</p><h1>{data.project ? 'Mi proyecto' : 'Registra tu proyecto'}</h1><p>{data.project ? 'Consulta la información registrada y el estado actual de tu proceso.' : 'Completa el Formulario 1 con la información inicial de tu propuesta de titulación.'}</p></div>{!data.project && <div className="form-progress"><span>Progreso del formulario</span><strong>0%</strong><div><i /></div></div>}</div>
 
-          {data.project ? <ExistingProject message={message} project={data.project} rejectionReasons={data.rejectionReasons} /> : (
+          {data.project ? <ExistingProject message={message} project={data.project} rejectionReasons={data.rejectionReasons} reviewProgress={data.reviewProgress} /> : (
             <>
               <section className="student-callout"><Icon name="check" /><div><strong>Antes de comenzar</strong><p>Ten a mano el título tentativo, los objetivos del proyecto y el perfil en formato Word.</p></div></section>
               <form className="project-form" onSubmit={handleSubmit} noValidate>
@@ -1215,6 +1221,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
   }
 
   function projectCard(project: TutorAssignment) {
+    if (project.canReviewProfile) project.statusCode = 'PENDIENTE_APROBACION'
     return <article className="tutor-card tutor-project-card" key={project.id}>
       <div className="tutor-card-top"><span className="tutor-code">{project.code}</span><span className="assignment-status confirmed">Tutoría confirmada</span></div>
       <h2>{project.title}</h2>
@@ -1248,6 +1255,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
         <div className="breadcrumb">Portal del tutor <span>/</span> {heading}</div>
         <div className="student-title-row tutor-title"><div><p className="eyebrow">Acompañamiento académico</p><h1>{heading}</h1><p>{copy}</p></div>{view !== 'notifications' && <button className="notification-summary" onClick={() => setView('notifications')} type="button"><Icon name="bell" /><span><small>Notificaciones sin leer</small><strong>{data.unreadCount}</strong></span></button>}</div>
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
+        {selectedEvaluation?.canReviewProfile && <p className="eyebrow">REVISION DEL PERFIL COMO TUTOR</p>}
 
         {selectedEvaluation && <section className="reviewer-workspace"><button className="text-button reviewer-back" onClick={() => setSelectedEvaluation(null)} type="button">← Volver a mis proyectos</button><div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedEvaluation.code}</span><h2>Evaluación final del tutor</h2><p>{selectedEvaluation.title}</p></div></div><section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 2</p><h2>Formato, forma y fondo</h2></div></div><section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`tutor-format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section><section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{backgroundCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`tutor-background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section><label className="form-field"><span>Observaciones</span><textarea disabled={isSubmitting} onChange={(event) => setEvaluationObservations(event.target.value)} placeholder="Una observación por línea si devuelves el perfil." rows={4} value={evaluationObservations} /></label><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitEvaluation('APROBADO')} type="button"><Icon name="check" />Aprobar sin observaciones</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitEvaluation('OBSERVADO')} type="button">Devolver con observaciones <Icon name="arrow" /></button></div></section></section>}
 

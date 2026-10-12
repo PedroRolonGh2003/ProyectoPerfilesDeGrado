@@ -620,6 +620,20 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
   if (activeReviewers.length !== 2 || new Set(activeReviewers.map((reviewer) => reviewer.tipo)).size !== 2) {
     return { scheduled: false, reason: 'reviewers-unavailable' }
   }
+  const tutorResult = await databaseClient.query(
+    `SELECT a.id AS asignacion_proyecto_id, a.tipo, teacher.usuario_id, user_account.correo
+     FROM titulacion.asignaciones_proyecto a
+     JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
+     JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id AND user_account.activo
+     WHERE a.proyecto_id = $1 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL
+     ORDER BY a.fecha_asignacion DESC
+     LIMIT 1
+     FOR UPDATE OF a`,
+    [project.id],
+  )
+  const activeTutor = tutorResult.rows[0]
+  if (!activeTutor) return { scheduled: false, reason: 'tutor-unavailable' }
+  const reviewParticipants = [...activeReviewers, activeTutor]
 
   const openRound = await databaseClient.query(
     `SELECT rr.id
@@ -653,22 +667,22 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
   await databaseClient.query(
     `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
      SELECT $1, unnest($2::uuid[])`,
-    [round.rows[0].id, activeReviewers.map((reviewer) => reviewer.asignacion_proyecto_id)],
+    [round.rows[0].id, reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id)],
   )
   await databaseClient.query(
     `UPDATE titulacion.asignaciones_proyecto
      SET fecha_limite = $2
      WHERE id = ANY($1::uuid[])`,
-    [activeReviewers.map((reviewer) => reviewer.asignacion_proyecto_id), deadline],
+    [reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id), deadline],
   )
-  for (const reviewer of activeReviewers) {
+  for (const reviewer of reviewParticipants) {
     await createNotification(databaseClient, {
       userId: reviewer.usuario_id,
       projectId: project.id,
       type: 'CORRECCION_PENDIENTE_REVISION',
       title: 'Corrección pendiente de revisión',
       message: `El estudiante adjuntó la versión V${versionNumber} corregida del perfil ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
-      link: '/revisor',
+      link: reviewer.tipo === 'TUTOR' ? '/tutor' : '/revisor',
     })
   }
   await recordProjectStatus(databaseClient, {
@@ -685,7 +699,7 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
     action: 'REENVIAR_CORRECCION_A_REVISION',
     entity: 'rondas_revision',
     entityId: round.rows[0].id,
-    detail: { previousRoundId: previousRound.id, versionId, deadline: deadline.toISOString(), reviewerAssignments: activeReviewers.map((reviewer) => reviewer.asignacion_proyecto_id) },
+    detail: { previousRoundId: previousRound.id, versionId, deadline: deadline.toISOString(), reviewAssignments: reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id) },
   })
   return { scheduled: true, roundId: round.rows[0].id, deadline }
 }
@@ -2317,14 +2331,14 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
        FROM titulacion.asignaciones_proyecto a
        JOIN titulacion.docentes d ON d.id = a.docente_id
        JOIN titulacion.usuarios u ON u.id = d.usuario_id
-       WHERE a.proyecto_id = $1 AND a.activo AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+       WHERE a.proyecto_id = $1 AND a.activo AND a.tipo IN ('TUTOR', 'REVISOR_1', 'REVISOR_2')
        ORDER BY a.tipo
        FOR UPDATE`,
       [projectId],
     )
-    if (reviewers.rows.length !== 2 || new Set(reviewers.rows.map((item) => item.tipo)).size !== 2) {
+    if (reviewers.rows.length !== 3 || new Set(reviewers.rows.map((item) => item.tipo)).size !== 3) {
       await databaseClient.query('ROLLBACK')
-      return response.status(422).json({ message: 'Asigna a Revisor 1 y Revisor 2 antes de enviar el perfil a revisión.' })
+      return response.status(422).json({ message: 'Asigna y confirma un tutor, Revisor 1 y Revisor 2 antes de enviar el perfil a revisión.' })
     }
 
     const openRound = await databaseClient.query(
@@ -2375,10 +2389,10 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
       await createNotification(databaseClient, {
         userId: reviewer.usuario_id,
         projectId,
-        type: 'REVISION_ASIGNADA',
+        type: reviewer.tipo === 'TUTOR' ? 'REVISION_TUTOR_ASIGNADA' : 'REVISION_ASIGNADA',
         title: 'Perfil pendiente de revisión',
         message: `El perfil ${project.codigo_seguimiento} fue enviado a revisión. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
-        link: '/revisor',
+        link: reviewer.tipo === 'TUTOR' ? '/tutor' : '/revisor',
       })
     }
     await recordProjectStatus(databaseClient, {
@@ -2574,7 +2588,9 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
              f.nombre AS fase_nombre, ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
              students.nombres_estudiantes, students.registros_estudiantes,
              profile.documento_id, profile.version_id, profile.nombre_archivo,
-             profile.numero_version, profile.subida_en
+             profile.numero_version, profile.subida_en,
+             current_review.revision_id, current_review.decision AS review_decision,
+             current_review.fecha_limite AS review_deadline
       FROM titulacion.asignaciones_proyecto a
       JOIN titulacion.proyectos p ON p.id = a.proyecto_id
       JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -2604,6 +2620,16 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
         ORDER BY d.creado_en DESC
         LIMIT 1
       ) profile ON true
+      LEFT JOIN LATERAL (
+        SELECT r.id AS revision_id, r.decision, rr.fecha_limite
+        FROM titulacion.rondas_revision rr
+        JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+        JOIN titulacion.documentos d ON d.id = vd.documento_id AND d.tipo_documento = 'PERFIL_PROYECTO'
+        JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id AND r.asignacion_proyecto_id = a.id
+        WHERE d.proyecto_id = p.id AND rr.cerrada_en IS NULL
+        ORDER BY rr.numero_ronda DESC
+        LIMIT 1
+      ) current_review ON true
       WHERE a.docente_id = $1 AND a.tipo = 'TUTOR'`
 
     const [invitations, projects, notifications, unread] = await Promise.all([
@@ -2649,6 +2675,10 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
         version: assignment.numero_version,
         uploadedAt: assignment.subida_en,
       } : null,
+      reviewId: assignment.revision_id,
+      reviewDecision: assignment.review_decision,
+      reviewDeadline: assignment.review_deadline,
+      canReviewProfile: assignment.review_decision === 'PENDIENTE',
     })
 
     return response.json({
@@ -2773,16 +2803,28 @@ app.post('/api/tutor/projects/:projectId/formulario2', requireTutor, async (requ
       `SELECT a.id AS assignment_id, p.id AS project_id, p.codigo_seguimiento, p.estado_actual_id, p.fase_actual_id,
               (SELECT rr.id FROM titulacion.rondas_revision rr JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id JOIN titulacion.documentos d ON d.id = vd.documento_id WHERE d.proyecto_id = p.id ORDER BY rr.numero_ronda DESC LIMIT 1) AS round_id
        FROM titulacion.asignaciones_proyecto a JOIN titulacion.proyectos p ON p.id = a.proyecto_id JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
-       WHERE a.proyecto_id = $1 AND a.docente_id = $2 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL AND ep.codigo = 'PENDIENTE_APROBACION'
+       WHERE a.proyecto_id = $1 AND a.docente_id = $2 AND a.tipo = 'TUTOR' AND a.activo AND a.fecha_fin IS NULL AND ep.codigo IN ('EN_REVISION', 'PENDIENTE_APROBACION')
        FOR UPDATE OF a, p`, [projectId, request.session.docente_id])
     const project = selected.rows[0]
     if (!project?.round_id) { await databaseClient.query('ROLLBACK'); return response.status(409).json({ message: 'Este proyecto aún no está listo para la aprobación final del tutor.' }) }
-    const prior = await databaseClient.query(`SELECT id FROM titulacion.revisiones WHERE ronda_revision_id = $1 AND asignacion_proyecto_id = $2`, [project.round_id, project.assignment_id])
+    const prior = await databaseClient.query(`SELECT id, decision FROM titulacion.revisiones WHERE ronda_revision_id = $1 AND asignacion_proyecto_id = $2 FOR UPDATE`, [project.round_id, project.assignment_id])
+    const pendingTutorReviewId = prior.rows[0]?.decision === 'PENDIENTE' ? prior.rows[0].id : null
+    if (pendingTutorReviewId) prior.rows.length = 0
     if (prior.rows[0]) { await databaseClient.query('ROLLBACK'); return response.status(409).json({ message: 'Ya registraste tu evaluación final para este proyecto.' }) }
-    const review = await databaseClient.query(`INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id, decision, comentario_general, criterios_formato, criterios_fondo, decidida_en) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, now()) RETURNING id`, [project.round_id, project.assignment_id, decision, generalComment || null, JSON.stringify(formatCriteria), JSON.stringify(backgroundCriteria)])
+    const review = pendingTutorReviewId
+      ? await databaseClient.query(`UPDATE titulacion.revisiones SET decision=$2, comentario_general=$3, criterios_formato=$4::jsonb, criterios_fondo=$5::jsonb, decidida_en=now() WHERE id=$1 RETURNING id`, [pendingTutorReviewId, decision, generalComment || null, JSON.stringify(formatCriteria), JSON.stringify(backgroundCriteria)])
+      : await databaseClient.query(`INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id, decision, comentario_general, criterios_formato, criterios_fondo, decidida_en) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, now()) RETURNING id`, [project.round_id, project.assignment_id, decision, generalComment || null, JSON.stringify(formatCriteria), JSON.stringify(backgroundCriteria)])
     if (decision === 'OBSERVADO') for (const [index, detail] of observations.entries()) await databaseClient.query(`INSERT INTO titulacion.observaciones (revision_id, numero, detalle) VALUES ($1, $2, $3)`, [review.rows[0].id, index + 1, detail])
-    const catalog = await databaseClient.query(`SELECT (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id, (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`, [decision === 'APROBADO' ? 'APROBADO_TECNICO' : 'OBSERVADO', decision === 'APROBADO' ? 'APROBACION_PERFIL' : 'REGISTRO'])
-    await recordProjectStatus(databaseClient, { projectId, previousStateId: project.estado_actual_id, nextStateId: catalog.rows[0].state_id, previousPhaseId: project.fase_actual_id, nextPhaseId: catalog.rows[0].phase_id, userId: request.session.usuario_id, reason: decision === 'APROBADO' ? 'Perfil aprobado sin observaciones por tutor y revisores.' : 'Perfil devuelto con observaciones por el tutor.' })
+    const pending = await databaseClient.query(`SELECT count(*)::int AS total FROM titulacion.revisiones WHERE ronda_revision_id=$1 AND decision='PENDIENTE'`, [project.round_id])
+    if (pending.rows[0].total > 0) {
+      await databaseClient.query('COMMIT')
+      return response.json({ message: 'Revision del tutor registrada. Aun faltan dictamenes de los revisores.', roundCompleted: false })
+    }
+    const roundDecisions = await databaseClient.query(`SELECT decision FROM titulacion.revisiones WHERE ronda_revision_id=$1`, [project.round_id])
+    const hasObservations = roundDecisions.rows.some((item) => item.decision === 'OBSERVADO' || item.decision === 'RECHAZADO')
+    const catalog = await databaseClient.query(`SELECT (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id, (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`, [hasObservations ? 'OBSERVADO' : 'APROBADO_TECNICO', hasObservations ? 'REGISTRO' : 'APROBACION_PERFIL'])
+    await databaseClient.query(`UPDATE titulacion.rondas_revision SET cerrada_en=now() WHERE id=$1`, [project.round_id])
+    await recordProjectStatus(databaseClient, { projectId, previousStateId: project.estado_actual_id, nextStateId: catalog.rows[0].state_id, previousPhaseId: project.fase_actual_id, nextPhaseId: catalog.rows[0].phase_id, userId: request.session.usuario_id, reason: hasObservations ? 'Perfil devuelto con observaciones del tutor o de los revisores.' : 'Perfil aprobado sin observaciones por tutor y revisores.' })
     await databaseClient.query('COMMIT')
     return response.json({ message: decision === 'APROBADO' ? 'Perfil aprobado sin observaciones.' : 'Perfil devuelto al estudiante con observaciones.' })
   } catch (error) { if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined); return next(error) } finally { databaseClient?.release() }
@@ -3045,7 +3087,7 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
         `SELECT
            (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id,
            (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`,
-        [hasObservations ? 'OBSERVADO' : 'PENDIENTE_APROBACION', hasObservations ? 'REGISTRO' : 'APROBACION_PERFIL'],
+        [hasObservations ? 'OBSERVADO' : 'APROBADO_TECNICO', hasObservations ? 'REGISTRO' : 'APROBACION_PERFIL'],
       )
       if (!catalog.rows[0].state_id || !catalog.rows[0].phase_id) throw new Error('Faltan catálogos para cerrar la ronda de revisión.')
       await databaseClient.query(
@@ -3207,6 +3249,7 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
     const feedback = projectRow ? await pool.query(
       `SELECT r.id AS revision_id, rr.numero_ronda, source_version.numero_version,
               trim(concat(reviewer.nombres, ' ', reviewer.apellidos)) AS revisor,
+              a.tipo AS assignment_type,
               r.comentario_general, o.numero AS observacion_numero, o.detalle AS observacion_detalle
        FROM titulacion.rondas_revision rr
        JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
@@ -3224,7 +3267,7 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
     const feedbackByReview = new Map()
     for (const row of feedback.rows) {
       const current = feedbackByReview.get(row.revision_id) ?? {
-        reviewer: row.revisor,
+        reviewer: row.assignment_type === 'TUTOR' ? `Revision del tutor: ${row.revisor}` : `${row.assignment_type === 'REVISOR_1' ? 'Revision del Revisor 1' : 'Revision del Revisor 2'}: ${row.revisor}`,
         roundNumber: row.numero_ronda,
         sourceVersion: row.numero_version,
         comment: row.comentario_general,
@@ -3233,6 +3276,26 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
       if (row.observacion_detalle) current.observations.push({ number: row.observacion_numero, detail: row.observacion_detalle })
       feedbackByReview.set(row.revision_id, current)
     }
+    const reviewProgress = projectRow ? await pool.query(
+      `SELECT a.tipo, r.decision
+       FROM titulacion.rondas_revision rr
+       JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+       JOIN titulacion.documentos d ON d.id = vd.documento_id
+       JOIN titulacion.revisiones r ON r.ronda_revision_id = rr.id
+       JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+       WHERE d.proyecto_id = $1
+         AND rr.id = (
+           SELECT latest.id
+           FROM titulacion.rondas_revision latest
+           JOIN titulacion.versiones_documento latest_version ON latest_version.id = latest.version_documento_id
+           JOIN titulacion.documentos latest_document ON latest_document.id = latest_version.documento_id
+           WHERE latest_document.proyecto_id = $1
+           ORDER BY latest.numero_ronda DESC
+           LIMIT 1
+         )
+       ORDER BY a.tipo`,
+      [projectRow.id],
+    ) : { rows: [] }
 
     return response.json({
       user: sanitizeUser(session),
@@ -3241,6 +3304,7 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
       tutors: tutors.rows.map((tutor) => ({ id: tutor.id, name: `${tutor.nombres} ${tutor.apellidos}`.trim() })),
       project: projectPayload(projectRow),
       rejectionReasons: [...feedbackByReview.values()],
+      reviewProgress: reviewProgress.rows.map((item) => ({ type: item.tipo, decision: item.decision })),
     })
   } catch (error) {
     return next(error)
