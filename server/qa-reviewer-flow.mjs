@@ -209,10 +209,9 @@ try {
     method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: cookies.admin },
     body: JSON.stringify({ reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }),
   }), 200, 'Asignación administrativa de revisores')
-  const deadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString().slice(0, 10)
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookies.admin },
-    body: JSON.stringify({ versionId, deadline }),
+    body: JSON.stringify({ versionId }),
   }), 201, 'Creación de ronda de revisión')
 
   const dashboardResponse = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: cookies.reviewer1 } }), 200, 'Carga de bandeja de revisor')

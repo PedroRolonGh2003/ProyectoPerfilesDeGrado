@@ -85,11 +85,9 @@ type TutorAssignment = {
   registrations: string
   requestedAt: string
   respondedAt: string | null
-  deadline: string | null
   profile: { documentId: string; type: string; versionId: string | null; filename: string | null; version: number | null; uploadedAt: string | null } | null
   reviewId: string | null
   reviewDecision: 'PENDIENTE' | 'APROBADO' | 'OBSERVADO' | 'RECHAZADO' | null
-  reviewDeadline: string | null
   reviewDocumentType?: string | null
   canReviewProfile: boolean
   teamReviews: ReviewParticipant[]
@@ -132,7 +130,6 @@ type ReviewerReview = {
   registrations: string
   roundNumber: number
   requestedAt: string
-  deadline: string
   closedAt: string | null
   decision: 'PENDIENTE' | 'APROBADO' | 'OBSERVADO' | 'RECHAZADO'
   generalComment: string | null
@@ -144,7 +141,7 @@ type ReviewerReview = {
 }
 type ReviewerDashboard = {
   user: ReviewerUser
-  summary: { pending: number; overdue: number; completed: number }
+  summary: { pending: number; completed: number }
   pendingReviews: ReviewerReview[]
   completedReviews: ReviewerReview[]
   notifications: AppNotification[]
@@ -165,16 +162,14 @@ type AdminProject = {
   status: string
   isFinal: boolean
   registeredAt: string
-  reviewDeadline: string | null
   pendingReviews: number
-  isOverdue: boolean
   reviewerCount: number
   reviewRoundCount: number
   canStartInitialReview: boolean
 }
 type AdminDashboard = {
   user: AdministratorUser
-  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number; pendingReviewStarts: number; newTeachers: number }
+  summary: { total: number; registered: number; inReview: number; observed: number; pendingReviewStarts: number; newTeachers: number }
   statuses: { code: string; name: string }[]
   projects: AdminProject[]
   pendingReviewStarts: AdminProject[]
@@ -221,18 +216,17 @@ type AdminAssignment = {
   teacher: string
   email: string
   assignedAt: string
-  deadline: string | null
   finishedAt: string | null
   respondedAt: string | null
   reason: string | null
 }
 type AdminProjectDetail = {
-  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'reviewDeadline' | 'pendingReviews' | 'isOverdue' | 'reviewRoundCount' | 'canStartInitialReview'> & { description: string; generalObjective: string }
+  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'pendingReviews' | 'reviewRoundCount' | 'canStartInitialReview'> & { description: string; generalObjective: string }
   students: { name: string; registration: string }[]
   staff: AdminStaff[]
   assignments: AdminAssignment[]
   profiles: { documentId: string; versionId: string; version: number; filename: string; uploadedAt: string; size: number }[]
-  rounds: { id: string; number: number; version: number; requestedAt: string; deadline: string; closedAt: string | null; reviews: { id: string; decision: string; decidedAt: string | null; comment: string | null; assignmentType: string; reviewer: string; openObservations: number }[] }[]
+  rounds: { id: string; number: number; version: number; requestedAt: string; closedAt: string | null; reviews: { id: string; decision: string; decidedAt: string | null; comment: string | null; assignmentType: string; reviewer: string; openObservations: number }[] }[]
   statuses: { code: string; name: string }[]
   phases: { code: string; name: string }[]
   cancellation: { reason: string; detail: string; cancelledAt: string } | null
@@ -1528,15 +1522,14 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   }
 
   function reviewCard(review: ReviewerReview, showAction = true) {
-    const isOverdue = review.canSubmit && new Date(review.deadline) < new Date()
     const isObserved = review.decision === 'OBSERVADO'
-    return <article className={isOverdue ? 'reviewer-card is-overdue' : 'reviewer-card'} key={review.id}>
+    return <article className="reviewer-card" key={review.id}>
       <div className="reviewer-card-top"><div><span className="tutor-code">{review.code}</span><span className="reviewer-round">Ronda {review.roundNumber} · {review.assignmentType === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'}</span></div><span className={`reviewer-decision decision-${review.decision.toLowerCase()}`}>{decisionLabel(review.decision)}</span></div>
       <h2>{review.title}</h2>
       <p className="tutor-card-description">{review.description}</p>
       <ReviewProgress reviews={review.teamReviews} />
       <div className="tutor-project-meta"><span><Icon name="user" />{review.students}</span><span><Icon name="clipboard" />{review.modality}</span><span><Icon name="check" />{review.phase} · {review.status}</span></div>
-      <div className="reviewer-card-info"><div><small>Entrega de revisión</small><strong className={isOverdue ? 'is-overdue' : ''}>{formatDate(review.deadline)}{isOverdue ? ' · Vencida' : ''}</strong></div><div><small>Perfil asignado</small><a className="document-download reviewer-document-link" href={`/api/reviewer/documents/${review.profile.documentId}/download?version=${review.profile.versionId}`}><Icon name="download" />V{review.profile.version} · Descargar</a></div></div>
+      <div className="reviewer-card-info"><div><small>Revisión habilitada</small><strong>{formatDate(review.requestedAt)}</strong></div><div><small>Perfil asignado</small><a className="document-download reviewer-document-link" href={`/api/reviewer/documents/${review.profile.documentId}/download?version=${review.profile.versionId}`}><Icon name="download" />V{review.profile.version} · Descargar</a></div></div>
       {review.decision !== 'PENDIENTE' && <div className={isObserved ? 'reviewer-result is-observed' : 'reviewer-result'}><strong>{isObserved ? `${review.observations.length} observación${review.observations.length === 1 ? '' : 'es'} registrada${review.observations.length === 1 ? '' : 's'}` : 'Dictamen emitido sin observaciones'}</strong>{review.generalComment && <p>{review.generalComment}</p>}</div>}
       {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />{review.profile.type === 'DOCUMENTO_PUBLICO' ? 'Evaluar defensa pública' : review.profile.type === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Revisar perfil'}</button></div>}
     </article>
@@ -1547,9 +1540,9 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   const copy = selectedReview
     ? 'Revisa el perfil asignado y registra un dictamen definitivo para esta ronda.'
     : view === 'home'
-      ? 'Organiza tus revisiones de perfil y mantente al tanto de los plazos.'
+      ? 'Organiza tus revisiones de perfil y mantente al tanto de las solicitudes pendientes.'
       : view === 'pending'
-        ? 'Cada perfil debe recibir un dictamen antes de la fecha límite indicada.'
+        ? 'Cada perfil pendiente requiere tu dictamen.'
       : view === 'completed'
         ? 'Consulta el estado de los proyectos que revisaste y los dictámenes pendientes de tus compañeros.'
           : 'Mantente al tanto de las asignaciones y cambios de tus revisiones.'
@@ -1580,7 +1573,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
         {selectedReview && <section className="reviewer-workspace">
           <button className="text-button reviewer-back" onClick={closeReview} type="button">← Volver a revisiones pendientes</button>
           <div className="reviewer-workspace-heading"><div><span className="tutor-code">{selectedReview.code}</span><h2>{selectedReview.title}</h2><p>{selectedReview.description}</p></div><span className="reviewer-decision decision-pendiente">Ronda {selectedReview.roundNumber}</span></div>
-          <section className="reviewer-project-context"><div><small>Estudiante(s)</small><strong>{selectedReview.students}</strong><span>{selectedReview.registrations}</span></div><div><small>Objetivo general</small><p>{selectedReview.generalObjective}</p></div><div><small>Fecha límite</small><strong>{formatDate(selectedReview.deadline)}</strong></div></section>
+          <section className="reviewer-project-context"><div><small>Estudiante(s)</small><strong>{selectedReview.students}</strong><span>{selectedReview.registrations}</span></div><div><small>Objetivo general</small><p>{selectedReview.generalObjective}</p></div><div><small>Revisión habilitada</small><strong>{formatDate(selectedReview.requestedAt)}</strong></div></section>
           <section className="reviewer-document-panel"><div><Icon name="file" /><div><small>Documento para revisar</small><strong>{selectedReview.profile.filename}</strong><span>Versión {selectedReview.profile.version} subida el {formatDate(selectedReview.profile.uploadedAt)}</span></div></div><a className="primary-button" href={`/api/reviewer/documents/${selectedReview.profile.documentId}/download?version=${selectedReview.profile.versionId}`}><Icon name="download" />Descargar perfil</a></section>
           <section className="reviewer-form-card review-matrix-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>{selectedReview.profile.type === 'DOCUMENTO_PRIVADO' ? 'FORMULARIO 3' : 'FORMULARIO 2'}</p><h2>{selectedReview.profile.type === 'DOCUMENTO_PRIVADO' ? 'Revisión antes de defensa privada' : 'Formato, forma y fondo'}</h2></div></div><p>Completa los criterios establecidos antes de emitir tu dictamen.</p>{selectedReview.profile.type !== 'DOCUMENTO_PRIVADO' && <section className="review-matrix"><h3>Formato y forma <b>*</b></h3>{formatCriteria.map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['SI', 'NO'] as const).map((value) => <label key={value}><input checked={formatRatings[code] === value} disabled={isSubmitting} name={`format-${code}`} onChange={() => setFormatRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value === 'SI' ? 'Sí' : 'No'}</label>)}</div></div>)}</section>}<section className="review-matrix"><h3>Observaciones de fondo <b>*</b></h3>{(selectedReview.profile.type === 'DOCUMENTO_PRIVADO' ? privateDefenseCriteria : backgroundCriteria).map(([code, label]) => <div className="matrix-row" key={code}><span>{label}</span><div>{(['MALO', 'REGULAR', 'BUENO'] as const).map((value) => <label key={value}><input checked={backgroundRatings[code] === value} disabled={isSubmitting} name={`background-${code}`} onChange={() => setBackgroundRatings((current) => ({ ...current, [code]: value }))} type="radio" value={value} />{value[0]}{value.slice(1).toLowerCase()}</label>)}</div></div>)}</section></section>
           <section className="reviewer-form-card"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>DICTAMEN DE REVISIÓN</p><h2>Registra tu evaluación</h2></div></div><p>Tu dictamen no podrá modificarse después de guardarlo. La ronda se cerrará cuando ambos revisores hayan respondido.</p><label className="form-field"><span>Comentario general</span><textarea disabled={isSubmitting} onChange={(event) => setGeneralComment(event.target.value)} placeholder="Resume los aspectos principales de tu revisión." rows={3} value={generalComment} /></label><div className="reviewer-observations"><div><strong>Observaciones puntuales</strong><small>Son obligatorias solo si devuelves el perfil.</small></div>{observationDrafts.map((observation, index) => <div className="reviewer-observation-row" key={index}><span>{index + 1}</span><textarea aria-label={`Observación ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObservation(index, event.target.value)} placeholder="Indica con claridad qué debe corregirse." rows={2} value={observation} />{observationDrafts.length > 1 && <button aria-label={`Eliminar observación ${index + 1}`} className="icon-button" disabled={isSubmitting} onClick={() => removeObservation(index)} type="button"><Icon name="trash" /></button>}</div>)}<button className="text-button" disabled={isSubmitting || observationDrafts.length >= 20} onClick={() => setObservationDrafts((current) => [...current, ''])} type="button"><Icon name="plus" />Añadir observación</button></div><div className="reviewer-decision-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => void submitDecision('APROBADO')} type="button"><Icon name="check" />Aprobar perfil</button><button className="primary-button reviewer-observe-button" disabled={isSubmitting} onClick={() => void submitDecision('OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Devolver con observaciones'} <Icon name="arrow" /></button></div></section>
@@ -1588,8 +1581,8 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
 
         {selectedReview?.profile.type === 'DOCUMENTO_PUBLICO' && <section className="reviewer-form-card public-defense-ratification"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>FORMULARIO 4</p><h2>Ratificación para defensa pública</h2></div></div><p>Habiéndose verificado las correcciones sugeridas en la defensa privada, indica si el postulante está facultado para ingresar a defensa pública.</p><div className="review-matrix"><h3>Ratificación <b>*</b></h3><div className="matrix-row"><span>Dictamen</span><div>{(['SI', 'NO', 'PARCIALMENTE'] as const).map((value) => <label key={value}><input checked={publicRatification === value} disabled={isSubmitting} name="reviewer-public-ratification" onChange={() => setPublicRatification(value)} type="radio" />{value === 'SI' ? 'Sí' : value === 'NO' ? 'No' : 'Parcialmente'}</label>)}</div></div></div><label className="form-field"><span>Observación de devolución</span><textarea disabled={isSubmitting} onChange={(event) => updateObservation(0, event.target.value)} placeholder="Obligatoria si marcas No o Parcialmente." rows={3} value={observationDrafts[0] ?? ''} /></label><button className="primary-button" disabled={isSubmitting} onClick={() => void submitDecision(publicRatification === 'SI' ? 'APROBADO' : 'OBSERVADO')} type="button">{isSubmitting ? 'Guardando…' : 'Guardar ratificación'} <Icon name="arrow" /></button></section>}
         {!selectedReview && view === 'home' && <>
-          <section className="tutor-stats reviewer-stats"><div><small>Revisiones pendientes</small><strong>{data.summary.pending}</strong><span>Requieren tu dictamen.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren atención prioritaria.</span></div><div><small>Dictámenes emitidos</small><strong>{data.summary.completed}</strong><span>Historial de tus revisiones.</span></div></section>
-          {data.pendingReviews.length > 0 ? <section className="tutor-section"><div className="tutor-section-heading"><div><h2>Próximas revisiones</h2><p>Descarga el perfil y registra tu dictamen antes del plazo.</p></div><button className="text-button" onClick={() => setView('pending')} type="button">Ver todas</button></div><div className="tutor-cards">{data.pendingReviews.slice(0, 2).map((review) => reviewCard(review))}</div></section> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán aquí y en la campanita.</span></section>}
+          <section className="tutor-stats reviewer-stats"><div><small>Revisiones pendientes</small><strong>{data.summary.pending}</strong><span>Requieren tu dictamen.</span></div><div><small>Dictámenes emitidos</small><strong>{data.summary.completed}</strong><span>Historial de tus revisiones.</span></div></section>
+          {data.pendingReviews.length > 0 ? <section className="tutor-section"><div className="tutor-section-heading"><div><h2>Revisiones pendientes</h2><p>Descarga el perfil y registra tu dictamen.</p></div><button className="text-button" onClick={() => setView('pending')} type="button">Ver todas</button></div><div className="tutor-cards">{data.pendingReviews.slice(0, 2).map((review) => reviewCard(review))}</div></section> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán aquí y en la campanita.</span></section>}
         </>}
         {!selectedReview && view === 'pending' && (data.pendingReviews.length > 0 ? <div className="tutor-cards">{data.pendingReviews.map((review) => reviewCard(review))}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán automáticamente en esta sección.</span></section>)}
         {!selectedReview && view === 'completed' && (data.completedReviews.length > 0 ? <div className="tutor-cards">{data.completedReviews.map((review) => reviewCard(review, false))}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no emitiste dictámenes.</strong><span>Cuando finalices una revisión aparecerá en este historial.</span></section>)}
@@ -1609,15 +1602,8 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const [reviewer1Id, setReviewer1Id] = useState('')
   const [reviewer2Id, setReviewer2Id] = useState('')
   const [profileVersionId, setProfileVersionId] = useState('')
-  const [reviewDeadline, setReviewDeadline] = useState('')
   const [cancelReason, setCancelReason] = useState('')
   const [cancelDetail, setCancelDetail] = useState('')
-
-  function defaultDeadline() {
-    const date = new Date()
-    date.setDate(date.getDate() + 7)
-    return date.toISOString().slice(0, 10)
-  }
 
   async function loadDetail() {
     setIsLoading(true)
@@ -1628,7 +1614,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
       setReviewer1Id(payload.assignments.find((item) => item.type === 'REVISOR_1')?.teacherId ?? '')
       setReviewer2Id(payload.assignments.find((item) => item.type === 'REVISOR_2')?.teacherId ?? '')
       setProfileVersionId(payload.profiles[0]?.versionId ?? '')
-      setReviewDeadline(defaultDeadline())
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible cargar el proyecto.')
     } finally {
@@ -1675,7 +1660,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
     setIsSubmitting(true)
     setMessage('')
     try {
-      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versionId: profileVersionId, deadline: reviewDeadline }) })
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ versionId: profileVersionId }) })
       setMessage(result.message)
       await onRefresh()
       await loadDetail()
@@ -1728,11 +1713,11 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
 
         {!isCancelled && <div className="admin-operation-grid">
           <form className="admin-operation-card" onSubmit={(event) => void submitTutor(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>PASO 1 · TUTORÍA</p><h2>Tutor propuesto</h2></div></div><p>El estudiante propone un tutor al registrar su proyecto. Durante una ronda abierta, el tutor actual conserva su evaluación pendiente hasta que el reemplazo acepte.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className={tutorConfirmed ? 'admin-assignment-state is-confirmed' : 'admin-assignment-state'}>{pendingTutorReplacement ? `${pendingTutorReplacement.teacher} debe aceptar el reemplazo; ${tutorAssignment?.teacher} conserva la ronda actual.` : tutorConfirmed ? `Tutor confirmado: ${tutorAssignment?.teacher}` : tutorAssignment ? `Esperando respuesta de ${tutorAssignment.teacher}.` : 'Aún no se propuso un tutor.'}</p><button className="secondary-button" disabled={isSubmitting || !tutorId} type="submit">{hasOpenRound && tutorAssignment ? 'Proponer reemplazo del tutor' : tutorAssignment ? 'Cambiar tutor propuesto' : 'Enviar invitación al tutor'}</button></form>
-          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · EQUIPO EVALUADOR</p><h2>Asignar revisores</h2></div></div><p>{hasOpenRound ? 'La ronda está en curso. Si reemplazas a un revisor que aún no emitió dictamen, su evaluación pendiente se transferirá al nuevo revisor con la misma fecha límite.' : tutorConfirmed ? 'El tutor aceptó la invitación. Define Revisor 1 y Revisor 2; esta acción aún no envía el perfil a evaluación.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">{hasOpenRound ? 'Guardar cambios y reasignar pendientes' : 'Guardar equipo evaluador'}</button></form>
-          <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PASO 3 · INICIO DE REVISIÓN</p><h2>{firstReviewReady ? 'Programar primera ronda' : 'Programar ronda'}</h2></div></div><p>{canScheduleReview ? 'Selecciona la versión y fecha límite para enviar el perfil al tutor y a los dos revisores.' : 'Esta acción se habilita cuando el tutor haya aceptado, estén asignados los dos revisores y no exista una ronda abierta.'}</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><label className="form-field"><span>Fecha límite <b>*</b></span><input disabled={isSubmitting} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setReviewDeadline(event.target.value)} type="date" value={reviewDeadline} /></label><button className="primary-button" disabled={isSubmitting || !canScheduleReview || detail.profiles.length === 0 || !profileVersionId || !reviewDeadline} type="submit">Enviar perfil a revisión</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · EQUIPO EVALUADOR</p><h2>Asignar revisores</h2></div></div><p>{hasOpenRound ? 'La ronda está en curso. Si reemplazas a un revisor que aún no emitió dictamen, su evaluación pendiente se transferirá al nuevo revisor.' : tutorConfirmed ? 'El tutor aceptó la invitación. Define Revisor 1 y Revisor 2; el tutor recibirá una notificación cuando el equipo quede asignado.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">{hasOpenRound ? 'Guardar cambios y reasignar pendientes' : 'Guardar equipo evaluador'}</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PASO 3 · INICIO DE REVISIÓN</p><h2>{firstReviewReady ? 'Habilitar primera revisión' : 'Habilitar revisión'}</h2></div></div><p>{canScheduleReview ? 'Selecciona la versión del perfil para habilitarla al tutor y a los dos revisores. Si siguen pendientes, recibirán recordatorios desde el segundo día.' : 'Esta acción se habilita cuando el tutor haya aceptado, estén asignados los dos revisores y no exista una ronda abierta.'}</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !canScheduleReview || detail.profiles.length === 0 || !profileVersionId} type="submit">Habilitar revisión</button></form>
         </div>}
 
-        <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se programó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Solicitada: {formatDate(round.requestedAt)} · Límite: {formatDate(round.deadline)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
+        <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se habilitó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Habilitada: {formatDate(round.requestedAt)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
 
         {!isCancelled ? <div className="admin-operation-grid admin-secondary-grid admin-cancel-only"><form className="admin-operation-card admin-cancel-card" onSubmit={(event) => void cancelProject(event)}><div className="admin-operation-heading"><Icon name="trash" /><div><p>ACCIÓN CONTROLADA</p><h2>Anular proyecto</h2></div></div><p>Esta acción cierra asignaciones y rondas abiertas, y conserva el registro de anulación.</p><label className="form-field"><span>Motivo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setCancelReason(event.target.value)} placeholder="Ej.: Abandono del proyecto" value={cancelReason} /></label><label className="form-field"><span>Detalle <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setCancelDetail(event.target.value)} placeholder="Explica la situación para el historial académico." rows={3} value={cancelDetail} /></label><button className="danger-button" disabled={isSubmitting} type="submit">Anular proyecto</button></form></div> : <section className="admin-cancellation"><Icon name="trash" /><div><h2>Proyecto anulado</h2><p><strong>{detail.cancellation?.reason}</strong> · {detail.cancellation?.detail}</p><small>{detail.cancellation?.cancelledAt && formatDate(detail.cancellation.cancelledAt)}</small></div></section>}
       </>}
@@ -2030,27 +2015,25 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
   function projectCard(project: AdminProject) {
     const reviewLabel = project.reviewRoundCount === 0
       ? project.canStartInitialReview
-        ? 'Equipo completo: programa la primera ronda.'
+        ? 'Equipo completo: habilita la primera revisión.'
         : project.tutorStatus !== 'CONFIRMADA'
           ? 'Pendiente de confirmación del tutor.'
           : `Falta asignar ${2 - project.reviewerCount} revisor${2 - project.reviewerCount === 1 ? '' : 'es'}.`
-      : project.isOverdue
-        ? 'Revisión fuera de plazo'
-        : project.reviewDeadline
-          ? `Límite de revisión: ${formatDate(project.reviewDeadline)}`
-          : 'Sin revisión pendiente'
+      : project.pendingReviews > 0
+        ? `${project.pendingReviews} dictamen${project.pendingReviews === 1 ? '' : 'es'} pendiente${project.pendingReviews === 1 ? '' : 's'}`
+        : 'Sin revisiones pendientes'
     const tutorLabel = project.tutorStatus === 'CONFIRMADA'
       ? 'Tutoría confirmada'
       : project.tutorStatus === 'PENDIENTE'
         ? 'Tutoría pendiente'
         : 'Sin tutor asignado'
 
-    return <article className={project.isOverdue ? 'admin-project-card is-overdue' : 'admin-project-card'} key={project.id}>
+    return <article className="admin-project-card" key={project.id}>
       <div className="admin-project-top"><span className="tutor-code">{project.code}</span><span className={`admin-status status-${project.statusCode.toLocaleLowerCase()}`}>{project.status}</span></div>
       <h2>{project.title}</h2>
       <div className="admin-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase}</span></div>
       <div className="admin-project-details"><div><small>Tutor asignado</small><strong>{project.tutor}</strong><span>{tutorLabel}</span></div><div><small>Revisión</small><strong>{project.reviewRoundCount === 0 ? 'Primera ronda pendiente' : project.pendingReviews > 0 ? `${project.pendingReviews} pendiente${project.pendingReviews === 1 ? '' : 's'}` : 'Sin pendientes'}</strong><span>{reviewLabel}</span></div></div>
-      <footer><span>{project.management}</span><span>Registrado: {formatDate(project.registeredAt)}</span><button className={project.canStartInitialReview ? 'primary-button' : 'text-button'} onClick={() => setSelectedProjectId(project.id)} type="button">{project.canStartInitialReview ? 'Programar revisión' : 'Gestionar'}</button></footer>
+      <footer><span>{project.management}</span><span>Registrado: {formatDate(project.registeredAt)}</span><button className={project.canStartInitialReview ? 'primary-button' : 'text-button'} onClick={() => setSelectedProjectId(project.id)} type="button">{project.canStartInitialReview ? 'Habilitar revisión' : 'Gestionar'}</button></footer>
     </article>
   }
 
@@ -2075,17 +2058,17 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
-        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'review-starts' ? 'Completa el equipo evaluador y programa la primera ronda de los perfiles pendientes.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'review-starts' ? 'Completa el equipo evaluador y habilita la primera revisión de los perfiles pendientes.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
 
-        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.pendingReviewStarts > 0 ? 'requires-attention' : ''}><small>Por iniciar</small><strong>{data.summary.pendingReviewStarts}</strong><span>Requieren equipo o primera ronda.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
+        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.pendingReviewStarts > 0 ? 'requires-attention' : ''}><small>Por iniciar</small><strong>{data.summary.pendingReviewStarts}</strong><span>Requieren equipo o primera ronda.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
 
         {view === 'home' && <>
           <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
           <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Nuevos docentes</h2><p>Correos confirmados que requieren rol de Tutor, Revisor o ambos.</p></div><button className="text-button" onClick={() => setView('new-teachers')} type="button">Ver docentes</button></div>{data.newTeachers.length > 0 ? <div className="admin-pending-teacher-list">{data.newTeachers.slice(0, 4).map((teacher) => <article className="admin-pending-teacher" key={teacher.id}><div><span className="admin-status status-observado">Roles pendientes</span><h3>{teacher.fullName}</h3><p>{teacher.email}</p></div><button className="secondary-button" onClick={() => { setMessage(''); setAssigningTeacher(teacher) }} type="button">Asignar roles</button></article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay docentes pendientes.</strong><span>Los docentes confirmados aparecerán aquí hasta recibir sus roles.</span></section>}</section>
-          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Revisiones por iniciar</h2><p>Completa el equipo evaluador y programa la primera ronda del perfil.</p></div><button className="text-button" onClick={() => setView('review-starts')} type="button">Ver pendientes</button></div>{data.pendingReviewStarts.length > 0 ? <div className="admin-project-list">{data.pendingReviewStarts.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay primeras rondas pendientes.</strong><span>Todos los proyectos activos ya iniciaron su proceso de revisión.</span></section>}</section>
-          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Proyectos recientes</h2><p>Prioriza los casos con una revisión vencida o con tutoría pendiente.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div>{data.projects.length > 0 ? <div className="admin-project-list">{data.projects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No hay proyectos registrados.</strong><span>Los registros del Formulario 1 aparecerán aquí.</span></section>}</section>
+          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Revisiones por iniciar</h2><p>Completa el equipo evaluador y habilita la primera revisión del perfil.</p></div><button className="text-button" onClick={() => setView('review-starts')} type="button">Ver pendientes</button></div>{data.pendingReviewStarts.length > 0 ? <div className="admin-project-list">{data.pendingReviewStarts.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay primeras rondas pendientes.</strong><span>Todos los proyectos activos ya iniciaron su proceso de revisión.</span></section>}</section>
+          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Proyectos recientes</h2><p>Prioriza los casos con tutoría pendiente o dictámenes sin emitir.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div>{data.projects.length > 0 ? <div className="admin-project-list">{data.projects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No hay proyectos registrados.</strong><span>Los registros del Formulario 1 aparecerán aquí.</span></section>}</section>
         </>}
 
         {view === 'review-starts' && <>{data.pendingReviewStarts.length > 0 ? <div className="admin-project-list">{data.pendingReviewStarts.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay primeras rondas pendientes.</strong><span>Los proyectos aparecerán aquí hasta que la primera ronda de revisión sea creada.</span></section>}</>}

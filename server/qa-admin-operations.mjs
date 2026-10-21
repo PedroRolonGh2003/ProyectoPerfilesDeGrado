@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
 import pg from 'pg'
+import { runPendingReviewReminders } from './index.js'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
@@ -204,14 +205,18 @@ try {
   await expect(await fetch(`${apiUrl}/api/tutor/invitations/${invitation.id}/respond`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: tutorCookie }, body: JSON.stringify({ decision: 'ACEPTAR' }) }), 200, 'Aceptación de tutoría')
   const reviewersAssignment = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ reviewer1Id: accounts.reviewer1.teacherId, reviewer2Id: accounts.reviewer2.teacherId }) }), 200, 'Asignación de los dos revisores')
   assert.equal((await reviewersAssignment.json()).changed, 2, 'No se registraron los dos revisores')
+  const tutorAfterReviewerAssignment = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: tutorCookie } }), 200, 'Notificación al tutor sobre los revisores asignados')
+  assert.ok((await tutorAfterReviewerAssignment.json()).notifications.some((item) => item.type === 'REVISORES_ASIGNADOS_TUTOR' && item.link === '/tutor/proyectos'), 'El tutor no fue notificado sobre la asignación de revisores')
   const dashboardAfterAssignment = await expect(await fetch(`${apiUrl}/api/admin/dashboard`, { headers: { Cookie: adminCookie } }), 200, 'Actualización de Revisiones por iniciar tras asignar revisores')
   const projectReadyToStart = (await dashboardAfterAssignment.json()).pendingReviewStarts.find((item) => item.id === projectId)
   assert.ok(projectReadyToStart, 'El proyecto desapareció antes de crear la primera ronda')
   assert.equal(projectReadyToStart.canStartInitialReview, true, 'El proyecto con el equipo completo no quedó listo para programar la primera ronda')
 
-  const deadline = new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  const round = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ versionId: profileVersionId, deadline }) }), 201, 'Programación de ronda de revisión')
-  assert.ok((await round.json()).roundId, 'No se devolvió la ronda creada')
+  const round = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ versionId: profileVersionId }) }), 201, 'Habilitación de ronda de revisión sin fecha límite')
+  const roundPayload = await round.json()
+  assert.ok(roundPayload.roundId, 'No se devolvió la ronda creada')
+  const createdRound = await pool.query('SELECT fecha_limite FROM titulacion.rondas_revision WHERE id = $1', [roundPayload.roundId])
+  assert.equal(createdRound.rows[0].fecha_limite, null, 'La ronda registró una fecha límite')
   const dashboardAfterRound = await expect(await fetch(`${apiUrl}/api/admin/dashboard`, { headers: { Cookie: adminCookie } }), 200, 'Actualización de Revisiones por iniciar tras crear la ronda')
   assert.ok(!(await dashboardAfterRound.json()).pendingReviewStarts.some((item) => item.id === projectId), 'El proyecto continúa en Revisiones por iniciar después de crear la primera ronda')
   const afterRound = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Seguimiento de ronda administrativa')
@@ -219,6 +224,29 @@ try {
   assert.equal(roundData.project.statusCode, 'EN_REVISION', 'El proyecto no pasó a EN_REVISION')
   assert.equal(roundData.project.phaseCode, 'REVISION_PERFIL', 'El proyecto no pasó a la fase de revisión de perfil')
   assert.equal(roundData.rounds[0].reviews.length, 3, 'La ronda no contiene las revisiones pendientes de tutor y revisores')
+
+  await pool.query(`UPDATE titulacion.rondas_revision SET fecha_solicitud = now() - interval '49 hours' WHERE id = $1`, [roundPayload.roundId])
+  await pool.query(`UPDATE titulacion.asignaciones_proyecto SET fecha_asignacion = now() - interval '49 hours', respondida_en = CASE WHEN tipo = 'TUTOR' THEN now() - interval '49 hours' ELSE respondida_en END WHERE proyecto_id = $1 AND activo`, [projectId])
+  const reminderClient = await pool.connect()
+  let remindersSent = 0
+  let repeatedReminders = 0
+  try {
+    remindersSent = await runPendingReviewReminders({ databaseClient: reminderClient })
+    repeatedReminders = await runPendingReviewReminders({ databaseClient: reminderClient })
+  } finally {
+    reminderClient.release()
+  }
+  assert.equal(remindersSent, 3, 'No se enviaron recordatorios a los tres dictámenes pendientes después de dos días')
+  assert.equal(repeatedReminders, 0, 'Se repitieron recordatorios el mismo día')
+  const reminders = await pool.query(
+    `SELECT n.tipo, n.enlace
+     FROM titulacion.notificaciones n
+     WHERE n.proyecto_id = $1 AND n.tipo = 'RECORDATORIO_REVISION_PENDIENTE'`,
+    [projectId],
+  )
+  assert.equal(reminders.rowCount, 3, 'Los recordatorios no quedaron registrados')
+  assert.equal(reminders.rows.filter((item) => item.enlace === '/tutor/proyectos').length, 1, 'El recordatorio del tutor no dirige a Mis proyectos')
+  assert.equal(reminders.rows.filter((item) => item.enlace === '/revisor/pendientes').length, 2, 'Los recordatorios de revisores no dirigen a Por revisar')
 
   const reviewer2Dashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: reviewer2Cookie } }), 200, 'Bandeja del segundo revisor antes de reasignar')
   const reviewer2Review = (await reviewer2Dashboard.json()).pendingReviews.find((item) => item.projectId === projectId)
@@ -319,7 +347,7 @@ try {
     [projectId],
   )
   assert.deepEqual(cancelled.rows[0], { codigo: 'ANULADO', active_assignments: 0, open_rounds: 0, cancellations: 1 }, 'La anulación no cerró correctamente el flujo')
-  console.log('QA operaciones administrativas aprobado: asignación, ronda, bloqueo del cambio manual y anulación verificados.')
+  console.log('QA operaciones administrativas aprobado: asignación, aviso al tutor, ronda sin fecha límite, recordatorios, bloqueo del cambio manual y anulación verificados.')
 } finally {
   if (adminCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: adminCookie } }).catch(() => undefined)
   if (studentCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: studentCookie } }).catch(() => undefined)

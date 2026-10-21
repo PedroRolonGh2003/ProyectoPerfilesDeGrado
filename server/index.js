@@ -4,6 +4,7 @@ import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
 import { access, mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import express from 'express'
 import multer from 'multer'
 import nodemailer from 'nodemailer'
@@ -31,6 +32,7 @@ const privateDefenseCriteria = ['FUENTES_ACTUALIZADAS', 'ANALISIS_LITERATURA', '
 const publicDefenseRatifications = ['SI', 'NO', 'PARCIALMENTE']
 const databaseUrl = process.env.DATABASE_URL?.trim()
 const initialization = { promise: null }
+const reviewReminderIntervalMs = 60 * 60 * 1000
 
 const mailTransport = smtpHost && smtpUser && smtpPassword && smtpFrom
   ? nodemailer.createTransport({
@@ -297,6 +299,20 @@ export function initializeServerless() {
 
 async function ensureRegistrationSchema() {
   await pool.query(`
+    ALTER TABLE titulacion.rondas_revision
+      ALTER COLUMN fecha_limite DROP NOT NULL;
+  `)
+  await pool.query(`
+    UPDATE titulacion.rondas_revision
+    SET fecha_limite = NULL
+    WHERE cerrada_en IS NULL AND fecha_limite IS NOT NULL;
+  `)
+  await pool.query(`
+    UPDATE titulacion.asignaciones_proyecto
+    SET fecha_limite = NULL
+    WHERE activo AND fecha_fin IS NULL AND fecha_limite IS NOT NULL;
+  `)
+  await pool.query(`
     ALTER TABLE titulacion.usuarios
       ADD COLUMN IF NOT EXISTS email_confirmado_en timestamptz;
   `)
@@ -550,11 +566,55 @@ async function createNotification(databaseClient, { userId, recipientEmail, proj
   return notification.rows[0].id
 }
 
-function deadlineAtEndOfDay(value) {
-  const date = text(value)
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null
-  const parsed = new Date(`${date}T23:59:59-04:00`)
-  return Number.isNaN(parsed.getTime()) || parsed <= new Date() ? null : parsed
+export async function runPendingReviewReminders({ databaseClient = null } = {}) {
+  if (!databaseClient) await initializeServerless()
+  const client = databaseClient ?? await pool.connect()
+  const ownsClient = !databaseClient
+  try {
+    await client.query('BEGIN')
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext('titulacion.recordatorios_revision_pendiente'))`)
+    const pendingReviews = await client.query(
+      `SELECT r.id AS review_id, a.tipo AS assignment_type, u.id AS user_id,
+              p.id AS project_id, p.codigo_seguimiento, rr.numero_ronda
+       FROM titulacion.revisiones r
+       JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id AND rr.cerrada_en IS NULL
+       JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id AND a.activo AND a.fecha_fin IS NULL
+       JOIN titulacion.docentes d ON d.id = a.docente_id
+       JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
+       JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+       JOIN titulacion.documentos document ON document.id = vd.documento_id
+       JOIN titulacion.proyectos p ON p.id = document.proyecto_id
+       WHERE r.decision = 'PENDIENTE'
+         AND GREATEST(rr.fecha_solicitud, a.fecha_asignacion, COALESCE(a.respondida_en, a.fecha_asignacion)) <= now() - interval '2 days'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM titulacion.notificaciones notification
+           WHERE notification.usuario_id = u.id
+             AND notification.proyecto_id = p.id
+             AND notification.tipo = 'RECORDATORIO_REVISION_PENDIENTE'
+             AND notification.creada_en >= date_trunc('day', now() AT TIME ZONE 'America/La_Paz') AT TIME ZONE 'America/La_Paz'
+         )
+       FOR UPDATE OF r`,
+    )
+    for (const review of pendingReviews.rows) {
+      const isTutor = review.assignment_type === 'TUTOR'
+      await createNotification(client, {
+        userId: review.user_id,
+        projectId: review.project_id,
+        type: 'RECORDATORIO_REVISION_PENDIENTE',
+        title: 'Recordatorio de revisión pendiente',
+        message: `Han pasado más de dos días desde que se habilitó la ronda ${review.numero_ronda} del proyecto ${review.codigo_seguimiento}. Ingresa y registra tu dictamen.`,
+        link: isTutor ? '/tutor/proyectos' : '/revisor/pendientes',
+      })
+    }
+    await client.query('COMMIT')
+    return pendingReviews.rows.length
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined)
+    throw error
+  } finally {
+    if (ownsClient) client.release()
+  }
 }
 
 async function recordAudit(databaseClient, session, { projectId = null, action, entity, entityId = null, detail = {} }) {
@@ -651,22 +711,17 @@ async function schedulePrivateDefenseReview(databaseClient, { project, documentI
      WHERE vd.documento_id = $1`,
     [documentId],
   )
-  const deadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
   const round = await databaseClient.query(
     `INSERT INTO titulacion.rondas_revision
-       (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
-     VALUES ($1, $2, $3, $4, $5)
+       (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id)
+     VALUES ($1, $2, $3, $4)
      RETURNING id`,
-    [versionId, catalog.rows[0].phase_id, previous.rows[0].round_number + 1, session.usuario_id, deadline],
+    [versionId, catalog.rows[0].phase_id, previous.rows[0].round_number + 1, session.usuario_id],
   )
   await databaseClient.query(
     `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
      SELECT $1, unnest($2::uuid[])`,
     [round.rows[0].id, participants.map((item) => item.assignment_id)],
-  )
-  await databaseClient.query(
-    `UPDATE titulacion.asignaciones_proyecto SET fecha_limite = $2 WHERE id = ANY($1::uuid[])`,
-    [participants.map((item) => item.assignment_id), deadline],
   )
   for (const participant of participants) {
     await createNotification(databaseClient, {
@@ -675,7 +730,7 @@ async function schedulePrivateDefenseReview(databaseClient, { project, documentI
       projectId: project.id,
       type: 'DEFENSA_PRIVADA_ASIGNADA',
       title: 'Documento para defensa privada pendiente de revisión',
-      message: `El estudiante envió la versión V${versionNumber} del documento ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+      message: `El estudiante envió la versión V${versionNumber} del documento ${project.codigo_seguimiento}. Ingresa para registrar tu dictamen.`,
       link: participant.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
     })
   }
@@ -693,7 +748,7 @@ async function schedulePrivateDefenseReview(databaseClient, { project, documentI
     action: 'ENVIAR_DOCUMENTO_DEFENSA_PRIVADA_A_REVISION',
     entity: 'rondas_revision',
     entityId: round.rows[0].id,
-    detail: { documentId, versionId, deadline: deadline.toISOString(), reviewAssignments: participants.map((item) => item.assignment_id) },
+    detail: { documentId, versionId, reviewAssignments: participants.map((item) => item.assignment_id) },
   })
   return { scheduled: true, roundId: round.rows[0].id }
 }
@@ -737,22 +792,17 @@ async function schedulePublicDefenseReview(databaseClient, { project, documentId
      WHERE vd.documento_id = $1`,
     [documentId],
   )
-  const deadline = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
   const round = await databaseClient.query(
     `INSERT INTO titulacion.rondas_revision
-       (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
-     VALUES ($1, $2, $3, $4, $5)
+       (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id)
+     VALUES ($1, $2, $3, $4)
      RETURNING id`,
-    [versionId, catalog.rows[0].phase_id, previous.rows[0].round_number + 1, session.usuario_id, deadline],
+    [versionId, catalog.rows[0].phase_id, previous.rows[0].round_number + 1, session.usuario_id],
   )
   await databaseClient.query(
     `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
      SELECT $1, unnest($2::uuid[])`,
     [round.rows[0].id, participants.map((item) => item.assignment_id)],
-  )
-  await databaseClient.query(
-    `UPDATE titulacion.asignaciones_proyecto SET fecha_limite = $2 WHERE id = ANY($1::uuid[])`,
-    [participants.map((item) => item.assignment_id), deadline],
   )
   for (const participant of participants) {
     await createNotification(databaseClient, {
@@ -761,7 +811,7 @@ async function schedulePublicDefenseReview(databaseClient, { project, documentId
       projectId: project.id,
       type: 'DEFENSA_PUBLICA_ASIGNADA',
       title: 'Documento para defensa pública pendiente de revisión',
-      message: `El estudiante envió la versión V${versionNumber} del documento final ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+      message: `El estudiante envió la versión V${versionNumber} del documento final ${project.codigo_seguimiento}. Ingresa para registrar tu dictamen.`,
       link: participant.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
     })
   }
@@ -779,14 +829,14 @@ async function schedulePublicDefenseReview(databaseClient, { project, documentId
     action: 'ENVIAR_DOCUMENTO_DEFENSA_PUBLICA_A_REVISION',
     entity: 'rondas_revision',
     entityId: round.rows[0].id,
-    detail: { documentId, versionId, deadline: deadline.toISOString(), reviewAssignments: participants.map((item) => item.assignment_id) },
+    detail: { documentId, versionId, reviewAssignments: participants.map((item) => item.assignment_id) },
   })
   return { scheduled: true, roundId: round.rows[0].id }
 }
 
 async function scheduleCorrectionReview(databaseClient, { project, documentId, versionId, versionNumber, session }) {
   const previousRoundResult = await databaseClient.query(
-    `SELECT rr.id, rr.numero_ronda, rr.fecha_solicitud, rr.fecha_limite
+    `SELECT rr.id, rr.numero_ronda
      FROM titulacion.rondas_revision rr
      JOIN titulacion.versiones_documento source_version ON source_version.id = rr.version_documento_id
      WHERE source_version.documento_id = $1
@@ -858,11 +908,6 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
   )
   if (openRound.rows[0]) return { scheduled: false, reason: 'open-round' }
 
-  const durationMilliseconds = new Date(previousRound.fecha_limite).getTime() - new Date(previousRound.fecha_solicitud).getTime()
-  const reviewWindow = Number.isFinite(durationMilliseconds) && durationMilliseconds > 0
-    ? durationMilliseconds
-    : 3 * 24 * 60 * 60 * 1000
-  const deadline = new Date(Date.now() + Math.max(reviewWindow, 24 * 60 * 60 * 1000))
   const catalog = await databaseClient.query(
     `SELECT
        (SELECT id FROM titulacion.fases WHERE codigo = 'REVISION_PERFIL' AND activa) AS phase_id,
@@ -872,21 +917,15 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
 
   const round = await databaseClient.query(
     `INSERT INTO titulacion.rondas_revision
-      (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
-     VALUES ($1, $2, $3, $4, $5)
+      (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id)
+     VALUES ($1, $2, $3, $4)
      RETURNING id`,
-    [versionId, catalog.rows[0].phase_id, previousRound.numero_ronda + 1, session.usuario_id, deadline],
+    [versionId, catalog.rows[0].phase_id, previousRound.numero_ronda + 1, session.usuario_id],
   )
   await databaseClient.query(
     `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
      SELECT $1, unnest($2::uuid[])`,
     [round.rows[0].id, reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id)],
-  )
-  await databaseClient.query(
-    `UPDATE titulacion.asignaciones_proyecto
-     SET fecha_limite = $2
-     WHERE id = ANY($1::uuid[])`,
-    [reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id), deadline],
   )
   for (const reviewer of reviewParticipants) {
     await createNotification(databaseClient, {
@@ -894,7 +933,7 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
       projectId: project.id,
       type: 'CORRECCION_PENDIENTE_REVISION',
       title: 'Corrección pendiente de revisión',
-      message: `El estudiante adjuntó la versión V${versionNumber} corregida del perfil ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+      message: `El estudiante adjuntó la versión V${versionNumber} corregida del perfil ${project.codigo_seguimiento}. Ingresa para registrar tu dictamen.`,
       link: reviewer.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
     })
   }
@@ -912,9 +951,9 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
     action: 'REENVIAR_CORRECCION_A_REVISION',
     entity: 'rondas_revision',
     entityId: round.rows[0].id,
-    detail: { previousRoundId: previousRound.id, versionId, deadline: deadline.toISOString(), reviewAssignments: reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id) },
+    detail: { previousRoundId: previousRound.id, versionId, reviewAssignments: reviewParticipants.map((reviewer) => reviewer.asignacion_proyecto_id) },
   })
-  return { scheduled: true, roundId: round.rows[0].id, deadline }
+  return { scheduled: true, roundId: round.rows[0].id }
 }
 
 async function lockedProject(databaseClient, projectId) {
@@ -946,7 +985,7 @@ async function staffWithRole(databaseClient, { teacherId, careerId, roleCode }) 
 
 async function openReviewRoundForProject(databaseClient, projectId) {
   const result = await databaseClient.query(
-    `SELECT rr.id, rr.fecha_limite
+    `SELECT rr.id
      FROM titulacion.rondas_revision rr
      JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
      JOIN titulacion.documentos d ON d.id = vd.documento_id
@@ -977,12 +1016,6 @@ async function transferPendingReview(databaseClient, { round, previousAssignment
      SET asignacion_proyecto_id = $2
      WHERE id = $1`,
     [review.id, replacementAssignmentId],
-  )
-  await databaseClient.query(
-    `UPDATE titulacion.asignaciones_proyecto
-     SET fecha_limite = $2
-     WHERE id = $1`,
-    [replacementAssignmentId, round.fecha_limite],
   )
   return { transferred: true, reviewId: review.id }
 }
@@ -1027,8 +1060,8 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
 
   const assignment = await databaseClient.query(
     `INSERT INTO titulacion.asignaciones_proyecto
-      (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio, fecha_limite)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+      (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING id`,
     [
       project.id,
@@ -1041,7 +1074,6 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
           ? 'Tutor propuesto para reemplazar la tutoría durante una ronda abierta; pendiente de aceptación.'
           : 'Tutor asignado por Administración; pendiente de aceptación.'
         : 'Revisor asignado por Administración.',
-      openRound?.fecha_limite ?? null,
     ],
   )
 
@@ -1073,7 +1105,7 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
       type: pendingReview.transferred ? 'REVISION_REASIGNADA' : 'ASIGNACION_REVISION',
       title: pendingReview.transferred ? 'Revisión pendiente reasignada' : 'Designación como revisor',
       message: pendingReview.transferred
-        ? `Administración te asignó la evaluación pendiente del proyecto ${project.codigo_seguimiento}. Conserva la fecha límite de la ronda actual.`
+        ? `Administración te asignó la evaluación pendiente del proyecto ${project.codigo_seguimiento}. Ingresa para registrar tu dictamen.`
         : `Administración te designó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}. Recibirás otro aviso cuando el perfil esté disponible para evaluación.`,
       link: pendingReview.transferred ? '/revisor/pendientes' : '/revisor',
     })
@@ -1094,6 +1126,19 @@ app.get('/api/health', async (_request, response, next) => {
     response.json({ status: 'ok' })
   } catch (error) {
     next(error)
+  }
+})
+
+app.get('/api/cron/review-reminders', async (request, response, next) => {
+  const cronSecret = process.env.CRON_SECRET
+  if (!cronSecret || request.get('authorization') !== `Bearer ${cronSecret}`) {
+    return response.status(401).json({ message: 'No autorizado.' })
+  }
+  try {
+    const sent = await runPendingReviewReminders()
+    return response.json({ sent })
+  } catch (error) {
+    return next(error)
   }
 })
 
@@ -2270,9 +2315,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
                   tutor.pendiente AS tutoria_pendiente,
                   tutor.confirmada AS tutoria_confirmada,
                   reviewers.asignados AS revisores_asignados,
-                  reviews.fecha_limite_revision,
                   reviews.revisiones_pendientes,
-                  reviews.revision_vencida,
                   reviews.rondas_creadas
            FROM titulacion.proyectos p
            JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -2307,9 +2350,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
              WHERE a.proyecto_id = p.id
            ) reviewers ON true
            LEFT JOIN LATERAL (
-             SELECT min(rr.fecha_limite) FILTER (WHERE rr.cerrada_en IS NULL) AS fecha_limite_revision,
-                    count(r.id) FILTER (WHERE r.decidida_en IS NULL)::int AS revisiones_pendientes,
-                    COALESCE(bool_or(rr.fecha_limite < now() AND rr.cerrada_en IS NULL), false) AS revision_vencida,
+             SELECT count(r.id) FILTER (WHERE r.decidida_en IS NULL)::int AS revisiones_pendientes,
                     count(DISTINCT rr.id)::int AS rondas_creadas
              FROM titulacion.rondas_revision rr
              JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
@@ -2321,7 +2362,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
          SELECT *
          FROM vista_proyectos vp
          ${where}
-         ORDER BY vp.revision_vencida DESC, vp.registrado_en DESC
+         ORDER BY vp.registrado_en DESC
          LIMIT 100`,
         values,
       ),
@@ -2363,9 +2404,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       status: project.estado_nombre,
       isFinal: project.es_final,
       registeredAt: project.registrado_en,
-      reviewDeadline: project.fecha_limite_revision,
       pendingReviews: Number(project.revisiones_pendientes ?? 0),
-      isOverdue: project.revision_vencida,
       reviewerCount: Number(project.revisores_asignados ?? 0),
       reviewRoundCount: Number(project.rondas_creadas ?? 0),
       canStartInitialReview: !project.es_final
@@ -2381,9 +2420,8 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       registered: total.registered + (project.statusCode === 'REGISTRADO' ? 1 : 0),
       inReview: total.inReview + (project.statusCode === 'EN_REVISION' ? 1 : 0),
       observed: total.observed + (project.statusCode === 'OBSERVADO' ? 1 : 0),
-      overdue: total.overdue + (project.isOverdue ? 1 : 0),
       pendingReviewStarts: total.pendingReviewStarts + (project.reviewRoundCount === 0 && !project.isFinal ? 1 : 0),
-    }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0, pendingReviewStarts: 0 })
+    }), { total: 0, registered: 0, inReview: 0, observed: 0, pendingReviewStarts: 0 })
     summary.newTeachers = pendingTeachers.rows.length
 
     return response.json({
@@ -2453,7 +2491,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
         [project.carrera_id],
       ),
       pool.query(
-        `SELECT a.id, a.tipo, a.activo, a.fecha_asignacion, a.fecha_limite, a.fecha_fin, a.respondida_en, a.motivo_cambio,
+        `SELECT a.id, a.tipo, a.activo, a.fecha_asignacion, a.fecha_fin, a.respondida_en, a.motivo_cambio,
                 d.id AS docente_id, trim(concat(u.nombres, ' ', u.apellidos)) AS docente_nombre, u.correo
          FROM titulacion.asignaciones_proyecto a
          JOIN titulacion.docentes d ON d.id = a.docente_id
@@ -2474,7 +2512,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
         [projectId],
       ),
       pool.query(
-        `SELECT rr.id, rr.numero_ronda, rr.fecha_solicitud, rr.fecha_limite, rr.cerrada_en,
+        `SELECT rr.id, rr.numero_ronda, rr.fecha_solicitud, rr.cerrada_en,
                 vd.numero_version,
                 COALESCE(json_agg(json_build_object(
                   'id', r.id,
@@ -2532,7 +2570,6 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
         teacher: item.docente_nombre,
         email: item.correo,
         assignedAt: item.fecha_asignacion,
-        deadline: item.fecha_limite,
         finishedAt: item.fecha_fin,
         respondedAt: item.respondida_en,
         reason: item.motivo_cambio,
@@ -2550,7 +2587,6 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
         number: item.numero_ronda,
         version: item.numero_version,
         requestedAt: item.fecha_solicitud,
-        deadline: item.fecha_limite,
         closedAt: item.cerrada_en,
         reviews: item.revisiones ?? [],
       })),
@@ -2650,14 +2686,16 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
     }
 
     const tutorAssignment = await databaseClient.query(
-      `SELECT docente_id
-       FROM titulacion.asignaciones_proyecto
+      `SELECT a.docente_id, d.usuario_id, u.correo
+       FROM titulacion.asignaciones_proyecto a
+       JOIN titulacion.docentes d ON d.id = a.docente_id
+       JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
        WHERE proyecto_id = $1
-         AND tipo = 'TUTOR'
-         AND activo
-         AND respondida_en IS NOT NULL
-         AND fecha_fin IS NULL
-       FOR UPDATE`,
+         AND a.tipo = 'TUTOR'
+         AND a.activo
+         AND a.respondida_en IS NOT NULL
+         AND a.fecha_fin IS NULL
+       FOR UPDATE OF a`,
       [projectId],
     )
     if (!tutorAssignment.rows[0]) {
@@ -2682,6 +2720,19 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
       replaceProjectAssignment(databaseClient, { project, type: 'REVISOR_1', staff: reviewer1, assignedByUserId: request.session.usuario_id }),
       replaceProjectAssignment(databaseClient, { project, type: 'REVISOR_2', staff: reviewer2, assignedByUserId: request.session.usuario_id }),
     ])
+    const changedAssignments = changes.filter((item) => item.changed)
+    const hasOpenRound = changes.some((item) => item.roundId)
+    if (changedAssignments.length > 0 && !hasOpenRound) {
+      await createNotification(databaseClient, {
+        userId: tutorAssignment.rows[0].usuario_id,
+        recipientEmail: tutorAssignment.rows[0].correo,
+        projectId,
+        type: 'REVISORES_ASIGNADOS_TUTOR',
+        title: 'Revisores asignados al proyecto',
+        message: `Administración asignó los dos revisores del proyecto ${project.codigo_seguimiento}. Recibirás un aviso cuando la revisión del perfil sea habilitada.`,
+        link: '/tutor/proyectos',
+      })
+    }
     await recordAudit(databaseClient, request.session, {
       projectId,
       action: 'ASIGNAR_REVISORES',
@@ -2689,7 +2740,7 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
       detail: {
         reviewer1Id,
         reviewer2Id,
-        changed: changes.filter((item) => item.changed).length,
+        changed: changedAssignments.length,
         pendingReviewsTransferred: changes.filter((item) => item.pendingReviewTransferred).map((item) => item.assignmentId),
         roundId: changes.find((item) => item.roundId)?.roundId ?? null,
       },
@@ -2698,9 +2749,9 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
     const transferred = changes.filter((item) => item.pendingReviewTransferred).length
     return response.json({
       message: transferred > 0
-        ? `${transferred === 1 ? 'La evaluación pendiente fue transferida al nuevo revisor.' : 'Las evaluaciones pendientes fueron transferidas a los nuevos revisores.'} La ronda conserva su fecha límite.`
-        : 'El equipo evaluador fue asignado. Selecciona la versión del perfil y programa la primera ronda para habilitar las evaluaciones.',
-      changed: changes.filter((item) => item.changed).length,
+        ? `${transferred === 1 ? 'La evaluación pendiente fue transferida al nuevo revisor.' : 'Las evaluaciones pendientes fueron transferidas a los nuevos revisores.'}`
+        : 'El equipo evaluador fue asignado y el tutor fue notificado. Ya puedes habilitar la revisión del perfil.',
+      changed: changedAssignments.length,
     })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
@@ -2715,9 +2766,8 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
   try {
     const { projectId } = request.params
     const versionId = text(request.body?.versionId)
-    const deadline = deadlineAtEndOfDay(request.body?.deadline)
-    if (!isUuid(projectId) || !isUuid(versionId) || !deadline) {
-      return response.status(422).json({ message: 'Selecciona una versión del perfil y una fecha límite futura.' })
+    if (!isUuid(projectId) || !isUuid(versionId)) {
+      return response.status(422).json({ message: 'Selecciona una versión válida del perfil.' })
     }
 
     await databaseClient.query('BEGIN')
@@ -2786,21 +2836,15 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
 
     const round = await databaseClient.query(
       `INSERT INTO titulacion.rondas_revision
-        (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id, fecha_limite)
-       VALUES ($1, $2, $3, $4, $5)
+        (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id)
+       VALUES ($1, $2, $3, $4)
        RETURNING id`,
-      [versionId, phase.rows[0].id, roundNumber.rows[0].next_number, request.session.usuario_id, deadline],
+      [versionId, phase.rows[0].id, roundNumber.rows[0].next_number, request.session.usuario_id],
     )
     await databaseClient.query(
       `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
        SELECT $1, unnest($2::uuid[])`,
       [round.rows[0].id, reviewers.rows.map((item) => item.id)],
-    )
-    await databaseClient.query(
-      `UPDATE titulacion.asignaciones_proyecto
-       SET fecha_limite = $2
-       WHERE id = ANY($1::uuid[])`,
-      [reviewers.rows.map((item) => item.id), deadline],
     )
     for (const reviewer of reviewers.rows) {
       await createNotification(databaseClient, {
@@ -2808,7 +2852,7 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
         projectId,
         type: reviewer.tipo === 'TUTOR' ? 'REVISION_TUTOR_ASIGNADA' : 'REVISION_ASIGNADA',
         title: 'Perfil pendiente de revisión',
-        message: `El perfil ${project.codigo_seguimiento} fue enviado a revisión. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
+        message: `El perfil ${project.codigo_seguimiento} fue habilitado para revisión. Ingresa para registrar tu dictamen.`,
         link: reviewer.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
       })
     }
@@ -2826,10 +2870,10 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
       action: 'INICIAR_RONDA_REVISION',
       entity: 'rondas_revision',
       entityId: round.rows[0].id,
-      detail: { versionId, deadline: deadline.toISOString(), reviewers: reviewers.rows.map((item) => item.id) },
+      detail: { versionId, reviewers: reviewers.rows.map((item) => item.id) },
     })
     await databaseClient.query('COMMIT')
-    return response.status(201).json({ message: 'La ronda de revisión fue creada y notificada al tutor y a los dos revisores.', roundId: round.rows[0].id })
+    return response.status(201).json({ message: 'La revisión fue habilitada y notificada al tutor y a los dos revisores.', roundId: round.rows[0].id })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -2946,7 +2990,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
   try {
     const { session } = request
     const assignmentQuery = `
-      SELECT a.id AS assignment_id, a.proyecto_id, a.fecha_asignacion, a.fecha_limite,
+      SELECT a.id AS assignment_id, a.proyecto_id, a.fecha_asignacion,
              a.respondida_en, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
              p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
              f.nombre AS fase_nombre, ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
@@ -2954,7 +2998,6 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
              profile.documento_id, profile.tipo_documento AS profile_document_type, profile.version_id, profile.nombre_archivo,
              profile.numero_version, profile.subida_en,
              current_review.revision_id, current_review.decision AS review_decision,
-             current_review.fecha_limite AS review_deadline,
              COALESCE(review_summary.items, '[]'::json) AS team_reviews
       FROM titulacion.asignaciones_proyecto a
       JOIN titulacion.proyectos p ON p.id = a.proyecto_id
@@ -2986,7 +3029,7 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
         LIMIT 1
       ) profile ON true
       LEFT JOIN LATERAL (
-        SELECT r.id AS revision_id, r.decision, rr.fecha_limite, d.tipo_documento AS document_type
+        SELECT r.id AS revision_id, r.decision, d.tipo_documento AS document_type
         FROM titulacion.rondas_revision rr
         JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
         JOIN titulacion.documentos d ON d.id = vd.documento_id AND d.tipo_documento IN ('PERFIL_PROYECTO', 'DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO')
@@ -3059,7 +3102,6 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       registrations: assignment.registros_estudiantes ?? '',
       requestedAt: assignment.fecha_asignacion,
       respondedAt: assignment.respondida_en,
-      deadline: assignment.fecha_limite,
       profile: assignment.documento_id ? {
         documentId: assignment.documento_id,
         type: assignment.profile_document_type,
@@ -3070,7 +3112,6 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       } : null,
       reviewId: assignment.revision_id,
       reviewDecision: assignment.review_decision,
-      reviewDeadline: assignment.review_deadline,
       reviewDocumentType: assignment.document_type ?? assignment.profile_document_type,
       canReviewProfile: assignment.review_decision === 'PENDIENTE',
       teamReviews: assignment.team_reviews,
@@ -3433,7 +3474,7 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
       `SELECT r.id AS review_id, r.decision, r.comentario_general, r.decidida_en,
               a.id AS assignment_id, a.tipo AS assignment_type, a.activo AS assignment_active,
               a.fecha_fin AS assignment_finished_at,
-              rr.id AS round_id, rr.numero_ronda, rr.fecha_solicitud, rr.fecha_limite, rr.cerrada_en,
+              rr.id AS round_id, rr.numero_ronda, rr.fecha_solicitud, rr.cerrada_en,
               p.id AS project_id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
               p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
               f.nombre AS fase_nombre, ep.nombre AS estado_nombre,
@@ -3484,7 +3525,7 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
          WHERE teammate_review.ronda_revision_id = rr.id
        ) team ON true
        WHERE a.docente_id = $1 AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
-       ORDER BY (r.decision = 'PENDIENTE') DESC, rr.fecha_limite ASC, rr.fecha_solicitud DESC`,
+       ORDER BY (r.decision = 'PENDIENTE') DESC, rr.fecha_solicitud DESC`,
       [session.docente_id],
     )
     const [notifications, unread] = await Promise.all([
@@ -3522,7 +3563,6 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
       registrations: review.registros_estudiantes ?? '',
       roundNumber: review.numero_ronda,
       requestedAt: review.fecha_solicitud,
-      deadline: review.fecha_limite,
       closedAt: review.cerrada_en,
       decision: review.decision,
       generalComment: review.comentario_general,
@@ -3542,11 +3582,9 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
     const payload = reviews.rows.map(reviewPayload)
     const pendingReviews = payload.filter((review) => review.canSubmit)
     const completedReviews = payload.filter((review) => review.decision !== 'PENDIENTE')
-    const overdueCount = pendingReviews.filter((review) => new Date(review.deadline) < new Date()).length
-
     return response.json({
       user: sanitizeUser(session),
-      summary: { pending: pendingReviews.length, overdue: overdueCount, completed: completedReviews.length },
+      summary: { pending: pendingReviews.length, completed: completedReviews.length },
       pendingReviews,
       completedReviews,
       notifications: notifications.rows.map(notificationPayload),
@@ -4800,7 +4838,7 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       projectId: createdProject.id,
       type: 'NUEVO_PROYECTO_REGISTRADO',
       title: 'Nuevo proyecto registrado',
-      message: `El estudiante registró el proyecto ${createdProject.codigo_seguimiento}. Completa el equipo evaluador y programa la primera ronda cuando el tutor acepte.`,
+      message: `El estudiante registró el proyecto ${createdProject.codigo_seguimiento}. Completa el equipo evaluador y habilita la primera revisión cuando el tutor acepte.`,
       link: '/admin/revisiones-por-iniciar',
       queueEmail: true,
     })
@@ -4890,11 +4928,16 @@ app.use((error, _request, response, _next) => {
 
 // Vercel carga la aplicación mediante api/[...path].js. En desarrollo local
 // mantenemos el servidor HTTP independiente para que npm run dev siga igual.
-if (!process.env.VERCEL) {
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (!process.env.VERCEL && isMainModule) {
   void initializeServerless().then(() => {
     app.listen(port, '127.0.0.1', () => {
       console.log(`API de Seguimiento de Titulación disponible en http://127.0.0.1:${port}`)
     })
+    void runPendingReviewReminders().catch((error) => console.error('No fue posible enviar los recordatorios de revisión:', error))
+    setInterval(() => {
+      void runPendingReviewReminders().catch((error) => console.error('No fue posible enviar los recordatorios de revisión:', error))
+    }, reviewReminderIntervalMs).unref()
   }).catch((error) => {
     console.error('No fue posible inicializar el registro de cuentas:', error)
     process.exitCode = 1

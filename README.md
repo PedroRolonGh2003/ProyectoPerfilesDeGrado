@@ -57,6 +57,11 @@ Las migraciones aplicadas se conservan en `database/`.
 
 - `20260908_catalogo_modalidad_y_funciones.sql`: incorpora la modalidad Trabajo dirigido para Sistemas y corrige funciones para usar el esquema `titulacion` de forma explícita.
 - `20260908_solicitudes_tutoria_y_cola_correos.sql`: agrega trazabilidad de respuesta a solicitudes de tutoría, índices de notificación y una cola persistente para los correos futuros. La aplicación no envía correos mientras no se configure un proveedor SMTP; solo registra los eventos pendientes de entrega.
+- `20261021_recordatorios_revision_sin_fecha_limite.sql`: elimina los plazos de las rondas abiertas. Desde el segundo día de una revisión pendiente, se crea un recordatorio diario para el tutor o revisor correspondiente.
+
+## Recordatorios en producción
+
+En Vercel, `vercel.json` ejecuta el recordatorio de revisiones una vez al día a las 08:00 (hora de Bolivia). Define `CRON_SECRET` como una variable de entorno aleatoria de al menos 16 caracteres para proteger la tarea programada.
 
 ## Verificar compilación
 
