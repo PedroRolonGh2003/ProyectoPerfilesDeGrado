@@ -462,6 +462,7 @@ function projectPayload(row) {
     status: row.estado_nombre,
     statusCode: row.estado_codigo,
     registeredAt: row.registrado_en,
+    needsTutorProposal: Boolean(row.requiere_proponer_tutor),
   }
 }
 
@@ -3251,8 +3252,8 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
       title: accepted ? 'Tutoría aceptada' : 'Tutoría declinada',
       message: accepted
         ? `El tutor aceptó acompañar tu proyecto ${selected.codigo_seguimiento}.`
-        : `El tutor declinó la tutoría de tu proyecto ${selected.codigo_seguimiento}. Motivo: ${reason}`,
-      link: '/student',
+        : `El tutor declinó la tutoría de tu proyecto ${selected.codigo_seguimiento}. Motivo: ${reason}. Debes proponer un nuevo docente para continuar.`,
+      link: accepted ? '/student' : '/student/proponer-tutor',
     })
     if (accepted) {
       if (handoff.transferred) {
@@ -3887,14 +3888,46 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
          JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
          JOIN titulacion.roles r ON r.id = ur.rol_id AND r.codigo = 'TUTOR' AND r.activo
          WHERE d.activo AND d.carrera_id = $1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM titulacion.proyecto_estudiantes student_project
+             JOIN titulacion.asignaciones_proyecto declined_tutor ON declined_tutor.proyecto_id = student_project.proyecto_id
+             WHERE student_project.estudiante_id = $2
+               AND student_project.activo
+               AND declined_tutor.docente_id = d.id
+               AND declined_tutor.tipo = 'TUTOR'
+               AND NOT declined_tutor.activo
+               AND declined_tutor.fecha_fin IS NOT NULL
+               AND declined_tutor.motivo_cambio ILIKE '%declin%'
+           )
          ORDER BY u.apellidos, u.nombres`,
-        [session.carrera_id],
+        [session.carrera_id, session.estudiante_id],
       ),
       pool.query(
         `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
                 p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
                 m.nombre AS modalidad_nombre, f.nombre AS fase_nombre, f.codigo AS fase_codigo,
-                ep.nombre AS estado_nombre, ep.codigo AS estado_codigo
+                ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
+                (
+                  f.codigo = 'REGISTRO'
+                  AND ep.codigo = 'REGISTRADO'
+                  AND EXISTS (
+                    SELECT 1
+                    FROM titulacion.asignaciones_proyecto declined_tutor
+                    WHERE declined_tutor.proyecto_id = p.id
+                      AND declined_tutor.tipo = 'TUTOR'
+                      AND NOT declined_tutor.activo
+                      AND declined_tutor.fecha_fin IS NOT NULL
+                      AND declined_tutor.motivo_cambio ILIKE '%declin%'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM titulacion.asignaciones_proyecto current_tutor
+                    WHERE current_tutor.proyecto_id = p.id
+                      AND current_tutor.tipo = 'TUTOR'
+                      AND current_tutor.fecha_fin IS NULL
+                  )
+                ) AS requiere_proponer_tutor
          FROM titulacion.proyecto_estudiantes pe
          JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
          JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -3980,8 +4013,28 @@ app.get('/api/student/overview', requireStudent, async (request, response, next)
     const projectResult = await pool.query(
       `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
               p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
-              m.nombre AS modalidad_nombre, f.nombre AS fase_nombre,
-              ep.nombre AS estado_nombre, ep.codigo AS estado_codigo
+              m.nombre AS modalidad_nombre, f.nombre AS fase_nombre, f.codigo AS fase_codigo,
+              ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
+              (
+                f.codigo = 'REGISTRO'
+                AND ep.codigo = 'REGISTRADO'
+                AND EXISTS (
+                  SELECT 1
+                  FROM titulacion.asignaciones_proyecto declined_tutor
+                  WHERE declined_tutor.proyecto_id = p.id
+                    AND declined_tutor.tipo = 'TUTOR'
+                    AND NOT declined_tutor.activo
+                    AND declined_tutor.fecha_fin IS NOT NULL
+                    AND declined_tutor.motivo_cambio ILIKE '%declin%'
+                )
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM titulacion.asignaciones_proyecto current_tutor
+                  WHERE current_tutor.proyecto_id = p.id
+                    AND current_tutor.tipo = 'TUTOR'
+                    AND current_tutor.fecha_fin IS NULL
+                )
+              ) AS requiere_proponer_tutor
        FROM titulacion.proyecto_estudiantes pe
        JOIN titulacion.proyectos p ON p.id = pe.proyecto_id
        JOIN titulacion.gestiones g ON g.id = p.gestion_id
@@ -4078,6 +4131,170 @@ app.get('/api/student/overview', requireStudent, async (request, response, next)
     })
   } catch (error) {
     return next(error)
+  }
+})
+
+app.post('/api/student/projects/:projectId/tutor-proposal', requireStudent, async (request, response, next) => {
+  let databaseClient = null
+  try {
+    const projectId = request.params.projectId
+    const tutorId = text(request.body?.tutorId)
+    if (!isUuid(projectId) || !isUuid(tutorId)) {
+      return response.status(422).json({ message: 'Selecciona un tutor disponible para enviar la invitación.' })
+    }
+
+    databaseClient = await pool.connect()
+    await databaseClient.query('BEGIN')
+    const student = await databaseClient.query(
+      `SELECT id, carrera_id
+       FROM titulacion.estudiantes
+       WHERE id = $1 AND usuario_id = $2 AND activo
+       FOR UPDATE`,
+      [request.session.estudiante_id, request.session.usuario_id],
+    )
+    if (!student.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(403).json({ message: 'No fue posible validar tu perfil de estudiante.' })
+    }
+
+    const project = await databaseClient.query(
+      `SELECT p.id, p.codigo_seguimiento, f.codigo AS fase_codigo, ep.codigo AS estado_codigo
+       FROM titulacion.proyectos p
+       JOIN titulacion.proyecto_estudiantes pe ON pe.proyecto_id = p.id AND pe.activo
+       JOIN titulacion.fases f ON f.id = p.fase_actual_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       WHERE p.id = $1 AND pe.estudiante_id = $2
+       FOR UPDATE OF p`,
+      [projectId, student.rows[0].id],
+    )
+    const selectedProject = project.rows[0]
+    if (!selectedProject) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no está disponible para proponer un tutor.' })
+    }
+    if (selectedProject.fase_codigo !== 'REGISTRO' || selectedProject.estado_codigo !== 'REGISTRADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'La propuesta de tutor solo está disponible antes de iniciar la revisión del proyecto.' })
+    }
+
+    const [declinedTutor, currentTutor] = await Promise.all([
+      databaseClient.query(
+        `SELECT 1
+         FROM titulacion.asignaciones_proyecto
+         WHERE proyecto_id = $1
+           AND tipo = 'TUTOR'
+           AND NOT activo
+           AND fecha_fin IS NOT NULL
+           AND motivo_cambio ILIKE '%declin%'
+         LIMIT 1`,
+        [projectId],
+      ),
+      databaseClient.query(
+        `SELECT 1
+         FROM titulacion.asignaciones_proyecto
+         WHERE proyecto_id = $1
+           AND tipo = 'TUTOR'
+           AND fecha_fin IS NULL
+         LIMIT 1`,
+        [projectId],
+      ),
+    ])
+    if (!declinedTutor.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Aún no tienes una tutoría declinada para reemplazar.' })
+    }
+    if (currentTutor.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Tu proyecto ya tiene una tutoría activa o una invitación pendiente.' })
+    }
+
+    const tutor = await staffWithRole(databaseClient, {
+      teacherId: tutorId,
+      careerId: student.rows[0].carrera_id,
+      roleCode: 'TUTOR',
+    })
+    if (!tutor) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'Selecciona un tutor disponible de la lista.' })
+    }
+    const previouslyDeclined = await databaseClient.query(
+      `SELECT 1
+       FROM titulacion.asignaciones_proyecto
+       WHERE proyecto_id = $1
+         AND docente_id = $2
+         AND tipo = 'TUTOR'
+         AND NOT activo
+         AND fecha_fin IS NOT NULL
+         AND motivo_cambio ILIKE '%declin%'
+       LIMIT 1`,
+      [projectId, tutor.id],
+    )
+    if (previouslyDeclined.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(422).json({ message: 'Selecciona un docente distinto al que declinó la tutoría.' })
+    }
+
+    await databaseClient.query(
+      `INSERT INTO titulacion.asignaciones_proyecto
+        (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
+       VALUES ($1, $2, 'TUTOR', $3, false, $4)`,
+      [
+        projectId,
+        tutor.id,
+        request.session.usuario_id,
+        'Tutor propuesto nuevamente por el estudiante después de una declinación; pendiente de respuesta del tutor.',
+      ],
+    )
+    await databaseClient.query(
+      `UPDATE titulacion.proyectos
+       SET tiene_tutor = true,
+           tutor_nombre_declarado = $2,
+           tutor_correo_declarado = $3
+       WHERE id = $1`,
+      [projectId, tutor.name, tutor.correo],
+    )
+    await createNotification(databaseClient, {
+      userId: tutor.usuario_id,
+      recipientEmail: tutor.correo,
+      projectId,
+      type: 'SOLICITUD_TUTORIA',
+      title: 'Nueva invitación de tutoría',
+      message: `El estudiante te propone como tutor del proyecto ${selectedProject.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
+      link: '/tutor/invitaciones',
+      queueEmail: true,
+    })
+    const administrators = await databaseClient.query(
+      `SELECT DISTINCT u.id AS usuario_id, u.correo
+       FROM titulacion.usuarios u
+       JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
+       JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = 'ADMINISTRADOR'
+       WHERE u.activo`,
+    )
+    for (const administrator of administrators.rows) {
+      await createNotification(databaseClient, {
+        userId: administrator.usuario_id,
+        recipientEmail: administrator.correo,
+        projectId,
+        type: 'TUTOR_PROPUESTO_POR_ESTUDIANTE',
+        title: 'Nuevo tutor propuesto por el estudiante',
+        message: `El estudiante propuso un nuevo tutor para el proyecto ${selectedProject.codigo_seguimiento}. Espera su respuesta antes de asignar revisores.`,
+        link: '/admin/revisiones-por-iniciar',
+        queueEmail: true,
+      })
+    }
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'PROPONER_NUEVO_TUTOR_POR_DECLINACION',
+      entity: 'asignaciones_proyecto',
+      detail: { tutorId: tutor.id, previousTutorDeclined: true },
+    })
+    await databaseClient.query('COMMIT')
+    return response.status(201).json({ message: `La invitación fue enviada a ${tutor.name}. Recibirás un aviso cuando responda.` })
+  } catch (error) {
+    if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient?.release()
   }
 })
 

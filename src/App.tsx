@@ -105,7 +105,7 @@ type AppNotification = {
   readAt: string | null
   createdAt: string
 }
-type NotificationDestination = '/student' | '/documentos' | '/tutor' | '/tutor/invitaciones' | '/tutor/proyectos' | '/revisor' | '/revisor/pendientes' | '/admin' | '/admin/nuevos-proyectos' | '/admin/revisiones-por-iniciar' | '/admin/nuevos-docentes'
+type NotificationDestination = '/student' | '/student/proponer-tutor' | '/documentos' | '/tutor' | '/tutor/invitaciones' | '/tutor/proyectos' | '/revisor' | '/revisor/pendientes' | '/admin' | '/admin/nuevos-proyectos' | '/admin/revisiones-por-iniciar' | '/admin/nuevos-docentes'
 type TutorDashboard = {
   user: TutorUser
   invitations: TutorAssignment[]
@@ -255,6 +255,7 @@ type Project = {
   status: string
   statusCode: string
   registeredAt: string
+  needsTutorProposal: boolean
 }
 type ProjectRejectionReason = {
   reviewer: string
@@ -344,7 +345,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function notificationDestination(link: string | null): NotificationDestination | null {
-  const destinations: NotificationDestination[] = ['/student', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/revisor', '/revisor/pendientes', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
+  const destinations: NotificationDestination[] = ['/student', '/student/proponer-tutor', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/revisor', '/revisor/pendientes', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
   return destinations.includes(link as NotificationDestination) ? link as NotificationDestination : null
 }
 
@@ -1027,10 +1028,14 @@ function ReviewProgress({ reviews }: { reviews: ReviewParticipant[] }) {
   </div>
 }
 
-function HomeView({ data, onLogout, onProject, onDocuments, sessionActions }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void; sessionActions: ReactNode }) {
+function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
   const [overview, setOverview] = useState<StudentOverview | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(data.project))
   const [error, setError] = useState('')
+  const [isTutorProposalOpen, setIsTutorProposalOpen] = useState(false)
+  const [selectedTutorId, setSelectedTutorId] = useState('')
+  const [proposalMessage, setProposalMessage] = useState('')
+  const [isSubmittingTutorProposal, setIsSubmittingTutorProposal] = useState(false)
 
   useEffect(() => {
     if (!data.project) {
@@ -1047,7 +1052,39 @@ function HomeView({ data, onLogout, onProject, onDocuments, sessionActions }: { 
       .finally(() => { if (isCurrent) setIsLoading(false) })
 
     return () => { isCurrent = false }
-  }, [data.project?.id])
+  }, [data.project?.id, data.project?.needsTutorProposal])
+
+  useEffect(() => {
+    if (navigationTarget === '/student/proponer-tutor') {
+      setIsTutorProposalOpen(true)
+      onNavigationHandled()
+    }
+  }, [navigationTarget, onNavigationHandled])
+
+  async function submitTutorProposal(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!data.project || !selectedTutorId) {
+      setProposalMessage('Selecciona un docente para enviar la invitación.')
+      return
+    }
+    setIsSubmittingTutorProposal(true)
+    setProposalMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/student/projects/${data.project.id}/tutor-proposal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tutorId: selectedTutorId }),
+      })
+      setProposalMessage(result.message)
+      setSelectedTutorId('')
+      setIsTutorProposalOpen(false)
+      await onRefresh()
+    } catch (proposalError) {
+      setProposalMessage(proposalError instanceof Error ? proposalError.message : 'No fue posible enviar la invitación al tutor.')
+    } finally {
+      setIsSubmittingTutorProposal(false)
+    }
+  }
 
   const project = overview?.project ?? data.project
 
@@ -1075,6 +1112,8 @@ function HomeView({ data, onLogout, onProject, onDocuments, sessionActions }: { 
 
           {!project ? <section className="student-callout home-empty"><Icon name="clipboard" /><div><strong>Aún no registraste una propuesta</strong><p>Completa el Formulario 1 para iniciar tu proceso y generar tu código de seguimiento.</p><button className="primary-button" onClick={onProject} type="button">Registrar mi proyecto <Icon name="arrow" /></button></div></section> : (
             <>
+              {data.project?.needsTutorProposal && <section className="student-callout tutor-proposal-callout"><Icon name="user" /><div><span className="tutor-proposal-label">ACCIÓN REQUERIDA</span><strong>El docente declinó tu tutoría</strong><p>Debes proponer un nuevo docente para que pueda aceptar y continuar con el acompañamiento de tu proyecto.</p>{!isTutorProposalOpen && <button className="primary-button" onClick={() => { setIsTutorProposalOpen(true); setProposalMessage('') }} type="button">Proponer nuevo docente <Icon name="arrow" /></button>}</div>{isTutorProposalOpen && <form className="tutor-proposal-form" onSubmit={submitTutorProposal}><label className="form-field"><span>Nuevo tutor <b>*</b></span><select disabled={isSubmittingTutorProposal || data.tutors.length === 0} onChange={(event) => setSelectedTutorId(event.target.value)} value={selectedTutorId}><option value="">Selecciona un tutor</option>{data.tutors.map((tutor) => <option key={tutor.id} value={tutor.id}>{tutor.name}</option>)}</select><small>El docente recibirá una invitación y deberá aceptarla para confirmar la tutoría.</small></label><div className="tutor-proposal-actions"><button className="secondary-button" disabled={isSubmittingTutorProposal} onClick={() => { setIsTutorProposalOpen(false); setProposalMessage('') }} type="button">Cancelar</button><button className="primary-button" disabled={isSubmittingTutorProposal || !selectedTutorId} type="submit">{isSubmittingTutorProposal ? 'Enviando…' : 'Enviar invitación'} <Icon name="arrow" /></button></div></form>}</section>}
+              {proposalMessage && <p aria-live="polite" className="student-message is-visible documents-message">{proposalMessage}</p>}
               {isLoading && <div className="documents-loading">Cargando la información de tu proceso…</div>}
               {error && <p className="student-message is-visible documents-message">{error}</p>}
               {!isLoading && !error && overview && <div className="home-overview">
@@ -2169,8 +2208,12 @@ function App() {
     }
     const destination = notificationDestination(notification.link)
     if (destination === '/student') setView('home')
+    if (destination === '/student/proponer-tutor') {
+      setView('home')
+      setNavigationTarget(destination)
+    }
     if (destination === '/documentos') setView('documents')
-    if (destination && !['/student', '/documentos'].includes(destination)) setNavigationTarget(destination)
+    if (destination && !['/student', '/student/proponer-tutor', '/documentos'].includes(destination)) setNavigationTarget(destination)
     if (data && notification.role !== data.user.role) {
       await handleRoleChange(notification.role)
       return
@@ -2188,7 +2231,7 @@ function App() {
   if ('summary' in data) return <AdminPortal data={data} navigationTarget={navigationTarget} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   if ('invitations' in data) return <TutorPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   return view === 'home'
-    ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
+    ? <HomeView data={data} navigationTarget={navigationTarget} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} onRefresh={loadPortal} onNavigationHandled={() => setNavigationTarget(null)} sessionActions={sessionActions(data.user)} />
     : view === 'documents'
       ? <DocumentsView data={data} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
       : <StudentForm data={data} onDocuments={() => setView('documents')} onHome={() => setView('home')} onLogout={handleLogout} onRegistered={loadPortal} sessionActions={sessionActions(data.user)} />

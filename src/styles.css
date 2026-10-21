@@ -167,6 +167,13 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .student-callout svg { color: var(--univalle-wine); flex: 0 0 auto; height: 20px; width: 20px; }
 .student-callout strong { color: #5f1231; font-size: 13px; }
 .student-callout p { color: #835d6b; font-size: 12px; line-height: 1.5; margin: 3px 0 0; }
+.tutor-proposal-callout { align-items: start; display: grid; grid-template-columns: auto minmax(0, 1fr); }
+.tutor-proposal-callout > svg { grid-row: 1 / span 2; }
+.tutor-proposal-callout > div { display: grid; gap: 5px; }
+.tutor-proposal-label { color: #9f3048; font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.tutor-proposal-callout .primary-button { margin-top: 8px; width: fit-content; }
+.tutor-proposal-form { border-top: 1px solid #ebcfd8; display: grid; gap: 12px; grid-column: 2; margin-top: 14px; padding-top: 14px; }
+.tutor-proposal-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
 .project-form { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 10px 27px rgba(71, 39, 49, .04); }
 .form-section { border-bottom: 1px solid #eee8e9; padding: 30px clamp(21px, 4vw, 42px); }

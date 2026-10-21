@@ -14,10 +14,13 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL, options: '-c
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const studentEmail = `qa.tutor.student.${suffix}@univalle.edu`
 const tutorEmail = `qa.tutor.docente.${suffix}@univalle.edu`
+const replacementTutorEmail = `qa.tutor.reemplazo.${suffix}@univalle.edu`
 const studentPassword = 'TutorFlowStudent-2026'
 const tutorPassword = 'TutorFlowTeacher-2026'
 let studentUserId = ''
 let tutorUserId = ''
+let replacementTutorUserId = ''
+let replacementTutorId = ''
 let projectId = ''
 let storedPath = ''
 let studentCookie = ''
@@ -106,6 +109,22 @@ async function setupUsers() {
       [tutorUserId, catalog.carrera_id, `QA-TUTOR-${suffix}`],
     )
     await client.query('INSERT INTO titulacion.usuario_roles (usuario_id, rol_id) VALUES ($1, $2)', [tutorUserId, catalog.tutor_rol_id])
+
+    const replacementTutor = await client.query(
+      `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash)
+       VALUES ('QA', 'Tutor Reemplazo', $1, $2)
+       RETURNING id`,
+      [replacementTutorEmail, await bcrypt.hash(tutorPassword, 10)],
+    )
+    replacementTutorUserId = replacementTutor.rows[0].id
+    const replacementTeacher = await client.query(
+      `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad)
+       VALUES ($1, $2, $3, 'Pruebas automatizadas')
+       RETURNING id`,
+      [replacementTutorUserId, catalog.carrera_id, `QA-TUTOR-REEMPLAZO-${suffix}`],
+    )
+    replacementTutorId = replacementTeacher.rows[0].id
+    await client.query('INSERT INTO titulacion.usuario_roles (usuario_id, rol_id) VALUES ($1, $2)', [replacementTutorUserId, catalog.tutor_rol_id])
     await client.query('COMMIT')
   } catch (error) {
     await client.query('ROLLBACK').catch(() => undefined)
@@ -120,6 +139,7 @@ async function cleanup() {
   try {
     await client.query('BEGIN')
     if (projectId) {
+      await client.query('DELETE FROM titulacion.auditoria WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.asignaciones_proyecto WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.historial_estados WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.documentos WHERE proyecto_id = $1', [projectId])
@@ -127,14 +147,16 @@ async function cleanup() {
       await client.query('DELETE FROM titulacion.proyecto_estudiantes WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.proyectos WHERE id = $1', [projectId])
     }
-    const userIds = [studentUserId, tutorUserId].filter(Boolean)
+    const userIds = [studentUserId, tutorUserId, replacementTutorUserId].filter(Boolean)
     if (userIds.length > 0) {
+      await client.query('DELETE FROM titulacion.auditoria WHERE usuario_id = ANY($1::uuid[])', [userIds])
       await client.query('DELETE FROM titulacion.sesiones_usuario WHERE usuario_id = ANY($1::uuid[])', [userIds])
       await client.query('DELETE FROM titulacion.notificaciones WHERE usuario_id = ANY($1::uuid[])', [userIds])
       await client.query('DELETE FROM titulacion.usuario_roles WHERE usuario_id = ANY($1::uuid[])', [userIds])
     }
     if (studentUserId) await client.query('DELETE FROM titulacion.estudiantes WHERE usuario_id = $1', [studentUserId])
     if (tutorUserId) await client.query('DELETE FROM titulacion.docentes WHERE usuario_id = $1', [tutorUserId])
+    if (replacementTutorUserId) await client.query('DELETE FROM titulacion.docentes WHERE usuario_id = $1', [replacementTutorUserId])
     if (userIds.length > 0) await client.query('DELETE FROM titulacion.usuarios WHERE id = ANY($1::uuid[])', [userIds])
     await client.query('COMMIT')
   } catch (error) {
@@ -231,6 +253,12 @@ try {
   assert.equal(acceptedData.projects.length, 1, 'El proyecto no se habilitó para el tutor')
   const file = await expect(await fetch(`${apiUrl}/api/tutor/documents/${invitation.profile.documentId}/download`, { headers: { Cookie: tutorCookie } }), 200, 'Descarga del perfil por tutor confirmado')
   assert.ok((await file.arrayBuffer()).byteLength > 50, 'El perfil descargado por el tutor está vacío')
+  await pool.query(
+    `UPDATE titulacion.asignaciones_proyecto
+     SET activo = false, fecha_fin = now(), motivo_cambio = 'Tutoría finalizada para preparar la prueba de declinación.'
+     WHERE id = $1`,
+    [invitation.id],
+  )
   const declinedAssignment = await pool.query(
     `INSERT INTO titulacion.asignaciones_proyecto
       (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
@@ -259,7 +287,31 @@ try {
   const studentNotifications = await expect(await fetch(`${apiUrl}/api/notifications`, { headers: { Cookie: studentCookie } }), 200, 'Aviso al estudiante')
   const studentNotificationData = await studentNotifications.json()
   assert.ok(studentNotificationData.notifications.some((item) => item.type === 'TUTORIA_ACEPTADA'), 'No se notificó al estudiante la aceptación')
-  assert.ok(studentNotificationData.notifications.some((item) => item.type === 'TUTORIA_DECLINADA'), 'No se notificó al estudiante la declinación')
+  const declinedNotification = studentNotificationData.notifications.find((item) => item.type === 'TUTORIA_DECLINADA')
+  assert.ok(declinedNotification, 'No se notificó al estudiante la declinación')
+  assert.equal(declinedNotification.link, '/student/proponer-tutor', 'La declinación no dirige a proponer un nuevo tutor')
+  assert.match(declinedNotification.message, /Debes proponer un nuevo docente/, 'La declinación no indica el siguiente paso al estudiante')
+  const bootstrapAfterDecline = await expect(await fetch(`${apiUrl}/api/student/bootstrap`, { headers: { Cookie: studentCookie } }), 200, 'Disponibilidad para proponer un nuevo tutor')
+  const declineBootstrapData = await bootstrapAfterDecline.json()
+  assert.equal(declineBootstrapData.project.needsTutorProposal, true, 'No se habilitó la propuesta de un nuevo tutor')
+  assert.ok(!declineBootstrapData.tutors.some((item) => item.name === 'QA Tutor Temporal'), 'El docente que declinó sigue disponible para una nueva propuesta')
+  assert.ok(declineBootstrapData.tutors.some((item) => item.id === replacementTutorId), 'El docente de reemplazo no está disponible para la propuesta')
+  const newTutorProposal = await expect(await fetch(`${apiUrl}/api/student/projects/${projectId}/tutor-proposal`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: studentCookie }, body: JSON.stringify({ tutorId: replacementTutorId }),
+  }), 201, 'Propuesta del nuevo tutor por el estudiante')
+  assert.match((await newTutorProposal.json()).message, /invitación fue enviada/, 'No se confirmó la invitación al nuevo tutor')
+  const replacementAssignment = await pool.query(
+    `SELECT a.activo, a.fecha_fin, u.correo
+     FROM titulacion.asignaciones_proyecto a
+     JOIN titulacion.docentes d ON d.id = a.docente_id
+     JOIN titulacion.usuarios u ON u.id = d.usuario_id
+     WHERE a.proyecto_id = $1 AND a.tipo = 'TUTOR' AND a.fecha_fin IS NULL`,
+    [projectId],
+  )
+  assert.equal(replacementAssignment.rows[0].activo, false, 'La nueva tutoría no quedó pendiente de respuesta')
+  assert.equal(replacementAssignment.rows[0].correo, replacementTutorEmail, 'La invitación fue enviada a otro docente')
+  const bootstrapAfterProposal = await expect(await fetch(`${apiUrl}/api/student/bootstrap`, { headers: { Cookie: studentCookie } }), 200, 'Estado posterior a proponer tutor')
+  assert.equal((await bootstrapAfterProposal.json()).project.needsTutorProposal, false, 'La acción de proponer tutor continuó disponible pese a la nueva invitación')
   const emailQueue = await pool.query(
     `SELECT count(*)::int AS total
      FROM titulacion.cola_correos_notificacion q
@@ -267,7 +319,7 @@ try {
      WHERE n.proyecto_id = $1 AND q.tipo = 'SOLICITUD_TUTORIA' AND q.estado = 'PENDIENTE'`,
     [projectId],
   )
-  assert.equal(emailQueue.rows[0].total, 1, 'No se registró el aviso de correo pendiente')
+  assert.equal(emailQueue.rows[0].total, 2, 'No se registraron los avisos de correo para ambas invitaciones')
   console.log(`QA tutor aprobado: invitación, campanita, aceptación, acceso y cola de correo verificados (${registered.project.code}).`)
 } finally {
   if (studentCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: studentCookie } }).catch(() => undefined)
