@@ -675,7 +675,7 @@ async function schedulePrivateDefenseReview(databaseClient, { project, documentI
       type: 'DEFENSA_PRIVADA_ASIGNADA',
       title: 'Documento para defensa privada pendiente de revisión',
       message: `El estudiante envió la versión V${versionNumber} del documento ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
-      link: participant.tipo === 'TUTOR' ? '/tutor' : '/revisor',
+      link: participant.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
     })
   }
   await recordProjectStatus(databaseClient, {
@@ -761,7 +761,7 @@ async function schedulePublicDefenseReview(databaseClient, { project, documentId
       type: 'DEFENSA_PUBLICA_ASIGNADA',
       title: 'Documento para defensa pública pendiente de revisión',
       message: `El estudiante envió la versión V${versionNumber} del documento final ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
-      link: participant.tipo === 'TUTOR' ? '/tutor' : '/revisor',
+      link: participant.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
     })
   }
   await recordProjectStatus(databaseClient, {
@@ -894,7 +894,7 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
       type: 'CORRECCION_PENDIENTE_REVISION',
       title: 'Corrección pendiente de revisión',
       message: `El estudiante adjuntó la versión V${versionNumber} corregida del perfil ${project.codigo_seguimiento}. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
-      link: reviewer.tipo === 'TUTOR' ? '/tutor' : '/revisor',
+      link: reviewer.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
     })
   }
   await recordProjectStatus(databaseClient, {
@@ -1001,8 +1001,8 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
       userId: staff.usuario_id,
       projectId: project.id,
       type: 'ASIGNACION_REVISION',
-      title: 'Nueva asignación de revisión',
-      message: `Administración te asignó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}.`,
+      title: 'Designación como revisor',
+      message: `Administración te designó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}. Recibirás otro aviso cuando el perfil esté disponible para evaluación.`,
       link: '/revisor',
     })
   }
@@ -2193,7 +2193,8 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
                   reviewers.asignados AS revisores_asignados,
                   reviews.fecha_limite_revision,
                   reviews.revisiones_pendientes,
-                  reviews.revision_vencida
+                  reviews.revision_vencida,
+                  reviews.rondas_creadas
            FROM titulacion.proyectos p
            JOIN titulacion.gestiones g ON g.id = p.gestion_id
            JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
@@ -2229,7 +2230,8 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
            LEFT JOIN LATERAL (
              SELECT min(rr.fecha_limite) FILTER (WHERE rr.cerrada_en IS NULL) AS fecha_limite_revision,
                     count(r.id) FILTER (WHERE r.decidida_en IS NULL)::int AS revisiones_pendientes,
-                    COALESCE(bool_or(rr.fecha_limite < now() AND rr.cerrada_en IS NULL), false) AS revision_vencida
+                    COALESCE(bool_or(rr.fecha_limite < now() AND rr.cerrada_en IS NULL), false) AS revision_vencida,
+                    count(DISTINCT rr.id)::int AS rondas_creadas
              FROM titulacion.rondas_revision rr
              JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
              JOIN titulacion.documentos d ON d.id = vd.documento_id
@@ -2286,9 +2288,14 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       pendingReviews: Number(project.revisiones_pendientes ?? 0),
       isOverdue: project.revision_vencida,
       reviewerCount: Number(project.revisores_asignados ?? 0),
+      reviewRoundCount: Number(project.rondas_creadas ?? 0),
+      canStartInitialReview: !project.es_final
+        && project.tutoria_confirmada
+        && Number(project.revisores_asignados ?? 0) === 2
+        && Number(project.rondas_creadas ?? 0) === 0,
     }))
 
-    const newProjects = projectRows.filter((project) => !project.isFinal && project.reviewerCount === 0)
+    const pendingReviewStarts = projectRows.filter((project) => !project.isFinal && project.reviewRoundCount === 0)
 
     const summary = projectRows.reduce((total, project) => ({
       total: total.total + 1,
@@ -2296,8 +2303,8 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       inReview: total.inReview + (project.statusCode === 'EN_REVISION' ? 1 : 0),
       observed: total.observed + (project.statusCode === 'OBSERVADO' ? 1 : 0),
       overdue: total.overdue + (project.isOverdue ? 1 : 0),
-      newProjects: total.newProjects + (project.reviewerCount === 0 && !project.isFinal ? 1 : 0),
-    }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0, newProjects: 0 })
+      pendingReviewStarts: total.pendingReviewStarts + (project.reviewRoundCount === 0 && !project.isFinal ? 1 : 0),
+    }), { total: 0, registered: 0, inReview: 0, observed: 0, overdue: 0, pendingReviewStarts: 0 })
     summary.newTeachers = pendingTeachers.rows.length
 
     return response.json({
@@ -2305,7 +2312,7 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
       summary,
       statuses: statuses.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
       projects: projectRows,
-      newProjects,
+      pendingReviewStarts,
       newTeachers: pendingTeachers.rows.map((teacher) => ({
         id: teacher.id,
         firstName: teacher.nombres,
@@ -2589,7 +2596,7 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
       detail: { reviewer1Id, reviewer2Id, changed: changes.filter((item) => item.changed).length },
     })
     await databaseClient.query('COMMIT')
-    return response.json({ message: 'Revisor 1 y Revisor 2 fueron asignados y notificados.', changed: changes.filter((item) => item.changed).length })
+    return response.json({ message: 'El equipo evaluador fue asignado. Selecciona la versión del perfil y programa la primera ronda para habilitar las evaluaciones.', changed: changes.filter((item) => item.changed).length })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -2697,7 +2704,7 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
         type: reviewer.tipo === 'TUTOR' ? 'REVISION_TUTOR_ASIGNADA' : 'REVISION_ASIGNADA',
         title: 'Perfil pendiente de revisión',
         message: `El perfil ${project.codigo_seguimiento} fue enviado a revisión. Fecha límite: ${deadline.toLocaleDateString('es-BO')}.`,
-        link: reviewer.tipo === 'TUTOR' ? '/tutor' : '/revisor',
+        link: reviewer.tipo === 'TUTOR' ? '/tutor/proyectos' : '/revisor/pendientes',
       })
     }
     await recordProjectStatus(databaseClient, {
@@ -2717,7 +2724,7 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
       detail: { versionId, deadline: deadline.toISOString(), reviewers: reviewers.rows.map((item) => item.id) },
     })
     await databaseClient.query('COMMIT')
-    return response.status(201).json({ message: 'La ronda de revisión fue creada y notificada a los revisores.', roundId: round.rows[0].id })
+    return response.status(201).json({ message: 'La ronda de revisión fue creada y notificada al tutor y a los dos revisores.', roundId: round.rows[0].id })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -3121,7 +3128,7 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
           type: 'TUTOR_CONFIRMADO_PENDIENTE_REVISORES',
           title: 'Tutor confirmado: asigna los revisores',
           message: `El tutor aceptó el proyecto ${selected.codigo_seguimiento}. Ya puedes asignar Revisor 1 y Revisor 2.`,
-          link: '/admin',
+          link: '/admin/revisiones-por-iniciar',
           queueEmail: true,
         })
       }
@@ -4456,8 +4463,8 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       projectId: createdProject.id,
       type: 'NUEVO_PROYECTO_REGISTRADO',
       title: 'Nuevo proyecto registrado',
-      message: `El estudiante registró el proyecto ${createdProject.codigo_seguimiento}. Asigna los revisores cuando el tutor acepte la invitación.`,
-      link: '/admin/nuevos-proyectos',
+      message: `El estudiante registró el proyecto ${createdProject.codigo_seguimiento}. Completa el equipo evaluador y programa la primera ronda cuando el tutor acepte.`,
+      link: '/admin/revisiones-por-iniciar',
       queueEmail: true,
     })
 

@@ -105,6 +105,7 @@ type AppNotification = {
   readAt: string | null
   createdAt: string
 }
+type NotificationDestination = '/student' | '/documentos' | '/tutor' | '/tutor/invitaciones' | '/tutor/proyectos' | '/revisor' | '/revisor/pendientes' | '/admin' | '/admin/nuevos-proyectos' | '/admin/revisiones-por-iniciar' | '/admin/nuevos-docentes'
 type TutorDashboard = {
   user: TutorUser
   invitations: TutorAssignment[]
@@ -168,13 +169,15 @@ type AdminProject = {
   pendingReviews: number
   isOverdue: boolean
   reviewerCount: number
+  reviewRoundCount: number
+  canStartInitialReview: boolean
 }
 type AdminDashboard = {
   user: AdministratorUser
-  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number; newProjects: number; newTeachers: number }
+  summary: { total: number; registered: number; inReview: number; observed: number; overdue: number; pendingReviewStarts: number; newTeachers: number }
   statuses: { code: string; name: string }[]
   projects: AdminProject[]
-  newProjects: AdminProject[]
+  pendingReviewStarts: AdminProject[]
   newTeachers: PendingTeacher[]
 }
 type PendingTeacher = { id: string; firstName: string; lastName: string; fullName: string; email: string; createdAt: string; confirmedAt: string }
@@ -224,7 +227,7 @@ type AdminAssignment = {
   reason: string | null
 }
 type AdminProjectDetail = {
-  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'reviewDeadline' | 'pendingReviews' | 'isOverdue'> & { description: string; generalObjective: string }
+  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'reviewDeadline' | 'pendingReviews' | 'isOverdue' | 'reviewRoundCount' | 'canStartInitialReview'> & { description: string; generalObjective: string }
   students: { name: string; registration: string }[]
   staff: AdminStaff[]
   assignments: AdminAssignment[]
@@ -338,6 +341,11 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const body = await response.json().catch(() => ({})) as { message?: string }
   if (!response.ok) throw new Error(body.message ?? 'No fue posible completar la operación.')
   return body as T
+}
+
+function notificationDestination(link: string | null): NotificationDestination | null {
+  const destinations: NotificationDestination[] = ['/student', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/revisor', '/revisor/pendientes', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
+  return destinations.includes(link as NotificationDestination) ? link as NotificationDestination : null
 }
 
 function Icon({ name }: { name: IconName }) {
@@ -1217,7 +1225,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
   )
 }
 
-function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
+function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
   const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'reviewed' | 'defenses' | 'notifications'>('home')
   const [defenseType, setDefenseType] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE')
   const [decliningId, setDecliningId] = useState('')
@@ -1229,6 +1237,24 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
   const [declineReason, setDeclineReason] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    if (navigationTarget === '/tutor/invitaciones') {
+      setSelectedEvaluation(null)
+      setView('invitations')
+      onNavigationHandled()
+    }
+    if (navigationTarget === '/tutor/proyectos') {
+      setSelectedEvaluation(null)
+      setView('projects')
+      onNavigationHandled()
+    }
+    if (navigationTarget === '/tutor') {
+      setSelectedEvaluation(null)
+      setView('home')
+      onNavigationHandled()
+    }
+  }, [navigationTarget, onNavigationHandled])
 
   async function respond(assignmentId: string, decision: 'ACEPTAR' | 'DECLINAR') {
     if (decision === 'DECLINAR' && declineReason.trim().length < 5) {
@@ -1360,7 +1386,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions 
   </main>
 }
 
-function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActions }: { data: ReviewerDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode }) {
+function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: ReviewerDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
   const [view, setView] = useState<'home' | 'pending' | 'completed' | 'defenses' | 'notifications'>('home')
   const [defenseType, setDefenseType] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE')
   const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
@@ -1371,6 +1397,19 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   const [publicRatification, setPublicRatification] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    if (navigationTarget === '/revisor/pendientes') {
+      closeReview()
+      setView('pending')
+      onNavigationHandled()
+    }
+    if (navigationTarget === '/revisor') {
+      closeReview()
+      setView('home')
+      onNavigationHandled()
+    }
+  }, [navigationTarget, onNavigationHandled])
 
   function openReview(review: ReviewerReview) {
     setSelectedReview(review)
@@ -1651,6 +1690,9 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const isCancelled = detail?.project.statusCode === 'ANULADO'
   const tutorAssignment = detail?.assignments.find((item) => item.type === 'TUTOR')
   const tutorConfirmed = Boolean(tutorAssignment?.active && tutorAssignment.respondedAt && !tutorAssignment.finishedAt)
+  const assignedReviewers = detail?.assignments.filter((item) => item.type === 'REVISOR_1' || item.type === 'REVISOR_2').filter((item) => item.active && !item.finishedAt) ?? []
+  const canScheduleReview = Boolean(tutorConfirmed && assignedReviewers.length === 2 && !detail?.rounds.some((round) => !round.closedAt))
+  const firstReviewReady = Boolean(canScheduleReview && detail?.rounds.length === 0)
 
   return <main className="student-page admin-page">
     <aside className="student-sidebar admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></aside>
@@ -1667,8 +1709,8 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
 
         {!isCancelled && <div className="admin-operation-grid">
           <form className="admin-operation-card" onSubmit={(event) => void submitTutor(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>PASO 1 · TUTORÍA</p><h2>Tutor propuesto</h2></div></div><p>El estudiante propone un tutor al registrar su proyecto. Administración puede enviar o reemplazar la invitación si fuese necesario.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className={tutorConfirmed ? 'admin-assignment-state is-confirmed' : 'admin-assignment-state'}>{tutorConfirmed ? `Tutor confirmado: ${tutorAssignment?.teacher}` : tutorAssignment ? `Esperando respuesta de ${tutorAssignment.teacher}.` : 'Aún no se propuso un tutor.'}</p><button className="secondary-button" disabled={isSubmitting || !tutorId} type="submit">{tutorAssignment ? 'Cambiar tutor propuesto' : 'Enviar invitación al tutor'}</button></form>
-          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · REVISIÓN</p><h2>Asignar revisores</h2></div></div><p>{tutorConfirmed ? 'El tutor aceptó la invitación. Define los dos revisores que participarán en las rondas de evaluación.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">Asignar y notificar revisores</button></form>
-          <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>REVISIÓN DEL PERFIL</p><h2>Programar ronda</h2></div></div><p>Envía una versión del perfil a Revisor 1 y Revisor 2 con un único plazo de respuesta.</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><label className="form-field"><span>Fecha límite <b>*</b></span><input disabled={isSubmitting} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setReviewDeadline(event.target.value)} type="date" value={reviewDeadline} /></label><button className="primary-button" disabled={isSubmitting || detail.profiles.length === 0} type="submit">Iniciar revisión</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · EQUIPO EVALUADOR</p><h2>Asignar revisores</h2></div></div><p>{tutorConfirmed ? 'El tutor aceptó la invitación. Define Revisor 1 y Revisor 2; esta acción aún no envía el perfil a evaluación.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">Guardar equipo evaluador</button></form>
+          <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PASO 3 · INICIO DE REVISIÓN</p><h2>{firstReviewReady ? 'Programar primera ronda' : 'Programar ronda'}</h2></div></div><p>{canScheduleReview ? 'Selecciona la versión y fecha límite para enviar el perfil al tutor y a los dos revisores.' : 'Esta acción se habilita cuando el tutor haya aceptado, estén asignados los dos revisores y no exista una ronda abierta.'}</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><label className="form-field"><span>Fecha límite <b>*</b></span><input disabled={isSubmitting} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setReviewDeadline(event.target.value)} type="date" value={reviewDeadline} /></label><button className="primary-button" disabled={isSubmitting || !canScheduleReview || detail.profiles.length === 0 || !profileVersionId || !reviewDeadline} type="submit">Enviar perfil a revisión</button></form>
         </div>}
 
         <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se programó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Solicitada: {formatDate(round.requestedAt)} · Límite: {formatDate(round.deadline)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
@@ -1843,8 +1885,8 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
   </form>
 }
 
-function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: 'new-projects' | 'new-teachers' | null; onNavigationHandled: () => void }) {
-  const [view, setView] = useState<'home' | 'projects' | 'new-projects' | 'new-teachers' | 'users'>('home')
+function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
+  const [view, setView] = useState<'home' | 'projects' | 'review-starts' | 'new-teachers' | 'users'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -1870,14 +1912,14 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
     const matchesStatus = userStatus === 'ALL' || (userStatus === 'ACTIVE' ? user.active : !user.active)
     return matchesSearch && matchesRole && matchesStatus
   })
-  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'new-projects' ? 'Nuevos proyectos' : view === 'new-teachers' ? 'Nuevos docentes' : 'Usuarios'
+  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'review-starts' ? 'Revisiones por iniciar' : view === 'new-teachers' ? 'Nuevos docentes' : 'Usuarios'
 
   useEffect(() => {
-    if (navigationTarget === 'new-projects') {
-      setView('new-projects')
+    if (navigationTarget === '/admin/revisiones-por-iniciar' || navigationTarget === '/admin/nuevos-proyectos' || navigationTarget === '/admin') {
+      setView('review-starts')
       onNavigationHandled()
     }
-    if (navigationTarget === 'new-teachers') {
+    if (navigationTarget === '/admin/nuevos-docentes') {
       setView('new-teachers')
       onNavigationHandled()
     }
@@ -1967,11 +2009,17 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
   if (selectedProjectId) return <AdminProjectWorkspace onBack={() => setSelectedProjectId('')} onLogout={onLogout} onRefresh={onRefresh} projectId={selectedProjectId} sessionActions={sessionActions} user={data.user} />
 
   function projectCard(project: AdminProject) {
-    const reviewLabel = project.isOverdue
-      ? 'Revisión fuera de plazo'
-      : project.reviewDeadline
-        ? `Límite de revisión: ${formatDate(project.reviewDeadline)}`
-        : 'Sin revisión programada'
+    const reviewLabel = project.reviewRoundCount === 0
+      ? project.canStartInitialReview
+        ? 'Equipo completo: programa la primera ronda.'
+        : project.tutorStatus !== 'CONFIRMADA'
+          ? 'Pendiente de confirmación del tutor.'
+          : `Falta asignar ${2 - project.reviewerCount} revisor${2 - project.reviewerCount === 1 ? '' : 'es'}.`
+      : project.isOverdue
+        ? 'Revisión fuera de plazo'
+        : project.reviewDeadline
+          ? `Límite de revisión: ${formatDate(project.reviewDeadline)}`
+          : 'Sin revisión pendiente'
     const tutorLabel = project.tutorStatus === 'CONFIRMADA'
       ? 'Tutoría confirmada'
       : project.tutorStatus === 'PENDIENTE'
@@ -1982,8 +2030,8 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
       <div className="admin-project-top"><span className="tutor-code">{project.code}</span><span className={`admin-status status-${project.statusCode.toLocaleLowerCase()}`}>{project.status}</span></div>
       <h2>{project.title}</h2>
       <div className="admin-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase}</span></div>
-      <div className="admin-project-details"><div><small>Tutor asignado</small><strong>{project.tutor}</strong><span>{tutorLabel}</span></div><div><small>Revisión</small><strong>{project.pendingReviews > 0 ? `${project.pendingReviews} pendiente${project.pendingReviews === 1 ? '' : 's'}` : 'Sin pendientes'}</strong><span>{reviewLabel}</span></div></div>
-      <footer><span>{project.management}</span><span>Registrado: {formatDate(project.registeredAt)}</span><button className="text-button" onClick={() => setSelectedProjectId(project.id)} type="button">Gestionar</button></footer>
+      <div className="admin-project-details"><div><small>Tutor asignado</small><strong>{project.tutor}</strong><span>{tutorLabel}</span></div><div><small>Revisión</small><strong>{project.reviewRoundCount === 0 ? 'Primera ronda pendiente' : project.pendingReviews > 0 ? `${project.pendingReviews} pendiente${project.pendingReviews === 1 ? '' : 's'}` : 'Sin pendientes'}</strong><span>{reviewLabel}</span></div></div>
+      <footer><span>{project.management}</span><span>Registrado: {formatDate(project.registeredAt)}</span><button className={project.canStartInitialReview ? 'primary-button' : 'text-button'} onClick={() => setSelectedProjectId(project.id)} type="button">{project.canStartInitialReview ? 'Programar revisión' : 'Gestionar'}</button></footer>
     </article>
   }
 
@@ -1994,7 +2042,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
         <p className="student-role">ADMINISTRACIÓN</p>
         <nav aria-label="Navegación de Administración" className="student-nav">
           <button className={view === 'home' ? 'is-active' : ''} onClick={() => setView('home')} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
-          <button className={view === 'new-projects' ? 'is-active' : ''} onClick={() => setView('new-projects')} type="button"><Icon name="bell" /><span>Nuevos proyectos</span>{data.summary.newProjects > 0 && <b className="nav-count">{data.summary.newProjects}</b>}</button>
+          <button className={view === 'review-starts' ? 'is-active' : ''} onClick={() => setView('review-starts')} type="button"><Icon name="bell" /><span>Por iniciar</span>{data.summary.pendingReviewStarts > 0 && <b className="nav-count">{data.summary.pendingReviewStarts}</b>}</button>
           <button className={view === 'new-teachers' ? 'is-active' : ''} onClick={() => setView('new-teachers')} type="button"><Icon name="user" /><span>Nuevos docentes</span>{data.summary.newTeachers > 0 && <b className="nav-count">{data.summary.newTeachers}</b>}</button>
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
           <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
@@ -2008,20 +2056,20 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
-        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'new-projects' ? 'Proyectos recién registrados que aún no tienen revisores asignados.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'review-starts' ? 'Completa el equipo evaluador y programa la primera ronda de los perfiles pendientes.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
 
-        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.newProjects > 0 ? 'requires-attention' : ''}><small>Sin revisores</small><strong>{data.summary.newProjects}</strong><span>Requieren asignación.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
+        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.pendingReviewStarts > 0 ? 'requires-attention' : ''}><small>Por iniciar</small><strong>{data.summary.pendingReviewStarts}</strong><span>Requieren equipo o primera ronda.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div><div className={data.summary.overdue > 0 ? 'requires-attention' : ''}><small>Plazos vencidos</small><strong>{data.summary.overdue}</strong><span>Requieren seguimiento.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
 
         {view === 'home' && <>
           <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
           <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Nuevos docentes</h2><p>Correos confirmados que requieren rol de Tutor, Revisor o ambos.</p></div><button className="text-button" onClick={() => setView('new-teachers')} type="button">Ver docentes</button></div>{data.newTeachers.length > 0 ? <div className="admin-pending-teacher-list">{data.newTeachers.slice(0, 4).map((teacher) => <article className="admin-pending-teacher" key={teacher.id}><div><span className="admin-status status-observado">Roles pendientes</span><h3>{teacher.fullName}</h3><p>{teacher.email}</p></div><button className="secondary-button" onClick={() => { setMessage(''); setAssigningTeacher(teacher) }} type="button">Asignar roles</button></article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay docentes pendientes.</strong><span>Los docentes confirmados aparecerán aquí hasta recibir sus roles.</span></section>}</section>
-          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Nuevos proyectos</h2><p>Registros sin revisores asignados, listos para completar su equipo de evaluación.</p></div><button className="text-button" onClick={() => setView('new-projects')} type="button">Ver nuevos</button></div>{data.newProjects.length > 0 ? <div className="admin-project-list">{data.newProjects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay proyectos nuevos pendientes.</strong><span>Los proyectos desaparecerán de esta lista al asignar sus dos revisores.</span></section>}</section>
+          <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Revisiones por iniciar</h2><p>Completa el equipo evaluador y programa la primera ronda del perfil.</p></div><button className="text-button" onClick={() => setView('review-starts')} type="button">Ver pendientes</button></div>{data.pendingReviewStarts.length > 0 ? <div className="admin-project-list">{data.pendingReviewStarts.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay primeras rondas pendientes.</strong><span>Todos los proyectos activos ya iniciaron su proceso de revisión.</span></section>}</section>
           <section className="tutor-section admin-section"><div className="tutor-section-heading"><div><h2>Proyectos recientes</h2><p>Prioriza los casos con una revisión vencida o con tutoría pendiente.</p></div><button className="text-button" onClick={() => setView('projects')} type="button">Ver todos</button></div>{data.projects.length > 0 ? <div className="admin-project-list">{data.projects.slice(0, 4).map(projectCard)}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>No hay proyectos registrados.</strong><span>Los registros del Formulario 1 aparecerán aquí.</span></section>}</section>
         </>}
 
-        {view === 'new-projects' && <>{data.newProjects.length > 0 ? <div className="admin-project-list">{data.newProjects.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay proyectos nuevos pendientes.</strong><span>Los proyectos registrados por estudiantes aparecerán aquí hasta que tengan sus dos revisores asignados.</span></section>}</>}
+        {view === 'review-starts' && <>{data.pendingReviewStarts.length > 0 ? <div className="admin-project-list">{data.pendingReviewStarts.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay primeras rondas pendientes.</strong><span>Los proyectos aparecerán aquí hasta que la primera ronda de revisión sea creada.</span></section>}</>}
 
         {view === 'new-teachers' && <>
           {assigningTeacher && <PendingTeacherRoleForm careers={usersData?.careers ?? []} onCancel={() => setAssigningTeacher(null)} onSave={(payload) => assignTeacherRoles(assigningTeacher, payload)} teacher={assigningTeacher} />}
@@ -2054,7 +2102,7 @@ function App() {
   const [isSwitchingRole, setIsSwitchingRole] = useState(false)
   const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
-  const [adminNavigationTarget, setAdminNavigationTarget] = useState<'new-projects' | 'new-teachers' | null>(null)
+  const [navigationTarget, setNavigationTarget] = useState<NotificationDestination | null>(null)
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
@@ -2092,6 +2140,7 @@ function App() {
     } finally {
       setData(null)
       setNotifications([])
+      setNavigationTarget(null)
       setView('home')
     }
   }
@@ -2116,12 +2165,10 @@ function App() {
       await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
       setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item))
     }
-    if (notification.role === 'ADMINISTRADOR' && notification.link === '/admin/nuevos-proyectos') {
-      setAdminNavigationTarget('new-projects')
-    }
-    if (notification.role === 'ADMINISTRADOR' && notification.link === '/admin/nuevos-docentes') {
-      setAdminNavigationTarget('new-teachers')
-    }
+    const destination = notificationDestination(notification.link)
+    if (destination === '/student') setView('home')
+    if (destination === '/documentos') setView('documents')
+    if (destination && !['/student', '/documentos'].includes(destination)) setNavigationTarget(destination)
     if (data && notification.role !== data.user.role) {
       await handleRoleChange(notification.role)
       return
@@ -2135,9 +2182,9 @@ function App() {
 
   if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
   if (!data || isPasswordResetFlow) return <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
-  if ('pendingReviews' in data) return <ReviewerPortal data={data} notifications={notifications} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  if ('summary' in data) return <AdminPortal data={data} navigationTarget={adminNavigationTarget} onNavigationHandled={() => setAdminNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  if ('invitations' in data) return <TutorPortal data={data} notifications={notifications} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('pendingReviews' in data) return <ReviewerPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('summary' in data) return <AdminPortal data={data} navigationTarget={navigationTarget} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  if ('invitations' in data) return <TutorPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   return view === 'home'
     ? <HomeView data={data} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
     : view === 'documents'
