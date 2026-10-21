@@ -31,6 +31,10 @@ let profileVersionId = ''
 let adminCookie = ''
 let studentCookie = ''
 let tutorCookie = ''
+let replacementTutorCookie = ''
+let reviewer1Cookie = ''
+let reviewer2Cookie = ''
+let replacementReviewerCookie = ''
 
 async function expect(response, status, label) {
   assert.equal(response.status, status, `${label}: se esperaba HTTP ${status} y se recibió ${response.status}`)
@@ -38,7 +42,7 @@ async function expect(response, status, label) {
 }
 
 async function createAccount(client, { key, firstName, lastName, roleCode, profile }) {
-  const email = `qa.admin.operations.${key}.${suffix}@univalle.edu`
+  const email = `qa.admin.operations.${key.toLowerCase()}.${suffix}@univalle.edu`
   const user = await client.query(
     `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo, email_confirmado_en)
      VALUES ($1, $2, $3, $4, true, now())
@@ -63,7 +67,7 @@ async function createAccount(client, { key, firstName, lastName, roleCode, profi
       `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad, activo)
        VALUES ($1, $2, $3, 'Pruebas automatizadas', true)
        RETURNING id`,
-      [user.rows[0].id, profile.careerId, `QA-AO-${key}-${suffix}`],
+      [user.rows[0].id, profile.careerId, `QA-AO-${key.toLowerCase().slice(0, 12)}-${suffix}`],
     )
     accounts[key].teacherId = teacher.rows[0].id
   }
@@ -86,8 +90,10 @@ async function setup() {
     await createAccount(client, { key: 'admin', firstName: 'QA', lastName: 'Administración Operativa', roleCode: 'ADMINISTRADOR', profile: { kind: 'none' } })
     await createAccount(client, { key: 'student', firstName: 'QA', lastName: 'Estudiante Operativo', roleCode: 'ESTUDIANTE', profile: { kind: 'student', careerId: values.career_id } })
     await createAccount(client, { key: 'tutor', firstName: 'QA', lastName: 'Tutor Operativo', roleCode: 'TUTOR', profile: { kind: 'teacher', careerId: values.career_id } })
+    await createAccount(client, { key: 'replacementTutor', firstName: 'QA', lastName: 'Tutor Reemplazo', roleCode: 'TUTOR', profile: { kind: 'teacher', careerId: values.career_id } })
     await createAccount(client, { key: 'reviewer1', firstName: 'QA', lastName: 'Revisor Uno', roleCode: 'REVISOR', profile: { kind: 'teacher', careerId: values.career_id } })
     await createAccount(client, { key: 'reviewer2', firstName: 'QA', lastName: 'Revisor Dos', roleCode: 'REVISOR', profile: { kind: 'teacher', careerId: values.career_id } })
+    await createAccount(client, { key: 'replacementReviewer', firstName: 'QA', lastName: 'Revisor Reemplazo', roleCode: 'REVISOR', profile: { kind: 'teacher', careerId: values.career_id } })
 
     const project = await client.query(
       `INSERT INTO titulacion.proyectos
@@ -170,6 +176,14 @@ try {
   studentCookie = studentLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
   const tutorLogin = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.tutor.email, password }) }), 200, 'Inicio de tutor de control')
   tutorCookie = tutorLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
+  const replacementTutorLogin = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.replacementTutor.email, password }) }), 200, 'Inicio de tutor de reemplazo')
+  replacementTutorCookie = replacementTutorLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
+  const reviewer1Login = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.reviewer1.email, password }) }), 200, 'Inicio del primer revisor')
+  reviewer1Cookie = reviewer1Login.headers.get('set-cookie')?.split(';')[0] ?? ''
+  const reviewer2Login = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.reviewer2.email, password }) }), 200, 'Inicio del segundo revisor')
+  reviewer2Cookie = reviewer2Login.headers.get('set-cookie')?.split(';')[0] ?? ''
+  const replacementReviewerLogin = await expect(await fetch(`${apiUrl}/api/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier: accounts.replacementReviewer.email, password }) }), 200, 'Inicio del revisor de reemplazo')
+  replacementReviewerCookie = replacementReviewerLogin.headers.get('set-cookie')?.split(';')[0] ?? ''
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: studentCookie } }), 403, 'Bloqueo operativo para estudiante')
 
   const detailBefore = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Carga de detalle administrativo')
@@ -206,6 +220,75 @@ try {
   assert.equal(roundData.project.phaseCode, 'REVISION_PERFIL', 'El proyecto no pasó a la fase de revisión de perfil')
   assert.equal(roundData.rounds[0].reviews.length, 3, 'La ronda no contiene las revisiones pendientes de tutor y revisores')
 
+  const reviewer2Dashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: reviewer2Cookie } }), 200, 'Bandeja del segundo revisor antes de reasignar')
+  const reviewer2Review = (await reviewer2Dashboard.json()).pendingReviews.find((item) => item.projectId === projectId)
+  assert.ok(reviewer2Review, 'El segundo revisor no recibió su evaluación inicial')
+  const approvedFormat = ['TITULO', 'INDICE', 'ORDEN_GUIA', 'FORMATO', 'NUMERO_HOJAS', 'ETAPAS_INVESTIGACION', 'CRONOGRAMA', 'CITAS', 'REFERENCIAS', 'REDACCION'].map((code) => ({ code, value: 'SI' }))
+  const approvedBackground = ['PROBLEMA', 'JUSTIFICACION', 'FUENTES', 'ANALISIS_LITERATURA', 'PERSPECTIVA_TEORICA', 'VINCULO_TEORIA', 'VIABILIDAD_OBJETIVOS', 'COHERENCIA_OBJETIVOS', 'METODOLOGIA_PERTINENTE', 'METODOLOGIA_RESPONDE'].map((code) => ({ code, value: 'BUENO' }))
+  await expect(await fetch(`${apiUrl}/api/reviewer/reviews/${reviewer2Review.id}/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: reviewer2Cookie },
+    body: JSON.stringify({ decision: 'APROBADO', generalComment: 'La revisión de control cumple los criterios establecidos.', observations: [], formatCriteria: approvedFormat, backgroundCriteria: approvedBackground }),
+  }), 200, 'Dictamen del segundo revisor antes de reasignar')
+
+  const replacePendingReviewer = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+    body: JSON.stringify({ reviewer1Id: accounts.replacementReviewer.teacherId, reviewer2Id: accounts.reviewer2.teacherId }),
+  }), 200, 'Reasignación de revisor pendiente durante una ronda')
+  assert.equal((await replacePendingReviewer.json()).changed, 1, 'La reasignación pendiente no cambió al primer revisor')
+  const formerReviewerDashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: reviewer1Cookie } }), 200, 'Bandeja del revisor reemplazado')
+  assert.equal((await formerReviewerDashboard.json()).pendingReviews.filter((item) => item.projectId === projectId).length, 0, 'El revisor anterior todavía puede emitir el dictamen transferido')
+  const replacementReviewerDashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: replacementReviewerCookie } }), 200, 'Bandeja del nuevo revisor')
+  const replacementReviewerPayload = await replacementReviewerDashboard.json()
+  assert.ok(replacementReviewerPayload.pendingReviews.some((item) => item.projectId === projectId && item.assignmentType === 'REVISOR_1'), 'El nuevo revisor no recibió la evaluación pendiente')
+  assert.ok(replacementReviewerPayload.notifications.some((item) => item.type === 'REVISION_REASIGNADA' && item.link === '/revisor/pendientes'), 'La notificación no dirige al nuevo revisor a Pendientes')
+
+  const replaceCompletedReviewer = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/reviewers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+    body: JSON.stringify({ reviewer1Id: accounts.replacementReviewer.teacherId, reviewer2Id: accounts.reviewer1.teacherId }),
+  }), 200, 'Reasignación de revisor con dictamen emitido')
+  assert.equal((await replaceCompletedReviewer.json()).changed, 1, 'La reasignación para rondas posteriores no cambió al segundo revisor')
+  const completedReviewerDashboard = await expect(await fetch(`${apiUrl}/api/reviewer/dashboard`, { headers: { Cookie: reviewer2Cookie } }), 200, 'Historial del revisor reemplazado después de dictaminar')
+  assert.ok((await completedReviewerDashboard.json()).completedReviews.some((item) => item.projectId === projectId && item.decision === 'APROBADO'), 'El dictamen ya emitido no se conservó para trazabilidad')
+
+  const replacementTutor = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/assignments`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+    body: JSON.stringify({ tutorId: accounts.replacementTutor.teacherId }),
+  }), 200, 'Propuesta de reemplazo de tutor durante una ronda')
+  assert.equal((await replacementTutor.json()).changed, 1, 'No se creó la invitación al tutor de reemplazo')
+  const originalTutorBeforeAcceptance = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: tutorCookie } }), 200, 'Conservación de la evaluación para el tutor actual')
+  assert.ok((await originalTutorBeforeAcceptance.json()).projects.some((item) => item.projectId === projectId && item.canReviewProfile), 'El tutor actual perdió la evaluación antes de que el reemplazo aceptara')
+  const replacementTutorDashboard = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: replacementTutorCookie } }), 200, 'Invitación del tutor de reemplazo')
+  const tutorInvitation = (await replacementTutorDashboard.json()).invitations.find((item) => item.projectId === projectId)
+  assert.ok(tutorInvitation, 'El tutor de reemplazo no recibió la invitación')
+  await expect(await fetch(`${apiUrl}/api/tutor/invitations/${tutorInvitation.id}/respond`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: replacementTutorCookie },
+    body: JSON.stringify({ decision: 'ACEPTAR' }),
+  }), 200, 'Aceptación del tutor de reemplazo')
+  const originalTutorAfterAcceptance = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: tutorCookie } }), 200, 'Retiro de la evaluación del tutor anterior')
+  assert.ok(!(await originalTutorAfterAcceptance.json()).projects.some((item) => item.projectId === projectId), 'El tutor anterior conserva acceso después de la reasignación')
+  const acceptedReplacementTutor = await expect(await fetch(`${apiUrl}/api/tutor/dashboard`, { headers: { Cookie: replacementTutorCookie } }), 200, 'Evaluación para el tutor de reemplazo')
+  const acceptedReplacementTutorPayload = await acceptedReplacementTutor.json()
+  assert.ok(acceptedReplacementTutorPayload.projects.some((item) => item.projectId === projectId && item.canReviewProfile), 'El tutor de reemplazo no recibió la evaluación pendiente')
+  assert.ok(acceptedReplacementTutorPayload.notifications.some((item) => item.type === 'REVISION_TUTOR_REASIGNADA' && item.link === '/tutor/proyectos'), 'La notificación no dirige al tutor a Mis proyectos')
+  const transferState = await pool.query(
+    `SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE decision = 'PENDIENTE')::int AS pending,
+            count(*) FILTER (WHERE decision = 'APROBADO')::int AS approved
+     FROM titulacion.revisiones r
+     JOIN titulacion.rondas_revision rr ON rr.id = r.ronda_revision_id
+     JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+     JOIN titulacion.documentos d ON d.id = vd.documento_id
+     WHERE d.proyecto_id = $1 AND rr.cerrada_en IS NULL`,
+    [projectId],
+  )
+  assert.deepEqual(transferState.rows[0], { total: 3, pending: 2, approved: 1 }, 'La ronda cambió su cantidad de dictámenes al reasignar responsables')
+  console.log('QA reasignación aprobado: revisión pendiente transferida, dictamen emitido conservado y tutor reemplazado sin bloquear la ronda.')
+
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ statusCode: 'OBSERVADO', phaseCode: 'REVISION_PERFIL', reason: 'QA confirma el cambio trazable de estado.' }) }), 200, 'Cambio trazable de estado')
   const state = await pool.query(`SELECT ep.codigo FROM titulacion.proyectos p JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id WHERE p.id = $1`, [projectId])
   assert.equal(state.rows[0].codigo, 'OBSERVADO', 'El cambio de estado no llegó a PostgreSQL')
@@ -226,6 +309,10 @@ try {
   if (adminCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: adminCookie } }).catch(() => undefined)
   if (studentCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: studentCookie } }).catch(() => undefined)
   if (tutorCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: tutorCookie } }).catch(() => undefined)
+  if (replacementTutorCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: replacementTutorCookie } }).catch(() => undefined)
+  if (reviewer1Cookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: reviewer1Cookie } }).catch(() => undefined)
+  if (reviewer2Cookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: reviewer2Cookie } }).catch(() => undefined)
+  if (replacementReviewerCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: replacementReviewerCookie } }).catch(() => undefined)
   await cleanup()
   await pool.end()
 }

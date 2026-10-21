@@ -816,19 +816,19 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
   }
 
   const reviewers = await databaseClient.query(
-    `SELECT r.asignacion_proyecto_id, a.tipo, a.activo, a.fecha_fin,
+    `SELECT a.id AS asignacion_proyecto_id, a.tipo,
             teacher.usuario_id, user_account.correo
-     FROM titulacion.revisiones r
-     JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+     FROM titulacion.asignaciones_proyecto a
      JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
      JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id AND user_account.activo
-     WHERE r.ronda_revision_id = $1
+     WHERE a.proyecto_id = $1
        AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+       AND a.activo AND a.fecha_fin IS NULL
      ORDER BY a.tipo
-     FOR UPDATE OF r, a`,
-    [previousRound.id],
+     FOR UPDATE OF a`,
+    [project.id],
   )
-  const activeReviewers = reviewers.rows.filter((reviewer) => reviewer.activo && !reviewer.fecha_fin)
+  const activeReviewers = reviewers.rows
   if (activeReviewers.length !== 2 || new Set(activeReviewers.map((reviewer) => reviewer.tipo)).size !== 2) {
     return { scheduled: false, reason: 'reviewers-unavailable' }
   }
@@ -943,18 +943,74 @@ async function staffWithRole(databaseClient, { teacherId, careerId, roleCode }) 
   return staff.rows[0] ?? null
 }
 
+async function openReviewRoundForProject(databaseClient, projectId) {
+  const result = await databaseClient.query(
+    `SELECT rr.id, rr.fecha_limite
+     FROM titulacion.rondas_revision rr
+     JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+     JOIN titulacion.documentos d ON d.id = vd.documento_id
+     WHERE d.proyecto_id = $1 AND rr.cerrada_en IS NULL
+     ORDER BY rr.fecha_solicitud DESC
+     LIMIT 1
+     FOR UPDATE OF rr`,
+    [projectId],
+  )
+  return result.rows[0] ?? null
+}
+
+async function transferPendingReview(databaseClient, { round, previousAssignmentId, replacementAssignmentId }) {
+  if (!round || !previousAssignmentId) return { transferred: false, reviewId: null }
+  const pending = await databaseClient.query(
+    `SELECT id
+     FROM titulacion.revisiones
+     WHERE ronda_revision_id = $1
+       AND asignacion_proyecto_id = $2
+       AND decision = 'PENDIENTE'
+     FOR UPDATE`,
+    [round.id, previousAssignmentId],
+  )
+  const review = pending.rows[0]
+  if (!review) return { transferred: false, reviewId: null }
+  await databaseClient.query(
+    `UPDATE titulacion.revisiones
+     SET asignacion_proyecto_id = $2
+     WHERE id = $1`,
+    [review.id, replacementAssignmentId],
+  )
+  await databaseClient.query(
+    `UPDATE titulacion.asignaciones_proyecto
+     SET fecha_limite = $2
+     WHERE id = $1`,
+    [replacementAssignmentId, round.fecha_limite],
+  )
+  return { transferred: true, reviewId: review.id }
+}
+
 async function replaceProjectAssignment(databaseClient, { project, type, staff, assignedByUserId }) {
   const current = await databaseClient.query(
-    `SELECT id, docente_id, activo
+    `SELECT id, docente_id, activo, fecha_fin
      FROM titulacion.asignaciones_proyecto
      WHERE proyecto_id = $1 AND tipo = $2
        AND (activo OR ($2 = 'TUTOR' AND NOT activo AND fecha_fin IS NULL))
+     ORDER BY activo DESC, fecha_asignacion DESC
      FOR UPDATE`,
     [project.id, type],
   )
-  if (current.rows.length === 1 && current.rows[0].docente_id === staff.id) return { changed: false, assignmentId: current.rows[0].id }
+  const activeAssignment = current.rows.find((item) => item.activo) ?? null
+  const pendingTutorAssignment = type === 'TUTOR'
+    ? current.rows.find((item) => !item.activo && !item.fecha_fin) ?? null
+    : null
+  if (activeAssignment?.docente_id === staff.id || (!activeAssignment && pendingTutorAssignment?.docente_id === staff.id)) {
+    return { changed: false, assignmentId: activeAssignment?.id ?? pendingTutorAssignment?.id ?? null, pendingReviewTransferred: false, pendingTutorHandoff: false }
+  }
 
-  if (current.rows.length > 0) {
+  const openRound = await openReviewRoundForProject(databaseClient, project.id)
+  const pendingTutorHandoff = type === 'TUTOR' && Boolean(activeAssignment && openRound)
+  const assignmentsToFinish = pendingTutorHandoff
+    ? current.rows.filter((item) => !item.activo)
+    : current.rows
+
+  if (assignmentsToFinish.length > 0) {
     await databaseClient.query(
       `UPDATE titulacion.asignaciones_proyecto
        SET activo = false,
@@ -962,7 +1018,7 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
            motivo_cambio = $2
        WHERE id = ANY($1::uuid[])`,
       [
-        current.rows.map((item) => item.id),
+        assignmentsToFinish.map((item) => item.id),
         `${type === 'TUTOR' ? 'Tutoría' : 'Revisión'} reasignada por Administración.`,
       ],
     )
@@ -970,8 +1026,8 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
 
   const assignment = await databaseClient.query(
     `INSERT INTO titulacion.asignaciones_proyecto
-      (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
-     VALUES ($1, $2, $3, $4, $5, $6)
+      (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio, fecha_limite)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING id`,
     [
       project.id,
@@ -980,10 +1036,21 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
       assignedByUserId,
       type !== 'TUTOR',
       type === 'TUTOR'
-        ? 'Tutor asignado por Administración; pendiente de aceptación.'
+        ? pendingTutorHandoff
+          ? 'Tutor propuesto para reemplazar la tutoría durante una ronda abierta; pendiente de aceptación.'
+          : 'Tutor asignado por Administración; pendiente de aceptación.'
         : 'Revisor asignado por Administración.',
+      openRound?.fecha_limite ?? null,
     ],
   )
+
+  const pendingReview = type === 'TUTOR'
+    ? { transferred: false, reviewId: null }
+    : await transferPendingReview(databaseClient, {
+        round: openRound,
+        previousAssignmentId: activeAssignment?.id ?? null,
+        replacementAssignmentId: assignment.rows[0].id,
+      })
 
   if (type === 'TUTOR') {
     await createNotification(databaseClient, {
@@ -992,7 +1059,9 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
       projectId: project.id,
       type: 'SOLICITUD_TUTORIA',
       title: 'Nueva invitación de tutoría',
-      message: `Administración te invita a acompañar el proyecto ${project.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
+      message: pendingTutorHandoff
+        ? `Administración te propone reemplazar la tutoría del proyecto ${project.codigo_seguimiento}. El tutor actual mantiene la evaluación pendiente hasta que respondas.`
+        : `Administración te invita a acompañar el proyecto ${project.codigo_seguimiento}. Responde desde el Portal del Tutor.`,
       link: '/tutor/invitaciones',
       queueEmail: true,
     })
@@ -1000,13 +1069,22 @@ async function replaceProjectAssignment(databaseClient, { project, type, staff, 
     await createNotification(databaseClient, {
       userId: staff.usuario_id,
       projectId: project.id,
-      type: 'ASIGNACION_REVISION',
-      title: 'Designación como revisor',
-      message: `Administración te designó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}. Recibirás otro aviso cuando el perfil esté disponible para evaluación.`,
-      link: '/revisor',
+      type: pendingReview.transferred ? 'REVISION_REASIGNADA' : 'ASIGNACION_REVISION',
+      title: pendingReview.transferred ? 'Revisión pendiente reasignada' : 'Designación como revisor',
+      message: pendingReview.transferred
+        ? `Administración te asignó la evaluación pendiente del proyecto ${project.codigo_seguimiento}. Conserva la fecha límite de la ronda actual.`
+        : `Administración te designó como ${type === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'} del proyecto ${project.codigo_seguimiento}. Recibirás otro aviso cuando el perfil esté disponible para evaluación.`,
+      link: pendingReview.transferred ? '/revisor/pendientes' : '/revisor',
     })
   }
-  return { changed: true, assignmentId: assignment.rows[0].id }
+  return {
+    changed: true,
+    assignmentId: assignment.rows[0].id,
+    previousAssignmentId: activeAssignment?.id ?? null,
+    pendingReviewTransferred: pendingReview.transferred,
+    pendingTutorHandoff,
+    roundId: openRound?.id ?? null,
+  }
 }
 
 app.get('/api/health', async (_request, response, next) => {
@@ -2381,7 +2459,8 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
          JOIN titulacion.usuarios u ON u.id = d.usuario_id
          WHERE a.proyecto_id = $1
            AND (a.activo OR (a.tipo = 'TUTOR' AND NOT a.activo AND a.fecha_fin IS NULL))
-         ORDER BY CASE a.tipo WHEN 'TUTOR' THEN 1 WHEN 'REVISOR_1' THEN 2 ELSE 3 END`,
+         ORDER BY CASE a.tipo WHEN 'TUTOR' THEN 1 WHEN 'REVISOR_1' THEN 2 ELSE 3 END,
+                  a.activo DESC, a.fecha_asignacion DESC`,
         [projectId],
       ),
       pool.query(
@@ -2522,10 +2601,23 @@ app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, asyn
       projectId,
       action: 'ASIGNAR_TUTOR',
       entity: 'asignaciones_proyecto',
-      detail: { tutorId, changed: change.changed },
+      detail: {
+        tutorId,
+        changed: change.changed,
+        pendingTutorHandoff: change.pendingTutorHandoff,
+        previousAssignmentId: change.previousAssignmentId,
+        roundId: change.roundId,
+      },
     })
     await databaseClient.query('COMMIT')
-    return response.json({ message: change.changed ? 'Se envió la invitación al tutor. Podrás asignar revisores cuando la acepte.' : 'El tutor ya tiene una invitación o tutoría activa para este proyecto.', changed: Number(change.changed) })
+    return response.json({
+      message: change.changed
+        ? change.pendingTutorHandoff
+          ? 'Se envió la invitación al nuevo tutor. El tutor actual conservará la evaluación pendiente hasta que la acepte.'
+          : 'Se envió la invitación al tutor. Podrás asignar revisores cuando la acepte.'
+        : 'El tutor ya tiene una invitación o tutoría activa para este proyecto.',
+      changed: Number(change.changed),
+    })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -2593,10 +2685,22 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
       projectId,
       action: 'ASIGNAR_REVISORES',
       entity: 'asignaciones_proyecto',
-      detail: { reviewer1Id, reviewer2Id, changed: changes.filter((item) => item.changed).length },
+      detail: {
+        reviewer1Id,
+        reviewer2Id,
+        changed: changes.filter((item) => item.changed).length,
+        pendingReviewsTransferred: changes.filter((item) => item.pendingReviewTransferred).map((item) => item.assignmentId),
+        roundId: changes.find((item) => item.roundId)?.roundId ?? null,
+      },
     })
     await databaseClient.query('COMMIT')
-    return response.json({ message: 'El equipo evaluador fue asignado. Selecciona la versión del perfil y programa la primera ronda para habilitar las evaluaciones.', changed: changes.filter((item) => item.changed).length })
+    const transferred = changes.filter((item) => item.pendingReviewTransferred).length
+    return response.json({
+      message: transferred > 0
+        ? `${transferred === 1 ? 'La evaluación pendiente fue transferida al nuevo revisor.' : 'Las evaluaciones pendientes fueron transferidas a los nuevos revisores.'} La ronda conserva su fecha límite.`
+        : 'El equipo evaluador fue asignado. Selecciona la versión del perfil y programa la primera ronda para habilitar las evaluaciones.',
+      changed: changes.filter((item) => item.changed).length,
+    })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
@@ -3080,6 +3184,44 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
     }
 
     const accepted = decision === 'ACEPTAR'
+    let priorTutor = null
+    let handoff = { transferred: false, reviewId: null }
+    if (accepted) {
+      const project = await lockedProject(databaseClient, selected.proyecto_id)
+      if (!project) throw new Error('No fue posible obtener el proyecto de la tutoría.')
+      const openRound = await openReviewRoundForProject(databaseClient, selected.proyecto_id)
+      const activeTutor = await databaseClient.query(
+        `SELECT a.id, teacher.usuario_id, user_account.correo
+         FROM titulacion.asignaciones_proyecto a
+         JOIN titulacion.docentes teacher ON teacher.id = a.docente_id
+         JOIN titulacion.usuarios user_account ON user_account.id = teacher.usuario_id
+         WHERE a.proyecto_id = $1
+           AND a.tipo = 'TUTOR'
+           AND a.activo
+           AND a.fecha_fin IS NULL
+           AND a.id <> $2
+         ORDER BY a.fecha_asignacion DESC
+         LIMIT 1
+         FOR UPDATE OF a`,
+        [selected.proyecto_id, selected.id],
+      )
+      priorTutor = activeTutor.rows[0] ?? null
+      if (priorTutor) {
+        handoff = await transferPendingReview(databaseClient, {
+          round: openRound,
+          previousAssignmentId: priorTutor.id,
+          replacementAssignmentId: selected.id,
+        })
+        await databaseClient.query(
+          `UPDATE titulacion.asignaciones_proyecto
+           SET activo = false,
+               fecha_fin = now(),
+               motivo_cambio = 'Tutoría reasignada después de aceptar la invitación.'
+           WHERE id = $1`,
+          [priorTutor.id],
+        )
+      }
+    }
     const detail = accepted
       ? 'Tutoría aceptada por el docente.'
       : `Tutoría declinada por el docente. Motivo: ${reason}`
@@ -3113,6 +3255,29 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
       link: '/student',
     })
     if (accepted) {
+      if (handoff.transferred) {
+        await createNotification(databaseClient, {
+          userId: request.session.usuario_id,
+          projectId: selected.proyecto_id,
+          type: 'REVISION_TUTOR_REASIGNADA',
+          title: 'Evaluación de tutoría reasignada',
+          message: `La evaluación pendiente del proyecto ${selected.codigo_seguimiento} fue transferida a tu cuenta.`,
+          link: '/tutor/proyectos',
+        })
+      }
+      if (priorTutor) {
+        await createNotification(databaseClient, {
+          userId: priorTutor.usuario_id,
+          recipientEmail: priorTutor.correo,
+          projectId: selected.proyecto_id,
+          type: 'TUTORIA_REASIGNADA',
+          title: 'Tutoría reasignada',
+          message: handoff.transferred
+            ? `La evaluación pendiente del proyecto ${selected.codigo_seguimiento} fue transferida al nuevo tutor.`
+            : `La tutoría del proyecto ${selected.codigo_seguimiento} fue reasignada para las próximas etapas.`,
+          link: '/tutor',
+        })
+      }
       const administrators = await databaseClient.query(
         `SELECT DISTINCT u.id AS usuario_id, u.correo
          FROM titulacion.usuarios u
@@ -3125,17 +3290,25 @@ app.post('/api/tutor/invitations/:assignmentId/respond', requireTutor, async (re
           userId: administrator.usuario_id,
           recipientEmail: administrator.correo,
           projectId: selected.proyecto_id,
-          type: 'TUTOR_CONFIRMADO_PENDIENTE_REVISORES',
-          title: 'Tutor confirmado: asigna los revisores',
-          message: `El tutor aceptó el proyecto ${selected.codigo_seguimiento}. Ya puedes asignar Revisor 1 y Revisor 2.`,
-          link: '/admin/revisiones-por-iniciar',
+          type: priorTutor ? 'TUTOR_REASIGNADO_EN_REVISION' : 'TUTOR_CONFIRMADO_PENDIENTE_REVISORES',
+          title: priorTutor ? 'Tutor reasignado durante la revisión' : 'Tutor confirmado: asigna los revisores',
+          message: priorTutor
+            ? handoff.transferred
+              ? `El nuevo tutor aceptó y recibió la evaluación pendiente del proyecto ${selected.codigo_seguimiento}.`
+              : `El nuevo tutor aceptó el proyecto ${selected.codigo_seguimiento}; los dictámenes ya emitidos se conservan.`
+            : `El tutor aceptó el proyecto ${selected.codigo_seguimiento}. Ya puedes asignar Revisor 1 y Revisor 2.`,
+          link: priorTutor ? '/admin' : '/admin/revisiones-por-iniciar',
           queueEmail: true,
         })
       }
     }
     await databaseClient.query('COMMIT')
     return response.json({
-      message: accepted ? 'Aceptaste la tutoría. El proyecto ya está disponible en Mis proyectos.' : 'Declinaste la tutoría. Administración podrá reasignar el proyecto.',
+      message: accepted
+        ? handoff.transferred
+          ? 'Aceptaste la tutoría. La evaluación pendiente ya está disponible en Mis proyectos.'
+          : 'Aceptaste la tutoría. El proyecto ya está disponible en Mis proyectos.'
+        : 'Declinaste la tutoría. Administración podrá reasignar el proyecto.',
       decision,
     })
   } catch (error) {
