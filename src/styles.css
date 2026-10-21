@@ -615,6 +615,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-reviewers span { color: #706267; font-size: 10px; line-height: 1.4; }
 .admin-reviewers b { background: #f3e6eb; border-radius: 4px; color: var(--univalle-wine); font-size: 9px; margin-right: 5px; padding: 2px 4px; }
 .admin-secondary-grid { margin-bottom: 0; }
+.admin-cancel-only { grid-template-columns: minmax(0, 1fr); }
 .admin-cancel-card { border-color: #f0d8d9; }
 .admin-cancel-card .admin-operation-heading > svg { background: #fff0f1; color: #a53d43; }
 .danger-button { align-items: center; background: #a53d43; border: 1px solid #a53d43; border-radius: 7px; color: #fff; display: inline-flex; font-size: 12px; font-weight: 700; min-height: 40px; padding: 0 14px; }

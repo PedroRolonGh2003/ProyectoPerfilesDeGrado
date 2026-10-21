@@ -1610,9 +1610,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const [reviewer2Id, setReviewer2Id] = useState('')
   const [profileVersionId, setProfileVersionId] = useState('')
   const [reviewDeadline, setReviewDeadline] = useState('')
-  const [statusCode, setStatusCode] = useState('')
-  const [phaseCode, setPhaseCode] = useState('')
-  const [statusReason, setStatusReason] = useState('')
   const [cancelReason, setCancelReason] = useState('')
   const [cancelDetail, setCancelDetail] = useState('')
 
@@ -1632,8 +1629,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
       setReviewer2Id(payload.assignments.find((item) => item.type === 'REVISOR_2')?.teacherId ?? '')
       setProfileVersionId(payload.profiles[0]?.versionId ?? '')
       setReviewDeadline(defaultDeadline())
-      setStatusCode(payload.project.statusCode)
-      setPhaseCode(payload.project.phaseCode)
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible cargar el proyecto.')
     } finally {
@@ -1691,23 +1686,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
     }
   }
 
-  async function changeStatus(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setIsSubmitting(true)
-    setMessage('')
-    try {
-      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ statusCode, phaseCode, reason: statusReason }) })
-      setMessage(result.message)
-      setStatusReason('')
-      await onRefresh()
-      await loadDetail()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar la fase y el estado.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
   async function cancelProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setIsSubmitting(true)
@@ -1756,7 +1734,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
 
         <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se programó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Solicitada: {formatDate(round.requestedAt)} · Límite: {formatDate(round.deadline)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
 
-        {!isCancelled ? <div className="admin-operation-grid admin-secondary-grid"><form className="admin-operation-card" onSubmit={(event) => void changeStatus(event)}><div className="admin-operation-heading"><Icon name="check" /><div><p>TRAZABILIDAD</p><h2>Actualizar fase y estado</h2></div></div><p>Todo cambio se guarda en el historial académico del proyecto.</p><label className="form-field"><span>Fase <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setPhaseCode(event.target.value)} value={phaseCode}>{detail.phases.map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label><label className="form-field"><span>Estado <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setStatusCode(event.target.value)} value={statusCode}>{detail.statuses.filter((item) => !['ANULADO', 'FINALIZADO'].includes(item.code)).map((item) => <option key={item.code} value={item.code}>{item.name}</option>)}</select></label><label className="form-field"><span>Motivo <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setStatusReason(event.target.value)} placeholder="Registra por qué se realiza este cambio." rows={3} value={statusReason} /></label><button className="secondary-button" disabled={isSubmitting} type="submit">Guardar cambio</button></form><form className="admin-operation-card admin-cancel-card" onSubmit={(event) => void cancelProject(event)}><div className="admin-operation-heading"><Icon name="trash" /><div><p>ACCIÓN CONTROLADA</p><h2>Anular proyecto</h2></div></div><p>Esta acción cierra asignaciones y rondas abiertas, y conserva el registro de anulación.</p><label className="form-field"><span>Motivo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setCancelReason(event.target.value)} placeholder="Ej.: Abandono del proyecto" value={cancelReason} /></label><label className="form-field"><span>Detalle <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setCancelDetail(event.target.value)} placeholder="Explica la situación para el historial académico." rows={3} value={cancelDetail} /></label><button className="danger-button" disabled={isSubmitting} type="submit">Anular proyecto</button></form></div> : <section className="admin-cancellation"><Icon name="trash" /><div><h2>Proyecto anulado</h2><p><strong>{detail.cancellation?.reason}</strong> · {detail.cancellation?.detail}</p><small>{detail.cancellation?.cancelledAt && formatDate(detail.cancellation.cancelledAt)}</small></div></section>}
+        {!isCancelled ? <div className="admin-operation-grid admin-secondary-grid admin-cancel-only"><form className="admin-operation-card admin-cancel-card" onSubmit={(event) => void cancelProject(event)}><div className="admin-operation-heading"><Icon name="trash" /><div><p>ACCIÓN CONTROLADA</p><h2>Anular proyecto</h2></div></div><p>Esta acción cierra asignaciones y rondas abiertas, y conserva el registro de anulación.</p><label className="form-field"><span>Motivo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setCancelReason(event.target.value)} placeholder="Ej.: Abandono del proyecto" value={cancelReason} /></label><label className="form-field"><span>Detalle <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setCancelDetail(event.target.value)} placeholder="Explica la situación para el historial académico." rows={3} value={cancelDetail} /></label><button className="danger-button" disabled={isSubmitting} type="submit">Anular proyecto</button></form></div> : <section className="admin-cancellation"><Icon name="trash" /><div><h2>Proyecto anulado</h2><p><strong>{detail.cancellation?.reason}</strong> · {detail.cancellation?.detail}</p><small>{detail.cancellation?.cancelledAt && formatDate(detail.cancellation.cancelledAt)}</small></div></section>}
       </>}
     </div></section>
   </main>

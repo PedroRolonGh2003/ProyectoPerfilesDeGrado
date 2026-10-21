@@ -289,9 +289,24 @@ try {
   assert.deepEqual(transferState.rows[0], { total: 3, pending: 2, approved: 1 }, 'La ronda cambió su cantidad de dictámenes al reasignar responsables')
   console.log('QA reasignación aprobado: revisión pendiente transferida, dictamen emitido conservado y tutor reemplazado sin bloquear la ronda.')
 
-  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ statusCode: 'OBSERVADO', phaseCode: 'REVISION_PERFIL', reason: 'QA confirma el cambio trazable de estado.' }) }), 200, 'Cambio trazable de estado')
-  const state = await pool.query(`SELECT ep.codigo FROM titulacion.proyectos p JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id WHERE p.id = $1`, [projectId])
-  assert.equal(state.rows[0].codigo, 'OBSERVADO', 'El cambio de estado no llegó a PostgreSQL')
+  const stateBeforeManualChange = await pool.query(
+    `SELECT ep.codigo AS status_code, f.codigo AS phase_code
+     FROM titulacion.proyectos p
+     JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+     JOIN titulacion.fases f ON f.id = p.fase_actual_id
+     WHERE p.id = $1`,
+    [projectId],
+  )
+  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/status`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ statusCode: 'OBSERVADO', phaseCode: 'REVISION_PERFIL', reason: 'QA intenta cambiar manualmente el estado.' }) }), 403, 'Bloqueo del cambio manual de fase y estado')
+  const stateAfterManualChange = await pool.query(
+    `SELECT ep.codigo AS status_code, f.codigo AS phase_code
+     FROM titulacion.proyectos p
+     JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+     JOIN titulacion.fases f ON f.id = p.fase_actual_id
+     WHERE p.id = $1`,
+    [projectId],
+  )
+  assert.deepEqual(stateAfterManualChange.rows[0], stateBeforeManualChange.rows[0], 'El cambio manual alteró la fase o el estado del proyecto')
 
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/cancel`, { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ reason: 'QA de anulación', detail: 'Prueba temporal de anulación y cierre de responsables y rondas.' }) }), 200, 'Anulación administrativa')
   const cancelled = await pool.query(
@@ -304,7 +319,7 @@ try {
     [projectId],
   )
   assert.deepEqual(cancelled.rows[0], { codigo: 'ANULADO', active_assignments: 0, open_rounds: 0, cancellations: 1 }, 'La anulación no cerró correctamente el flujo')
-  console.log('QA operaciones administrativas aprobado: asignación, ronda, estado y anulación verificados.')
+  console.log('QA operaciones administrativas aprobado: asignación, ronda, bloqueo del cambio manual y anulación verificados.')
 } finally {
   if (adminCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: adminCookie } }).catch(() => undefined)
   if (studentCookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: studentCookie } }).catch(() => undefined)

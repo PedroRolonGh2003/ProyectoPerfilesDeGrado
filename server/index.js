@@ -2838,63 +2838,10 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
   }
 })
 
-app.patch('/api/admin/projects/:projectId/status', requireAdministrator, async (request, response, next) => {
-  const databaseClient = await pool.connect()
-  try {
-    const { projectId } = request.params
-    const statusCode = text(request.body?.statusCode).toUpperCase()
-    const phaseCode = text(request.body?.phaseCode).toUpperCase()
-    const reason = text(request.body?.reason)
-    if (!isUuid(projectId) || !statusCode || !phaseCode || reason.length < 8) {
-      return response.status(422).json({ message: 'Selecciona fase, estado y registra un motivo de al menos 8 caracteres.' })
-    }
-    if (statusCode === 'ANULADO') return response.status(422).json({ message: 'Para anular un proyecto utiliza la acción de anulación para conservar el motivo y el detalle.' })
-    if (statusCode === 'FINALIZADO') return response.status(422).json({ message: 'El cierre final se habilitará únicamente mediante el flujo de formularios y aprobaciones.' })
-
-    await databaseClient.query('BEGIN')
-    const project = await lockedProject(databaseClient, projectId)
-    if (!project) {
-      await databaseClient.query('ROLLBACK')
-      return response.status(404).json({ message: 'El proyecto no existe.' })
-    }
-    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
-      await databaseClient.query('ROLLBACK')
-      return response.status(409).json({ message: 'No puedes modificar el estado de un proyecto cerrado.' })
-    }
-    const catalog = await databaseClient.query(
-      `SELECT
-         (SELECT id FROM titulacion.estados_proyecto WHERE codigo = $1) AS state_id,
-         (SELECT id FROM titulacion.fases WHERE codigo = $2 AND activa) AS phase_id`,
-      [statusCode, phaseCode],
-    )
-    if (!catalog.rows[0].state_id || !catalog.rows[0].phase_id) {
-      await databaseClient.query('ROLLBACK')
-      return response.status(422).json({ message: 'La fase o el estado seleccionado no existe.' })
-    }
-    await recordProjectStatus(databaseClient, {
-      projectId,
-      previousStateId: project.estado_actual_id,
-      nextStateId: catalog.rows[0].state_id,
-      previousPhaseId: project.fase_actual_id,
-      nextPhaseId: catalog.rows[0].phase_id,
-      userId: request.session.usuario_id,
-      reason,
-    })
-    await recordAudit(databaseClient, request.session, {
-      projectId,
-      action: 'CAMBIAR_ESTADO_PROYECTO',
-      entity: 'proyectos',
-      entityId: projectId,
-      detail: { previousStatus: project.estado_codigo, statusCode, phaseCode, reason },
-    })
-    await databaseClient.query('COMMIT')
-    return response.json({ message: 'La fase y el estado del proyecto fueron actualizados.' })
-  } catch (error) {
-    await databaseClient.query('ROLLBACK').catch(() => undefined)
-    return next(error)
-  } finally {
-    databaseClient.release()
-  }
+app.patch('/api/admin/projects/:projectId/status', requireAdministrator, (_request, response) => {
+  return response.status(403).json({
+    message: 'La fase y el estado se actualizan automáticamente mediante el flujo académico. Administración puede programar las revisiones o anular el proyecto cuando corresponda.',
+  })
 })
 
 app.post('/api/admin/projects/:projectId/cancel', requireAdministrator, async (request, response, next) => {
