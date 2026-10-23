@@ -1,4 +1,5 @@
 import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 type IconName =
   | 'arrow'
@@ -512,7 +513,7 @@ function PwaControls({ userId }: { userId: string }) {
     {installPrompt && <button className="pwa-control-button" disabled={isWorking} onClick={() => void install()} type="button">Instalar app</button>}
     {supported && <button aria-pressed={alertsActive} className={alertsActive ? 'pwa-control-button is-active' : 'pwa-control-button'} disabled={isWorking} onClick={() => void togglePush()} type="button">{alertsActive ? 'Avisos activos' : 'Activar avisos'}</button>}
     {message && <span className="pwa-control-message" role="status">{message}</span>}
-    {isMobilePromptOpen && <div aria-labelledby="mobile-push-title" aria-modal="true" className="mobile-push-backdrop" role="dialog">
+    {isMobilePromptOpen && createPortal(<div aria-labelledby="mobile-push-title" aria-modal="true" className="mobile-push-backdrop" role="dialog">
       <section className="mobile-push-dialog">
         <div className="mobile-push-icon"><Icon name="bell" /></div>
         <p className="eyebrow">AVISOS DEL PROCESO</p>
@@ -524,7 +525,7 @@ function PwaControls({ userId }: { userId: string }) {
           <button className="primary-button" disabled={isWorking} onClick={() => alertsActive ? closeMobilePrompt() : void togglePush()} type="button">{isWorking ? 'Activando…' : alertsActive ? 'Listo' : 'Activar avisos'}</button>
         </div>
       </section>
-    </div>}
+    </div>, document.body)}
   </div>
 }
 
