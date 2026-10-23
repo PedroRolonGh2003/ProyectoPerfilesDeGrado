@@ -871,17 +871,23 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 }
 
 @media (max-width: 860px) {
-  .student-sidebar, .admin-page .student-sidebar { background: #fff; border: 0; border-top: 1px solid #e6e0e1; bottom: 0; box-shadow: 0 -8px 22px rgba(63, 44, 51, .08); display: block; height: auto; left: 0; min-height: 0; overflow: hidden; padding: 0; position: fixed; right: 0; top: auto; width: 100%; z-index: 60; }
+  .student-page { padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
+  .student-sidebar, .tutor-page .student-sidebar, .reviewer-page .student-sidebar, .admin-page .student-sidebar { background: #fff; border: 0; border-top: 1px solid #e6e0e1; bottom: 0; box-shadow: 0 -8px 22px rgba(63, 44, 51, .12); display: block; height: auto; left: 0; min-height: 0; overflow: hidden; padding: 0; position: fixed; right: 0; top: auto; width: 100%; z-index: 60; }
   .student-sidebar > div:first-child { overflow: visible; }
   .student-sidebar .student-brand, .student-sidebar .student-role, .student-sidebar .sidebar-bottom { display: none; }
-  .student-sidebar .student-nav { display: flex; gap: 6px; overflow-x: auto; padding: 8px 12px; scrollbar-width: none; }
+  .student-sidebar .student-nav { display: grid; gap: 3px; grid-auto-columns: minmax(66px, 1fr); grid-auto-flow: column; grid-template-rows: 1fr; overflow-x: auto; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); scrollbar-width: none; scroll-snap-type: x proximity; }
   .student-sidebar .student-nav::-webkit-scrollbar { display: none; }
-  .student-sidebar .student-nav button { flex: 0 0 auto; font-size: 11px; gap: 7px; min-height: 40px; padding: 8px 10px; }
-  .student-sidebar .student-nav button svg { height: 16px; width: 16px; }
-  .student-header { height: 66px; justify-content: space-between; padding: 0 24px; }
+  .student-sidebar .student-nav button { align-items: center; flex-direction: column; font-size: 9px; gap: 3px; justify-content: center; line-height: 1.1; min-height: 58px; padding: 5px 4px; scroll-snap-align: center; text-align: center; }
+  .student-sidebar .student-nav button span { max-width: 76px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .student-sidebar .student-nav button svg { height: 18px; width: 18px; }
+  .student-sidebar .student-nav button.is-active { box-shadow: inset 0 -2px 0 var(--univalle-wine); }
+  .student-header { height: 62px; justify-content: space-between; padding: 0 16px; position: sticky; top: 0; }
   .mobile-student-brand { display: inline-flex; }
   .session-info > span:last-of-type { display: none; }
-  .student-main { padding: 30px 24px 104px; }
+  .session-info .pwa-controls { display: contents; }
+  .session-info .pwa-controls > .pwa-control-button, .session-info .pwa-controls > .pwa-control-message { display: none; }
+  .role-single-badge { display: none; }
+  .student-main { padding: 30px 24px calc(96px + env(safe-area-inset-bottom)); }
   .tutor-stats { grid-template-columns: repeat(3, 1fr); }
   .admin-stats { grid-template-columns: repeat(3, 1fr); }
   .admin-user-stats { grid-template-columns: repeat(2, 1fr); }
@@ -896,11 +902,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .student-header { padding: 0 12px; }
   .mobile-student-brand strong { display: none; }
   .session-info { gap: 5px; }
-  .pwa-control-button { font-size: 9px; padding: 0 8px; }
-  .pwa-control-message { right: -70px; width: min(230px, calc(100vw - 24px)); }
-  .push-toast { bottom: 70px; left: 12px; max-width: none; right: 12px; }
+  .push-toast { bottom: calc(82px + env(safe-area-inset-bottom)); left: 12px; max-width: none; right: 12px; }
   .demo-status { display: none; }
-  .student-main { padding: 25px 16px 100px; }
+  .student-main { padding: 25px 16px calc(96px + env(safe-area-inset-bottom)); }
   .student-title-row { align-items: flex-start; flex-direction: column; gap: 18px; }
   .form-progress { width: 100%; }
   .field-grid-three, .field-grid-two { grid-template-columns: 1fr; gap: 0; }
@@ -945,4 +949,25 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .reviewer-card-info, .reviewer-project-context { grid-template-columns: 1fr; }
   .reviewer-workspace-heading, .reviewer-document-panel { align-items: flex-start; flex-direction: column; }
   .reviewer-document-panel .primary-button { width: 100%; }
+}
+
+.mobile-push-backdrop { align-items: center; background: rgba(41, 26, 32, .48); display: grid; inset: 0; justify-items: center; padding: 20px; position: fixed; z-index: 500; }
+.mobile-push-dialog { background: #fff; border: 1px solid #ead9df; border-radius: 20px; box-shadow: 0 24px 64px rgba(41, 26, 32, .28); max-width: 390px; padding: 27px 24px 23px; width: min(100%, 390px); }
+.mobile-push-icon { align-items: center; background: #f9e9ef; border-radius: 13px; color: var(--univalle-wine); display: inline-flex; height: 42px; justify-content: center; margin-bottom: 16px; width: 42px; }
+.mobile-push-icon svg { height: 21px; width: 21px; }
+.mobile-push-dialog .eyebrow { font-size: 10px; margin: 0 0 7px; }
+.mobile-push-dialog h2 { color: #3f3437; font-size: 23px; line-height: 1.15; margin: 0; }
+.mobile-push-dialog > p:not(.eyebrow):not(.mobile-push-message) { color: #75686c; font-size: 13px; line-height: 1.55; margin: 10px 0 0; }
+.mobile-push-message { background: #f8eef1; border-radius: 8px; color: #76505f; font-size: 12px; line-height: 1.4; margin: 14px 0 0; padding: 9px 10px; }
+.mobile-push-actions { display: flex; gap: 9px; justify-content: flex-end; margin-top: 22px; }
+.mobile-push-actions button { min-height: 42px; }
+
+@media (min-width: 861px) {
+  .mobile-push-backdrop { display: none; }
+}
+
+@media (max-width: 380px) {
+  .student-sidebar .student-nav { grid-auto-columns: minmax(61px, 1fr); padding-left: 5px; padding-right: 5px; }
+  .student-sidebar .student-nav button { font-size: 8px; }
+  .mobile-push-dialog { border-radius: 16px; padding: 23px 19px 19px; }
 }

@@ -17,9 +17,11 @@ const pool = new Pool(process.env.DATABASE_URL
     })
 
 try {
-  const [manifestSource, serviceWorkerSource] = await Promise.all([
+  const [manifestSource, serviceWorkerSource, appSource, stylesSource] = await Promise.all([
     readFile(new URL('../public/manifest.webmanifest', import.meta.url), 'utf8'),
     readFile(new URL('../public/sw.js', import.meta.url), 'utf8'),
+    readFile(new URL('../src/App.tsx', import.meta.url), 'utf8'),
+    readFile(new URL('../src/styles.css', import.meta.url), 'utf8'),
   ])
   const manifest = JSON.parse(manifestSource)
   assert.equal(manifest.display, 'standalone', 'El manifiesto debe instalar la aplicación en modo independiente')
@@ -27,6 +29,9 @@ try {
   assert.ok(manifest.icons?.length > 0, 'El manifiesto necesita un ícono')
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\('\/api\/'\)/, 'El Service Worker debe excluir la API privada de la caché')
   assert.match(serviceWorkerSource, /PUSH_NOTIFICATION_CLICK/, 'El Service Worker debe redirigir al presionar una notificación')
+  assert.match(appSource, /mobile-push-backdrop/, 'El acceso móvil inicial debe mostrar la solicitud de avisos en un modal')
+  assert.match(appSource, /window\.setInterval\(refreshNotifications, 30000\)/, 'La aplicación debe detectar nuevas notificaciones mientras está abierta')
+  assert.match(stylesSource, /\.student-sidebar, \.tutor-page \.student-sidebar, \.reviewer-page \.student-sidebar, \.admin-page \.student-sidebar/, 'La navegación de todos los roles debe fijarse en la parte inferior en móvil')
 
   const denied = await fetch(`${apiUrl}/api/push/config`)
   assert.equal(denied.status, 401, 'La configuración push no puede exponerse sin sesión')

@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useState } from 'react'
+import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 
 type IconName =
   | 'arrow'
@@ -374,13 +374,26 @@ function vapidKeyBytes(value: string) {
   return Uint8Array.from(bytes, (character) => character.charCodeAt(0))
 }
 
-function PwaControls() {
+function PwaControls({ userId }: { userId: string }) {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
   const [configured, setConfigured] = useState(false)
   const [isSubscribed, setIsSubscribed] = useState(false)
+  const [localAlertsEnabled, setLocalAlertsEnabled] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+  const [isMobilePromptOpen, setIsMobilePromptOpen] = useState(false)
   const [isWorking, setIsWorking] = useState(false)
   const [message, setMessage] = useState('')
   const supported = typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+  const mobilePromptKey = `stit:mobile-push-prompt:${userId}`
+  const localAlertsKey = `stit:local-alerts:${userId}`
+
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 860px)')
+    const updateViewport = () => setIsMobile(media.matches)
+    updateViewport()
+    media.addEventListener('change', updateViewport)
+    return () => media.removeEventListener('change', updateViewport)
+  }, [])
 
   useEffect(() => {
     const captureInstallPrompt = (event: Event) => {
@@ -397,12 +410,25 @@ function PwaControls() {
         ])
         setConfigured(config.configured)
         setIsSubscribed(Boolean(await registration.pushManager.getSubscription()))
+        setLocalAlertsEnabled(window.localStorage.getItem(localAlertsKey) === 'enabled')
       } catch {
         setConfigured(false)
+        setLocalAlertsEnabled(window.localStorage.getItem(localAlertsKey) === 'enabled')
       }
     })()
     return () => window.removeEventListener('beforeinstallprompt', captureInstallPrompt)
-  }, [supported])
+  }, [localAlertsKey, supported])
+
+  useEffect(() => {
+    if (!isMobile || !supported || window.localStorage.getItem(mobilePromptKey)) return
+    const timer = window.setTimeout(() => setIsMobilePromptOpen(true), 250)
+    return () => window.clearTimeout(timer)
+  }, [isMobile, mobilePromptKey, supported])
+
+  function closeMobilePrompt() {
+    window.localStorage.setItem(mobilePromptKey, 'seen')
+    setIsMobilePromptOpen(false)
+  }
 
   async function install() {
     if (!installPrompt) return
@@ -423,20 +449,35 @@ function PwaControls() {
     try {
       const registration = await navigator.serviceWorker.ready
       const currentSubscription = await registration.pushManager.getSubscription()
-      if (currentSubscription && isSubscribed) {
-        await api('/api/push/subscriptions', {
-          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: currentSubscription.endpoint }),
-        })
-        await currentSubscription.unsubscribe()
+      if (isSubscribed || localAlertsEnabled) {
+        if (currentSubscription && isSubscribed) {
+          await api('/api/push/subscriptions', {
+            method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: currentSubscription.endpoint }),
+          })
+          await currentSubscription.unsubscribe()
+        }
         setIsSubscribed(false)
+        setLocalAlertsEnabled(false)
+        window.localStorage.removeItem(localAlertsKey)
         setMessage('Avisos desactivados en este dispositivo.')
         return
       }
 
       const config = await api<PushConfig>('/api/push/config')
+      setConfigured(config.configured)
       if (!config.configured || !config.publicKey) {
-        setConfigured(false)
-        setMessage('Las notificaciones push aún no están disponibles.')
+        if (Notification.permission === 'denied') {
+          setMessage('Las notificaciones están bloqueadas en el navegador. Actívalas desde los permisos del sitio.')
+          return
+        }
+        const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
+        if (permission !== 'granted') {
+          setMessage('Necesitamos tu autorización para mostrar avisos en este dispositivo.')
+          return
+        }
+        setLocalAlertsEnabled(true)
+        window.localStorage.setItem(localAlertsKey, 'enabled')
+        setMessage('Los avisos estarán activos mientras mantengas abierta la aplicación.')
         return
       }
       if (Notification.permission === 'denied') {
@@ -465,10 +506,25 @@ function PwaControls() {
     }
   }
 
+  const alertsActive = isSubscribed || localAlertsEnabled
+
   return <div className="pwa-controls">
     {installPrompt && <button className="pwa-control-button" disabled={isWorking} onClick={() => void install()} type="button">Instalar app</button>}
-    {supported && <button aria-pressed={isSubscribed} className={isSubscribed ? 'pwa-control-button is-active' : 'pwa-control-button'} disabled={isWorking} onClick={() => void togglePush()} title={configured ? (isSubscribed ? 'Desactivar avisos en este dispositivo' : 'Activar avisos en este dispositivo') : 'Las notificaciones push no están configuradas'} type="button">{isSubscribed ? 'Avisos activos' : 'Activar avisos'}</button>}
+    {supported && <button aria-pressed={alertsActive} className={alertsActive ? 'pwa-control-button is-active' : 'pwa-control-button'} disabled={isWorking} onClick={() => void togglePush()} type="button">{alertsActive ? 'Avisos activos' : 'Activar avisos'}</button>}
     {message && <span className="pwa-control-message" role="status">{message}</span>}
+    {isMobilePromptOpen && <div aria-labelledby="mobile-push-title" aria-modal="true" className="mobile-push-backdrop" role="dialog">
+      <section className="mobile-push-dialog">
+        <div className="mobile-push-icon"><Icon name="bell" /></div>
+        <p className="eyebrow">AVISOS DEL PROCESO</p>
+        <h2 id="mobile-push-title">Mantente al tanto de tu proyecto</h2>
+        <p>{configured ? 'Activa los avisos para recibir las novedades de tu proceso aunque no estés usando la aplicación.' : 'Activa los avisos para recibir las novedades mientras mantengas abierta la aplicación.'}</p>
+        {message && <p className="mobile-push-message" role="status">{message}</p>}
+        <div className="mobile-push-actions">
+          <button className="secondary-button" disabled={isWorking} onClick={closeMobilePrompt} type="button">Ahora no</button>
+          <button className="primary-button" disabled={isWorking} onClick={() => alertsActive ? closeMobilePrompt() : void togglePush()} type="button">{isWorking ? 'Activando…' : alertsActive ? 'Listo' : 'Activar avisos'}</button>
+        </div>
+      </section>
+    </div>}
   </div>
 }
 
@@ -561,7 +617,7 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
         {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
       </div>
     </div>
-    <PwaControls />
+    <PwaControls userId={user.id} />
     <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
     <span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span>
   </div>
@@ -2428,10 +2484,35 @@ function App() {
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
   const [navigationTarget, setNavigationTarget] = useState<NotificationDestination | null>(null)
   const [pushNotice, setPushNotice] = useState<AppNotification | null>(null)
+  const knownNotificationIds = useRef(new Set<string>())
+  const notificationFeedReady = useRef(false)
   const [pendingPushNotification, setPendingPushNotification] = useState<{ id: string; open: boolean } | null>(() => {
     const notificationId = new URLSearchParams(window.location.search).get('notification')
     return notificationId ? { id: notificationId, open: true } : null
   })
+
+  function updateNotifications(nextNotifications: AppNotification[]) {
+    const newNotifications = notificationFeedReady.current
+      ? nextNotifications.filter((notification) => !knownNotificationIds.current.has(notification.id))
+      : []
+    knownNotificationIds.current = new Set(nextNotifications.map((notification) => notification.id))
+    notificationFeedReady.current = true
+    setNotifications(nextNotifications)
+
+    if (newNotifications.length > 0) {
+      const newest = newNotifications[0]
+      setPushNotice(newest)
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.visibilityState === 'visible' && 'serviceWorker' in navigator) {
+        void navigator.serviceWorker.ready.then((registration) => registration.showNotification('Seguimiento de Titulación', {
+          body: 'Tienes una nueva actualización. Ingresa para revisarla.',
+          icon: '/univalle-logo.png',
+          badge: '/univalle-logo.png',
+          data: { notificationId: newest.id },
+          tag: `stit-local-${newest.id}`,
+        })).catch(() => undefined)
+      }
+    }
+  }
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
@@ -2439,29 +2520,39 @@ function App() {
     if (session.user.role === 'ADMINISTRADOR') {
       const [dashboard, notificationData] = await Promise.all([api<AdminDashboard>('/api/admin/dashboard'), notificationsRequest])
       setData(dashboard)
-      setNotifications(notificationData.notifications)
+      updateNotifications(notificationData.notifications)
       return
     }
     if (session.user.role === 'TUTOR') {
       const [dashboard, notificationData] = await Promise.all([api<TutorDashboard>('/api/tutor/dashboard'), notificationsRequest])
       setData(dashboard)
-      setNotifications(notificationData.notifications)
+      updateNotifications(notificationData.notifications)
       return
     }
     if (session.user.role === 'REVISOR') {
       const [dashboard, notificationData] = await Promise.all([api<ReviewerDashboard>('/api/reviewer/dashboard'), notificationsRequest])
       setData(dashboard)
-      setNotifications(notificationData.notifications)
+      updateNotifications(notificationData.notifications)
       return
     }
     const [bootstrap, notificationData] = await Promise.all([api<Bootstrap>('/api/student/bootstrap'), notificationsRequest])
     setData(bootstrap)
-    setNotifications(notificationData.notifications)
+    updateNotifications(notificationData.notifications)
   }
 
   useEffect(() => {
     void loadPortal().catch(() => setData(null)).finally(() => setIsLoading(false))
   }, [])
+
+  useEffect(() => {
+    if (!data) return
+    const refreshNotifications = () => {
+      if (document.visibilityState !== 'visible') return
+      void api<NotificationsResponse>('/api/notifications').then((result) => updateNotifications(result.notifications)).catch(() => undefined)
+    }
+    const timer = window.setInterval(refreshNotifications, 30000)
+    return () => window.clearInterval(timer)
+  }, [data?.user.id])
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
@@ -2480,6 +2571,8 @@ function App() {
     } finally {
       setData(null)
       setNotifications([])
+      knownNotificationIds.current = new Set()
+      notificationFeedReady.current = false
       setNavigationTarget(null)
       setPushNotice(null)
       setView('home')
