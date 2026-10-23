@@ -836,6 +836,12 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-defense-editor { margin-top: 18px; }
 .admin-defense-form-fields { display: grid; gap: 12px; grid-template-columns: .8fr .65fr 1.55fr; margin-top: 16px; }
 .admin-defense-editor .form-field { margin-bottom: 0; }
+.admin-defense-modal-backdrop { align-items: center; backdrop-filter: blur(6px); background: rgba(43, 33, 38, .44); display: flex; inset: 0; justify-content: center; padding: 24px; position: fixed; z-index: 200; }
+.admin-defense-modal { box-shadow: 0 22px 58px rgba(32, 20, 25, .24); margin: 0; max-height: calc(100dvh - 48px); max-width: 880px; overflow-y: auto; width: 100%; }
+.admin-defense-modal-heading { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
+.admin-defense-modal-close { align-items: center; background: #f5f1f3; border: 0; border-radius: 50%; color: #65595d; display: inline-flex; flex: 0 0 auto; font-size: 24px; height: 32px; justify-content: center; line-height: 1; padding: 0 0 3px; width: 32px; }
+.admin-defense-modal-close:hover:not(:disabled) { background: #eadce1; color: var(--univalle-wine); }
+.admin-defense-modal-close:disabled { cursor: wait; opacity: .65; }
 
 .tutor-page .student-sidebar, .reviewer-page .student-sidebar, .admin-page .student-sidebar { animation: portal-sidebar-in .42s cubic-bezier(.2, .75, .25, 1) both; }
 .tutor-page .student-header, .reviewer-page .student-header, .admin-page .student-header { animation: portal-header-in .42s cubic-bezier(.2, .75, .25, 1) .05s both; }
@@ -861,6 +867,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .admin-user-stats { grid-template-columns: repeat(2, 1fr); }
   .admin-operation-grid { grid-template-columns: 1fr; }
   .admin-defense-form-fields { grid-template-columns: 1fr; }
+  .admin-defense-modal { max-width: 620px; }
   .admin-user-filters { grid-template-columns: 1fr 1fr; }
   .reviewer-project-context { grid-template-columns: 1fr 1fr; }
 }
@@ -898,6 +905,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .admin-project-card footer { align-items: flex-start; flex-direction: column; gap: 5px; }
   .admin-project-card footer .text-button { margin-left: 0; }
   .admin-defense-card { align-items: flex-start; flex-direction: column; }
+  .admin-defense-modal-backdrop { align-items: flex-end; padding: 12px; }
+  .admin-defense-modal { max-height: calc(100dvh - 24px); }
   .admin-project-context, .admin-round { grid-template-columns: 1fr; }
   .admin-profile-downloads { align-items: flex-start; flex-direction: column; }
   .admin-document-link { margin-left: 0; }

@@ -1864,6 +1864,20 @@ function AdminDefensesPanel({ kind, onRefresh }: { kind: 'PRIVATE' | 'PUBLIC'; o
     setForm({ ...parts, location: selected.location ?? '' })
   }, [selected?.projectId, selected?.scheduledAt, selected?.location])
 
+  useEffect(() => {
+    if (!selected) return
+    const previousOverflow = document.body.style.overflow
+    const closeWithEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !isSubmitting) setSelectedProjectId('')
+    }
+    document.body.style.overflow = 'hidden'
+    window.addEventListener('keydown', closeWithEscape)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener('keydown', closeWithEscape)
+    }
+  }, [selected, isSubmitting])
+
   const visibleProjects = projects.filter((project) => filter === 'ALL' || (filter === 'SCHEDULED' ? Boolean(project.scheduledAt) : !project.scheduledAt))
 
   async function saveSchedule(event: FormEvent<HTMLFormElement>) {
@@ -1877,6 +1891,7 @@ function AdminDefensesPanel({ kind, onRefresh }: { kind: 'PRIVATE' | 'PUBLIC'; o
       })
       setMessage(result.message)
       await Promise.all([loadDefenses(), onRefresh()])
+      setSelectedProjectId('')
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible guardar la programación de la defensa.')
     } finally {
@@ -1896,7 +1911,17 @@ function AdminDefensesPanel({ kind, onRefresh }: { kind: 'PRIVATE' | 'PUBLIC'; o
       <div className="admin-defense-card-main"><div className="admin-project-top"><span className="tutor-code">{project.code}</span><span className="admin-defense-indicator">{project.scheduledAt ? 'Fecha establecida' : 'Fecha pendiente'}</span></div><h2>{project.title}</h2><p>{project.students}</p><div className="admin-defense-meta"><span>{project.phase}</span><span>{project.status}</span></div>{project.scheduledAt ? <div className="admin-defense-date"><strong>{formatDate(project.scheduledAt)}</strong><span>{project.location}</span></div> : <p className="admin-defense-pending">Falta registrar fecha, hora y lugar.</p>}</div>
       <button className="secondary-button" onClick={() => setSelectedProjectId(project.projectId)} type="button">{project.scheduledAt ? 'Gestionar programación' : 'Programar defensa'}</button>
     </article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay defensas en este filtro.</strong><span>Los proyectos aparecerán aquí cuando alcancen la fase de defensa {defenseLabel}.</span></section>}
-    {selected && <form className="admin-operation-card admin-defense-editor" onSubmit={(event) => void saveSchedule(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PROGRAMACIÓN DE DEFENSA {kind === 'PRIVATE' ? 'PRIVADA' : 'PÚBLICA'}</p><h2>{selected.title}</h2></div></div><p>{selected.scheduledAt ? `Programada actualmente para ${formatDate(selected.scheduledAt)} en ${selected.location}.` : 'Registra la convocatoria y se notificará al estudiante, tutor y revisores activos.'}</p><div className="admin-defense-form-fields"><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || selected.isClosed} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} required type="date" value={form.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || selected.isClosed} onChange={(event) => setForm((current) => ({ ...current, time: event.target.value }))} required type="time" value={form.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || selected.isClosed} maxLength={500} minLength={3} onChange={(event) => setForm((current) => ({ ...current, location: event.target.value }))} placeholder="Ej.: Auditorio del bloque A" required value={form.location} /></label></div>{selected.isClosed ? <p className="admin-empty-copy">El proyecto está cerrado; la programación se conserva solo como consulta.</p> : <div className="tutor-actions"><button className="secondary-button" onClick={() => setSelectedProjectId('')} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{selected.scheduledAt ? 'Guardar cambios' : `Programar defensa ${defenseLabel}`}</button></div>}</form>}
+    {selected && <div className="admin-defense-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !isSubmitting) setSelectedProjectId('') }}>
+      <form aria-labelledby="defense-schedule-dialog-title" aria-modal="true" className="admin-operation-card admin-defense-editor admin-defense-modal" onMouseDown={(event) => event.stopPropagation()} onSubmit={(event) => void saveSchedule(event)} role="dialog">
+        <div className="admin-defense-modal-heading">
+          <div className="admin-operation-heading"><Icon name="file" /><div><p>PROGRAMACIÓN DE DEFENSA {kind === 'PRIVATE' ? 'PRIVADA' : 'PÚBLICA'}</p><h2 id="defense-schedule-dialog-title">{selected.title}</h2></div></div>
+          <button aria-label="Cerrar programación" className="admin-defense-modal-close" disabled={isSubmitting} onClick={() => setSelectedProjectId('')} type="button">×</button>
+        </div>
+        <p>{selected.scheduledAt ? `Programada actualmente para ${formatDate(selected.scheduledAt)} en ${selected.location}.` : 'Registra la convocatoria y se notificará al estudiante, tutor y revisores activos.'}</p>
+        <div className="admin-defense-form-fields"><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || selected.isClosed} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} required type="date" value={form.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || selected.isClosed} onChange={(event) => setForm((current) => ({ ...current, time: event.target.value }))} required type="time" value={form.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || selected.isClosed} maxLength={500} minLength={3} onChange={(event) => setForm((current) => ({ ...current, location: event.target.value }))} placeholder="Ej.: Auditorio del bloque A" required value={form.location} /></label></div>
+        {selected.isClosed ? <p className="admin-empty-copy">El proyecto está cerrado; la programación se conserva solo como consulta.</p> : <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={() => setSelectedProjectId('')} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{selected.scheduledAt ? 'Guardar cambios' : `Programar defensa ${defenseLabel}`}</button></div>}
+      </form>
+    </div>}
   </>
 }
 
