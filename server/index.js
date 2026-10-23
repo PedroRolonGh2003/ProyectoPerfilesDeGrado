@@ -2548,6 +2548,59 @@ app.get('/api/admin/dashboard', requireAdministrator, async (request, response, 
   }
 })
 
+app.get('/api/admin/defenses/:defenseType', requireAdministrator, async (request, response, next) => {
+  try {
+    const defenseType = defenseTypeFromRequest(request.params.defenseType)
+    if (!defenseType) return response.status(422).json({ message: 'La defensa seleccionada no es válida.' })
+
+    const phaseCodes = defenseType === 'PRIVADA'
+      ? ['DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO', 'CIERRE']
+      : ['DOCUMENTO_PUBLICO', 'CIERRE']
+    const projects = await pool.query(
+      `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.registrado_en,
+              f.codigo AS fase_codigo, f.nombre AS fase_nombre,
+              ep.codigo AS estado_codigo, ep.nombre AS estado_nombre,
+              students.nombres_estudiantes,
+              schedule.fecha_hora AS defensa_en, schedule.lugar AS defensa_lugar
+       FROM titulacion.proyectos p
+       JOIN titulacion.fases f ON f.id = p.fase_actual_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       LEFT JOIN LATERAL (
+         SELECT string_agg(trim(concat(u.nombres, ' ', u.apellidos)), ', ' ORDER BY u.apellidos, u.nombres) AS nombres_estudiantes
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id
+         WHERE pe.proyecto_id = p.id AND pe.activo
+       ) students ON true
+       LEFT JOIN titulacion.defensas_programadas schedule ON schedule.proyecto_id = p.id AND schedule.tipo = $1
+       WHERE f.codigo = ANY($2::text[])
+         AND ep.codigo <> 'ANULADO'
+       ORDER BY COALESCE(schedule.actualizada_en, schedule.programada_en, p.registrado_en) DESC, p.registrado_en DESC`,
+      [defenseType, phaseCodes],
+    )
+
+    return response.json({
+      type: defenseType,
+      projects: projects.rows.map((project) => ({
+        projectId: project.id,
+        code: project.codigo_seguimiento,
+        title: project.titulo_tentativo,
+        students: project.nombres_estudiantes ?? 'Sin estudiante asignado',
+        phaseCode: project.fase_codigo,
+        phase: project.fase_nombre,
+        statusCode: project.estado_codigo,
+        status: project.estado_nombre,
+        registeredAt: project.registrado_en,
+        scheduledAt: project.defensa_en ?? null,
+        location: project.defensa_lugar ?? null,
+        isClosed: project.estado_codigo === 'FINALIZADO',
+      })),
+    })
+  } catch (error) {
+    return next(error)
+  }
+})
+
 app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, response, next) => {
   try {
     const { projectId } = request.params
@@ -2908,6 +2961,21 @@ app.post('/api/admin/projects/:projectId/review-rounds', requireAdministrator, a
     if (!profile.rows[0]) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'La versión seleccionada no pertenece al perfil de este proyecto.' })
+    }
+
+    const existingReview = await databaseClient.query(
+      `SELECT rr.id
+       FROM titulacion.rondas_revision rr
+       JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+       JOIN titulacion.documentos d ON d.id = vd.documento_id
+       WHERE d.proyecto_id = $1
+       LIMIT 1
+       FOR UPDATE OF rr`,
+      [projectId],
+    )
+    if (existingReview.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'La primera revisión del proyecto ya fue habilitada. El avance continuará mediante los dictámenes y correcciones del flujo académico.' })
     }
 
     const reviewers = await databaseClient.query(

@@ -224,6 +224,10 @@ try {
   assert.equal(roundData.project.statusCode, 'EN_REVISION', 'El proyecto no pasó a EN_REVISION')
   assert.equal(roundData.project.phaseCode, 'REVISION_PERFIL', 'El proyecto no pasó a la fase de revisión de perfil')
   assert.equal(roundData.rounds[0].reviews.length, 3, 'La ronda no contiene las revisiones pendientes de tutor y revisores')
+  const duplicateRound = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/review-rounds`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ versionId: profileVersionId }),
+  }), 409, 'Bloqueo de habilitación duplicada de la primera revisión')
+  assert.match((await duplicateRound.json()).message, /primera revisión/i, 'El bloqueo no explica que la primera revisión ya fue habilitada')
 
   await pool.query(`UPDATE titulacion.rondas_revision SET fecha_solicitud = now() - interval '49 hours' WHERE id = $1`, [roundPayload.roundId])
   await pool.query(`UPDATE titulacion.asignaciones_proyecto SET fecha_asignacion = now() - interval '49 hours', respondida_en = CASE WHEN tipo = 'TUTOR' THEN now() - interval '49 hours' ELSE respondida_en END WHERE proyecto_id = $1 AND activo`, [projectId])

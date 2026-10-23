@@ -183,6 +183,19 @@ type AdminDashboard = {
   pendingReviewStarts: AdminProject[]
   newTeachers: PendingTeacher[]
 }
+type AdminDefenseProject = {
+  projectId: string
+  code: string
+  title: string
+  students: string
+  phase: string
+  status: string
+  registeredAt: string
+  scheduledAt: string | null
+  location: string | null
+  isClosed: boolean
+}
+type AdminDefensesResponse = { type: 'PRIVADA' | 'PUBLICA'; projects: AdminDefenseProject[] }
 type PendingTeacher = { id: string; firstName: string; lastName: string; fullName: string; email: string; createdAt: string; confirmedAt: string }
 type AdminUser = {
   id: string
@@ -1678,10 +1691,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const [profileVersionId, setProfileVersionId] = useState('')
   const [cancelReason, setCancelReason] = useState('')
   const [cancelDetail, setCancelDetail] = useState('')
-  const [defenseForms, setDefenseForms] = useState({
-    PRIVATE: { date: '', time: '', location: '' },
-    PUBLIC: { date: '', time: '', location: '' },
-  })
 
   async function loadDetail() {
     setIsLoading(true)
@@ -1692,12 +1701,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
       setReviewer1Id(payload.assignments.find((item) => item.type === 'REVISOR_1')?.teacherId ?? '')
       setReviewer2Id(payload.assignments.find((item) => item.type === 'REVISOR_2')?.teacherId ?? '')
       setProfileVersionId(payload.profiles[0]?.versionId ?? '')
-      const privateDefense = defenseInputParts(payload.project.defenses.private.scheduledAt)
-      const publicDefense = defenseInputParts(payload.project.defenses.public.scheduledAt)
-      setDefenseForms({
-        PRIVATE: { ...privateDefense, location: payload.project.defenses.private.location ?? '' },
-        PUBLIC: { ...publicDefense, location: payload.project.defenses.public.location ?? '' },
-      })
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible cargar el proyecto.')
     } finally {
@@ -1786,27 +1789,6 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
     }
   }
 
-  async function submitDefenseSchedule(event: FormEvent<HTMLFormElement>, defenseType: 'PRIVATE' | 'PUBLIC') {
-    event.preventDefault()
-    const form = defenseForms[defenseType]
-    setIsSubmitting(true)
-    setMessage('')
-    try {
-      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/defense-schedules/${defenseType}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
-      })
-      setMessage(result.message)
-      await onRefresh()
-      await loadDetail()
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'No fue posible guardar la programación de la defensa.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
   const tutors = detail?.staff.filter((item) => item.roles.includes('TUTOR')) ?? []
   const reviewers = detail?.staff.filter((item) => item.roles.includes('REVISOR')) ?? []
   const isCancelled = detail?.project.statusCode === 'ANULADO'
@@ -1816,10 +1798,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const tutorConfirmed = Boolean(tutorAssignment?.active && tutorAssignment.respondedAt && !tutorAssignment.finishedAt)
   const assignedReviewers = detail?.assignments.filter((item) => item.type === 'REVISOR_1' || item.type === 'REVISOR_2').filter((item) => item.active && !item.finishedAt) ?? []
   const hasOpenRound = Boolean(detail?.rounds.some((round) => !round.closedAt))
-  const canScheduleReview = Boolean(tutorConfirmed && assignedReviewers.length === 2 && !hasOpenRound)
-  const firstReviewReady = Boolean(canScheduleReview && detail?.rounds.length === 0)
-  const privateDefenseAvailable = Boolean(detail?.project.defenses.private.available)
-  const publicDefenseAvailable = Boolean(detail?.project.defenses.public.available)
+  const firstReviewReady = Boolean(tutorConfirmed && assignedReviewers.length === 2 && !hasOpenRound && detail?.rounds.length === 0)
   const isClosed = isCancelled || isFinalized
 
   return <main className="student-page admin-page">
@@ -1838,10 +1817,9 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
         {!isClosed && <div className="admin-operation-grid">
           <form className="admin-operation-card" onSubmit={(event) => void submitTutor(event)}><div className="admin-operation-heading"><Icon name="user" /><div><p>PASO 1 · TUTORÍA</p><h2>Tutor propuesto</h2></div></div><p>El estudiante propone un tutor al registrar su proyecto. Durante una ronda abierta, el tutor actual conserva su evaluación pendiente hasta que el reemplazo acepte.</p><label className="form-field"><span>Tutor <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setTutorId(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{tutors.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><p className={tutorConfirmed ? 'admin-assignment-state is-confirmed' : 'admin-assignment-state'}>{pendingTutorReplacement ? `${pendingTutorReplacement.teacher} debe aceptar el reemplazo; ${tutorAssignment?.teacher} conserva la ronda actual.` : tutorConfirmed ? `Tutor confirmado: ${tutorAssignment?.teacher}` : tutorAssignment ? `Esperando respuesta de ${tutorAssignment.teacher}.` : 'Aún no se propuso un tutor.'}</p><button className="secondary-button" disabled={isSubmitting || !tutorId} type="submit">{hasOpenRound && tutorAssignment ? 'Proponer reemplazo del tutor' : tutorAssignment ? 'Cambiar tutor propuesto' : 'Enviar invitación al tutor'}</button></form>
           <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · EQUIPO EVALUADOR</p><h2>Asignar revisores</h2></div></div><p>{hasOpenRound ? 'La ronda está en curso. Si reemplazas a un revisor que aún no emitió dictamen, su evaluación pendiente se transferirá al nuevo revisor.' : tutorConfirmed ? 'El tutor aceptó la invitación. Define Revisor 1 y Revisor 2; el tutor recibirá una notificación cuando el equipo quede asignado.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">{hasOpenRound ? 'Guardar cambios y reasignar pendientes' : 'Guardar equipo evaluador'}</button></form>
-          <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PASO 3 · INICIO DE REVISIÓN</p><h2>{firstReviewReady ? 'Habilitar primera revisión' : 'Habilitar revisión'}</h2></div></div><p>{canScheduleReview ? 'Selecciona la versión del perfil para habilitarla al tutor y a los dos revisores. Si siguen pendientes, recibirán recordatorios desde el segundo día.' : 'Esta acción se habilita cuando el tutor haya aceptado, estén asignados los dos revisores y no exista una ronda abierta.'}</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !canScheduleReview || detail.profiles.length === 0 || !profileVersionId} type="submit">Habilitar revisión</button></form>
+          {detail.rounds.length === 0 && <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PASO 3 · INICIO DE REVISIÓN</p><h2>Habilitar primera revisión</h2></div></div><p>{firstReviewReady ? 'Selecciona la versión del perfil para habilitarla al tutor y a los dos revisores. Si siguen pendientes, recibirán recordatorios desde el segundo día.' : 'Esta acción se habilita cuando el tutor haya aceptado, estén asignados los dos revisores y no exista una ronda abierta.'}</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !firstReviewReady || detail.profiles.length === 0 || !profileVersionId} type="submit">Habilitar revisión</button></form>}
         </div>}
 
-        {!isClosed && <section className="admin-defense-scheduling"><div className="admin-operation-heading"><Icon name="check" /><div><p>PROGRAMACIÓN DE DEFENSAS</p><h2>Fecha, hora y lugar</h2></div></div><p>Cuando la fase esté habilitada, registra la convocatoria. Cada actualización notifica al estudiante, tutor y revisores activos del proyecto.</p><div className="admin-operation-grid"><form className="admin-operation-card" onSubmit={(event) => void submitDefenseSchedule(event, 'PRIVATE')}><div className="admin-operation-heading"><Icon name="file" /><div><p>DEFENSA PRIVADA</p><h2>{detail.project.defenses.private.scheduledAt ? 'Actualizar convocatoria' : 'Programar defensa'}</h2></div></div><p>{privateDefenseAvailable ? detail.project.defenses.private.scheduledAt ? `Programada: ${formatDate(detail.project.defenses.private.scheduledAt)} · ${detail.project.defenses.private.location}` : 'Falta asignar la fecha, hora y lugar de la defensa privada.' : 'Se habilitará cuando el proyecto pase a defensa privada.'}</p><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || !privateDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PRIVATE: { ...current.PRIVATE, date: event.target.value } }))} required type="date" value={defenseForms.PRIVATE.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || !privateDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PRIVATE: { ...current.PRIVATE, time: event.target.value } }))} required type="time" value={defenseForms.PRIVATE.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || !privateDefenseAvailable || isClosed} maxLength={500} minLength={3} onChange={(event) => setDefenseForms((current) => ({ ...current, PRIVATE: { ...current.PRIVATE, location: event.target.value } }))} placeholder="Ej.: Auditorio del bloque A" required value={defenseForms.PRIVATE.location} /></label><button className="primary-button" disabled={isSubmitting || !privateDefenseAvailable || isClosed} type="submit">{detail.project.defenses.private.scheduledAt ? 'Guardar cambios' : 'Programar defensa privada'}</button></form><form className="admin-operation-card" onSubmit={(event) => void submitDefenseSchedule(event, 'PUBLIC')}><div className="admin-operation-heading"><Icon name="file" /><div><p>DEFENSA PÚBLICA</p><h2>{detail.project.defenses.public.scheduledAt ? 'Actualizar convocatoria' : 'Programar defensa'}</h2></div></div><p>{publicDefenseAvailable ? detail.project.defenses.public.scheduledAt ? `Programada: ${formatDate(detail.project.defenses.public.scheduledAt)} · ${detail.project.defenses.public.location}` : 'Falta asignar la fecha, hora y lugar de la defensa pública.' : 'Se habilitará cuando el proyecto pase a defensa pública.'}</p><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || !publicDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PUBLIC: { ...current.PUBLIC, date: event.target.value } }))} required type="date" value={defenseForms.PUBLIC.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || !publicDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PUBLIC: { ...current.PUBLIC, time: event.target.value } }))} required type="time" value={defenseForms.PUBLIC.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || !publicDefenseAvailable || isClosed} maxLength={500} minLength={3} onChange={(event) => setDefenseForms((current) => ({ ...current, PUBLIC: { ...current.PUBLIC, location: event.target.value } }))} placeholder="Ej.: Sala de conferencias" required value={defenseForms.PUBLIC.location} /></label><button className="primary-button" disabled={isSubmitting || !publicDefenseAvailable || isClosed} type="submit">{detail.project.defenses.public.scheduledAt ? 'Guardar cambios' : 'Programar defensa pública'}</button></form></div></section>}
 
         <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se habilitó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Habilitada: {formatDate(round.requestedAt)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
 
@@ -1851,6 +1829,75 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
       </>}
     </div></section>
   </main>
+}
+
+function AdminDefensesPanel({ kind, onRefresh }: { kind: 'PRIVATE' | 'PUBLIC'; onRefresh: () => Promise<void> }) {
+  const [projects, setProjects] = useState<AdminDefenseProject[]>([])
+  const [filter, setFilter] = useState<'ALL' | 'SCHEDULED' | 'PENDING'>('ALL')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [form, setForm] = useState({ date: '', time: '', location: '' })
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [message, setMessage] = useState('')
+  const defenseLabel = kind === 'PRIVATE' ? 'privada' : 'pública'
+  const sectionLabel = kind === 'PRIVATE' ? 'Defensas privadas' : 'Defensas públicas'
+
+  async function loadDefenses() {
+    setIsLoading(true)
+    try {
+      const payload = await api<AdminDefensesResponse>(`/api/admin/defenses/${kind}`)
+      setProjects(payload.projects)
+      setSelectedProjectId((current) => payload.projects.some((item) => item.projectId === current) ? current : '')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible cargar las defensas.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  useEffect(() => { void loadDefenses() }, [kind])
+
+  const selected = projects.find((project) => project.projectId === selectedProjectId) ?? null
+  useEffect(() => {
+    if (!selected) return
+    const parts = defenseInputParts(selected.scheduledAt)
+    setForm({ ...parts, location: selected.location ?? '' })
+  }, [selected?.projectId, selected?.scheduledAt, selected?.location])
+
+  const visibleProjects = projects.filter((project) => filter === 'ALL' || (filter === 'SCHEDULED' ? Boolean(project.scheduledAt) : !project.scheduledAt))
+
+  async function saveSchedule(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selected) return
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${selected.projectId}/defense-schedules/${kind}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
+      })
+      setMessage(result.message)
+      await Promise.all([loadDefenses(), onRefresh()])
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible guardar la programación de la defensa.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return <>
+    <section className="admin-defense-intro"><Icon name="check" /><div><h2>{sectionLabel}</h2><p>Gestiona la fecha, hora y lugar de los proyectos habilitados para defensa {defenseLabel}.</p></div></section>
+    {message && <p className="student-message is-visible tutor-message">{message}</p>}
+    <section className="admin-defense-filters" aria-label={`Filtros de defensas ${defenseLabel}s`}>
+      <button className={filter === 'ALL' ? 'is-active' : ''} onClick={() => setFilter('ALL')} type="button">Todas <b>{projects.length}</b></button>
+      <button className={filter === 'SCHEDULED' ? 'is-active' : ''} onClick={() => setFilter('SCHEDULED')} type="button">Con fecha establecida <b>{projects.filter((project) => project.scheduledAt).length}</b></button>
+      <button className={filter === 'PENDING' ? 'is-active' : ''} onClick={() => setFilter('PENDING')} type="button">Sin fecha establecida <b>{projects.filter((project) => !project.scheduledAt).length}</b></button>
+    </section>
+    {isLoading ? <section className="documents-loading">Cargando defensas habilitadas…</section> : visibleProjects.length > 0 ? <div className="admin-defense-list">{visibleProjects.map((project) => <article className={project.scheduledAt ? 'admin-defense-card is-scheduled' : 'admin-defense-card is-pending'} key={project.projectId}>
+      <div className="admin-defense-card-main"><div className="admin-project-top"><span className="tutor-code">{project.code}</span><span className="admin-defense-indicator">{project.scheduledAt ? 'Fecha establecida' : 'Fecha pendiente'}</span></div><h2>{project.title}</h2><p>{project.students}</p><div className="admin-defense-meta"><span>{project.phase}</span><span>{project.status}</span></div>{project.scheduledAt ? <div className="admin-defense-date"><strong>{formatDate(project.scheduledAt)}</strong><span>{project.location}</span></div> : <p className="admin-defense-pending">Falta registrar fecha, hora y lugar.</p>}</div>
+      <button className="secondary-button" onClick={() => setSelectedProjectId(project.projectId)} type="button">{project.scheduledAt ? 'Gestionar programación' : 'Programar defensa'}</button>
+    </article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay defensas en este filtro.</strong><span>Los proyectos aparecerán aquí cuando alcancen la fase de defensa {defenseLabel}.</span></section>}
+    {selected && <form className="admin-operation-card admin-defense-editor" onSubmit={(event) => void saveSchedule(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PROGRAMACIÓN DE DEFENSA {kind === 'PRIVATE' ? 'PRIVADA' : 'PÚBLICA'}</p><h2>{selected.title}</h2></div></div><p>{selected.scheduledAt ? `Programada actualmente para ${formatDate(selected.scheduledAt)} en ${selected.location}.` : 'Registra la convocatoria y se notificará al estudiante, tutor y revisores activos.'}</p><div className="admin-defense-form-fields"><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || selected.isClosed} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} required type="date" value={form.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || selected.isClosed} onChange={(event) => setForm((current) => ({ ...current, time: event.target.value }))} required type="time" value={form.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || selected.isClosed} maxLength={500} minLength={3} onChange={(event) => setForm((current) => ({ ...current, location: event.target.value }))} placeholder="Ej.: Auditorio del bloque A" required value={form.location} /></label></div>{selected.isClosed ? <p className="admin-empty-copy">El proyecto está cerrado; la programación se conserva solo como consulta.</p> : <div className="tutor-actions"><button className="secondary-button" onClick={() => setSelectedProjectId('')} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{selected.scheduledAt ? 'Guardar cambios' : `Programar defensa ${defenseLabel}`}</button></div>}</form>}
+  </>
 }
 
 type AdminUserInput = {
@@ -2018,7 +2065,7 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
 }
 
 function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
-  const [view, setView] = useState<'home' | 'projects' | 'review-starts' | 'new-teachers' | 'users'>('home')
+  const [view, setView] = useState<'home' | 'projects' | 'review-starts' | 'new-teachers' | 'defenses-private' | 'defenses-public' | 'users'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
@@ -2044,7 +2091,8 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
     const matchesStatus = userStatus === 'ALL' || (userStatus === 'ACTIVE' ? user.active : !user.active)
     return matchesSearch && matchesRole && matchesStatus
   })
-  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'review-starts' ? 'Revisiones por iniciar' : view === 'new-teachers' ? 'Nuevos docentes' : 'Usuarios'
+  const isDefenseView = view === 'defenses-private' || view === 'defenses-public'
+  const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'review-starts' ? 'Revisiones por iniciar' : view === 'new-teachers' ? 'Nuevos docentes' : view === 'defenses-private' ? 'Defensas privadas' : view === 'defenses-public' ? 'Defensas públicas' : 'Usuarios'
 
   useEffect(() => {
     if (navigationTarget === '/admin/revisiones-por-iniciar' || navigationTarget === '/admin/nuevos-proyectos' || navigationTarget === '/admin') {
@@ -2175,6 +2223,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
           <button className={view === 'review-starts' ? 'is-active' : ''} onClick={() => setView('review-starts')} type="button"><Icon name="bell" /><span>Por iniciar</span>{data.summary.pendingReviewStarts > 0 && <b className="nav-count">{data.summary.pendingReviewStarts}</b>}</button>
           <button className={view === 'new-teachers' ? 'is-active' : ''} onClick={() => setView('new-teachers')} type="button"><Icon name="user" /><span>Nuevos docentes</span>{data.summary.newTeachers > 0 && <b className="nav-count">{data.summary.newTeachers}</b>}</button>
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
+          <button className={isDefenseView ? 'is-active' : ''} onClick={() => setView('defenses-private')} type="button"><Icon name="file" /><span>Defensas</span></button>
           <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
           <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
@@ -2186,11 +2235,13 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
       <div className="student-main admin-main">
         <div className="breadcrumb">Administración <span>/</span> {heading}</div>
-        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'review-starts' ? 'Completa el equipo evaluador y habilita la primera revisión de los perfiles pendientes.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
+        <div className="student-title-row admin-title"><div><p className="eyebrow">Control operativo</p><h1>{heading}</h1><p>{view === 'home' ? 'Consulta el estado académico de los proyectos registrados en el sistema.' : view === 'projects' ? 'Crea, consulta, actualiza y anula proyectos con trazabilidad académica.' : view === 'review-starts' ? 'Completa el equipo evaluador y habilita la primera revisión de los perfiles pendientes.' : view === 'new-teachers' ? 'Docentes con correo confirmado que esperan la asignación de sus roles.' : isDefenseView ? 'Programa y consulta las convocatorias de defensas académicas.' : 'Gestiona todos los accesos, roles y perfiles académicos registrados en el sistema.'}</p></div>{view === 'projects' && <button className="primary-button admin-title-action" onClick={() => void openProjectCreate()} type="button"><Icon name="plus" />Nuevo proyecto</button>}{view === 'users' && <button className="primary-button admin-title-action" onClick={() => { setMessage(''); setEditingUser(null) }} type="button"><Icon name="plus" />Nuevo usuario</button>}</div>
 
-        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.pendingReviewStarts > 0 ? 'requires-attention' : ''}><small>Por iniciar</small><strong>{data.summary.pendingReviewStarts}</strong><span>Requieren equipo o primera ronda.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
+        {view === 'new-teachers' ? <section className="admin-stats admin-user-stats"><div className={data.summary.newTeachers > 0 ? 'requires-attention' : ''}><small>Docentes por asignar</small><strong>{data.summary.newTeachers}</strong><span>Con correo institucional confirmado.</span></div></section> : isDefenseView ? null : view !== 'users' ? <section className="admin-stats"><div><small>Proyectos registrados</small><strong>{data.summary.total}</strong><span>En el listado actual.</span></div><div className={data.summary.pendingReviewStarts > 0 ? 'requires-attention' : ''}><small>Por iniciar</small><strong>{data.summary.pendingReviewStarts}</strong><span>Requieren equipo o primera ronda.</span></div><div><small>En revisión</small><strong>{data.summary.inReview}</strong><span>Con proceso de revisión activo.</span></div><div><small>Observados</small><strong>{data.summary.observed}</strong><span>Esperan correcciones.</span></div></section> : <section className="admin-stats admin-user-stats"><div><small>Usuarios registrados</small><strong>{usersData?.summary.total ?? '—'}</strong><span>Hasta 250 resultados por consulta.</span></div><div><small>Accesos activos</small><strong>{usersData?.summary.active ?? '—'}</strong><span>Con ingreso habilitado.</span></div><div><small>Estudiantes</small><strong>{usersData?.summary.students ?? '—'}</strong><span>Con perfil estudiantil.</span></div><div><small>Docentes</small><strong>{usersData?.summary.staff ?? '—'}</strong><span>Tutores o revisores.</span></div></section>}
 
         {message && <p className="student-message is-visible tutor-message">{message}</p>}
+
+        {isDefenseView && <nav aria-label="Tipos de defensa" className="admin-defense-tabs"><button className={view === 'defenses-private' ? 'is-active' : ''} onClick={() => setView('defenses-private')} type="button">Defensas privadas</button><button className={view === 'defenses-public' ? 'is-active' : ''} onClick={() => setView('defenses-public')} type="button">Defensas públicas</button></nav>}
 
         {view === 'home' && <>
           <section className="admin-intro"><Icon name="clipboard" /><div><h2>Seguimiento centralizado</h2><p>Esta vista se alimenta directamente de los proyectos, asignaciones, rondas y revisiones registradas en PostgreSQL.</p></div></section>
@@ -2200,6 +2251,9 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
         </>}
 
         {view === 'review-starts' && <>{data.pendingReviewStarts.length > 0 ? <div className="admin-project-list">{data.pendingReviewStarts.map(projectCard)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay primeras rondas pendientes.</strong><span>Los proyectos aparecerán aquí hasta que la primera ronda de revisión sea creada.</span></section>}</>}
+
+        {view === 'defenses-private' && <AdminDefensesPanel key="private" kind="PRIVATE" onRefresh={onRefresh} />}
+        {view === 'defenses-public' && <AdminDefensesPanel key="public" kind="PUBLIC" onRefresh={onRefresh} />}
 
         {view === 'new-teachers' && <>
           {assigningTeacher && <PendingTeacherRoleForm careers={usersData?.careers ?? []} onCancel={() => setAssigningTeacher(null)} onSave={(payload) => assignTeacherRoles(assigningTeacher, payload)} teacher={assigningTeacher} />}

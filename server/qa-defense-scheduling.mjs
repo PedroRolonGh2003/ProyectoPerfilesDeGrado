@@ -203,6 +203,9 @@ try {
 
   const privateDetail = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Detalle administrativo de defensa privada')
   assert.equal((await privateDetail.json()).project.defenses.private.scheduledAt, null, 'El detalle administrativo no informa la convocatoria privada pendiente')
+  const privateDefensesPending = await expect(await fetch(`${apiUrl}/api/admin/defenses/PRIVATE`, { headers: { Cookie: adminCookie } }), 200, 'Listado de defensas privadas pendientes')
+  const privatePendingProject = (await privateDefensesPending.json()).projects.find((project) => project.projectId === projectId)
+  assert.equal(privatePendingProject?.scheduledAt, null, 'El listado no identifica la defensa privada sin fecha')
 
   const privateSchedule = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/defense-schedules/PRIVATE`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ date: '2026-11-20', time: '09:30', location: 'Auditorio A' }),
@@ -215,6 +218,9 @@ try {
     [projectId],
   )
   assert.deepEqual(storedPrivate.rows[0], { fecha_hora: '2026-11-20 09:30', lugar: 'Auditorio A' }, 'La convocatoria privada no guardó fecha, hora y lugar')
+  const privateDefensesScheduled = await expect(await fetch(`${apiUrl}/api/admin/defenses/PRIVATE`, { headers: { Cookie: adminCookie } }), 200, 'Listado de defensas privadas programadas')
+  const privateScheduledProject = (await privateDefensesScheduled.json()).projects.find((project) => project.projectId === projectId)
+  assert.equal(privateScheduledProject?.location, 'Auditorio A', 'El listado no conserva el lugar de la defensa privada')
   const programmedDetail = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Detalle administrativo con convocatoria')
   assert.equal((await programmedDetail.json()).project.defenses.private.location, 'Auditorio A', 'Administración no ve la convocatoria programada')
 
@@ -241,9 +247,15 @@ try {
   }), 409, 'Bloqueo de defensa pública antes de su fase')
   const publicClient = await pool.connect()
   try { await moveTo(publicClient, catalog.public_phase_id, catalog.public_state_id, 'QA: proyecto habilitado para defensa pública.') } finally { publicClient.release() }
+  const publicDefensesPending = await expect(await fetch(`${apiUrl}/api/admin/defenses/PUBLIC`, { headers: { Cookie: adminCookie } }), 200, 'Listado de defensas públicas pendientes')
+  const publicPendingProject = (await publicDefensesPending.json()).projects.find((project) => project.projectId === projectId)
+  assert.equal(publicPendingProject?.scheduledAt, null, 'El listado no identifica la defensa pública sin fecha')
   await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/defense-schedules/PUBLIC`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json', Cookie: adminCookie }, body: JSON.stringify({ date: '2026-12-05', time: '16:00', location: 'Sala Magna' }),
   }), 200, 'Programación de defensa pública')
+  const publicDefensesScheduled = await expect(await fetch(`${apiUrl}/api/admin/defenses/PUBLIC`, { headers: { Cookie: adminCookie } }), 200, 'Listado de defensas públicas programadas')
+  const publicScheduledProject = (await publicDefensesScheduled.json()).projects.find((project) => project.projectId === projectId)
+  assert.equal(publicScheduledProject?.location, 'Sala Magna', 'El listado no conserva el lugar de la defensa pública')
   const publicNotifications = await pool.query(`SELECT count(*)::int AS total FROM titulacion.notificaciones WHERE proyecto_id = $1 AND tipo = 'DEFENSA_PUBLICA_PROGRAMADA'`, [projectId])
   assert.equal(publicNotifications.rows[0].total, 4, 'La defensa pública no notificó a los cuatro participantes')
   const publicDocument = await pool.query(
