@@ -69,6 +69,8 @@ type AdministratorUser = UserBase & {
 }
 type User = StudentUser | TutorUser | ReviewerUser | AdministratorUser
 type ReviewParticipant = { assignmentType: string; reviewer: string; decision: string; decidedAt: string | null }
+type DefenseSchedule = { available: boolean; scheduledAt: string | null; location: string | null }
+type DefenseSchedules = { private: DefenseSchedule; public: DefenseSchedule }
 type TutorAssignment = {
   id: string
   projectId: string
@@ -79,8 +81,10 @@ type TutorAssignment = {
   management: string
   modality: string
   phase: string
+  phaseCode: string
   status: string
   statusCode?: string
+  defenses: DefenseSchedules
   students: string
   registrations: string
   requestedAt: string
@@ -103,7 +107,7 @@ type AppNotification = {
   readAt: string | null
   createdAt: string
 }
-type NotificationDestination = '/student' | '/student/proponer-tutor' | '/documentos' | '/tutor' | '/tutor/invitaciones' | '/tutor/proyectos' | '/revisor' | '/revisor/pendientes' | '/admin' | '/admin/nuevos-proyectos' | '/admin/revisiones-por-iniciar' | '/admin/nuevos-docentes'
+type NotificationDestination = '/student' | '/student/proponer-tutor' | '/documentos' | '/tutor' | '/tutor/invitaciones' | '/tutor/proyectos' | '/tutor/defensas-privada' | '/tutor/defensas-publica' | '/revisor' | '/revisor/pendientes' | '/revisor/defensas-privada' | '/revisor/defensas-publica' | '/admin' | '/admin/nuevos-proyectos' | '/admin/revisiones-por-iniciar' | '/admin/nuevos-docentes'
 type TutorDashboard = {
   user: TutorUser
   invitations: TutorAssignment[]
@@ -125,7 +129,9 @@ type ReviewerReview = {
   management: string
   modality: string
   phase: string
+  phaseCode: string
   status: string
+  defenses: DefenseSchedules
   students: string
   registrations: string
   roundNumber: number
@@ -144,6 +150,7 @@ type ReviewerDashboard = {
   summary: { pending: number; completed: number }
   pendingReviews: ReviewerReview[]
   completedReviews: ReviewerReview[]
+  defenseProjects: { projectId: string; code: string; title: string; phase: string; phaseCode: string; status: string; students: string; defenses: DefenseSchedules }[]
   notifications: AppNotification[]
   unreadCount: number
 }
@@ -160,6 +167,7 @@ type AdminProject = {
   phase: string
   statusCode: string
   status: string
+  defenses?: DefenseSchedules
   isFinal: boolean
   registeredAt: string
   pendingReviews: number
@@ -221,7 +229,7 @@ type AdminAssignment = {
   reason: string | null
 }
 type AdminProjectDetail = {
-  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'pendingReviews' | 'reviewRoundCount' | 'canStartInitialReview'> & { description: string; generalObjective: string }
+  project: Omit<AdminProject, 'students' | 'tutor' | 'tutorStatus' | 'isFinal' | 'pendingReviews' | 'reviewRoundCount' | 'canStartInitialReview'> & { description: string; generalObjective: string; defenses: DefenseSchedules }
   students: { name: string; registration: string }[]
   staff: AdminStaff[]
   assignments: AdminAssignment[]
@@ -250,6 +258,7 @@ type Project = {
   statusCode: string
   registeredAt: string
   needsTutorProposal: boolean
+  defenses: DefenseSchedules
 }
 type ProjectRejectionReason = {
   reviewer: string
@@ -339,7 +348,7 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 function notificationDestination(link: string | null): NotificationDestination | null {
-  const destinations: NotificationDestination[] = ['/student', '/student/proponer-tutor', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/revisor', '/revisor/pendientes', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
+  const destinations: NotificationDestination[] = ['/student', '/student/proponer-tutor', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/tutor/defensas-privada', '/tutor/defensas-publica', '/revisor', '/revisor/pendientes', '/revisor/defensas-privada', '/revisor/defensas-publica', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
   return destinations.includes(link as NotificationDestination) ? link as NotificationDestination : null
 }
 
@@ -784,9 +793,28 @@ function projectStatusPresentation(statusCode: string) {
   return { tone: 'pending', label: 'Pendiente de revisión', message: 'Tu perfil está en espera de la revisión académica correspondiente.' }
 }
 
+function defensePendingMessage(defenses: DefenseSchedules) {
+  const pending = [
+    defenses.private.available && !defenses.private.scheduledAt ? 'la defensa privada' : '',
+    defenses.public.available && !defenses.public.scheduledAt ? 'la defensa pública' : '',
+  ].filter(Boolean)
+  if (pending.length === 0) return ''
+  return `Falta que Administración asigne fecha, hora y lugar para ${pending.join(' y ')}.`
+}
+
+function DefenseScheduleStatus({ defenses }: { defenses: DefenseSchedules }) {
+  const items = [
+    { key: 'private', label: 'Defensa privada', schedule: defenses.private },
+    { key: 'public', label: 'Defensa pública', schedule: defenses.public },
+  ].filter((item) => item.schedule.available)
+  if (items.length === 0) return null
+  return <section className="defense-schedule-status" aria-label="Programación de defensas">{items.map((item) => <article className={item.schedule.scheduledAt ? 'is-scheduled' : 'is-pending'} key={item.key}><small>{item.label}</small><strong>{item.schedule.scheduledAt ? formatDate(item.schedule.scheduledAt) : 'Fecha, hora y lugar pendientes'}</strong><span>{item.schedule.scheduledAt ? item.schedule.location : 'Administración debe registrar la convocatoria para esta defensa.'}</span></article>)}</section>
+}
+
 function ExistingProject({ project, message, rejectionReasons, reviewProgress }: { project: Project; message: string; rejectionReasons: ProjectRejectionReason[]; reviewProgress: Bootstrap['reviewProgress'] }) {
   const status = projectStatusPresentation(project.statusCode)
   const pending = reviewProgress.filter((item) => item.decision === 'PENDIENTE').map((item) => item.type === 'TUTOR' ? 'Revision del tutor' : item.type === 'REVISOR_1' ? 'Revision del Revisor 1' : 'Revision del Revisor 2')
+  const defensePending = defensePendingMessage(project.defenses)
   const phases = [
     { code: 'REGISTRO', label: 'Perfil', detail: 'Registro' },
     { code: 'REVISION_PERFIL', label: 'Perfil', detail: 'Revisión' },
@@ -797,7 +825,7 @@ function ExistingProject({ project, message, rejectionReasons, reviewProgress }:
   const activePhase = phases.findIndex((phase) => phase.code === project.phaseCode)
   return (
     <>
-      <section className={`student-callout project-status-callout is-${status.tone}`}><Icon name="check" /><div><span className="project-status-badge">{status.label}</span><strong>{status.label}</strong><p>{message || status.message}{pending.length > 0 ? ` Falta: ${pending.join(', ')}.` : ''}</p></div></section>
+      <section className={`student-callout project-status-callout is-${status.tone}`}><Icon name="check" /><div><span className="project-status-badge">{status.label}</span><strong>{status.label}</strong><p>{message || status.message}{pending.length > 0 ? ` Falta: ${pending.join(', ')}.` : ''}{defensePending ? ` ${defensePending}` : ''}</p></div></section>
       <section className="project-phase-timeline" aria-label="Fases del proyecto"><div><p>AVANCE DEL PROYECTO</p><h2>Fases de titulación</h2></div><ol>{phases.map((phase, index) => <li className={index < activePhase ? 'is-complete' : index === activePhase ? 'is-current' : ''} key={phase.code}><span>{index < activePhase ? '✓' : index + 1}</span><div><strong>{phase.label}</strong><small>{phase.detail}</small></div></li>)}</ol></section>
       <section className="form-section project-summary">
         <div className="section-heading"><span>F1</span><div><h2>{project.title}</h2><p>Código de seguimiento: <strong>{project.code}</strong></p></div></div>
@@ -808,6 +836,7 @@ function ExistingProject({ project, message, rejectionReasons, reviewProgress }:
           <div><small>Estado</small><strong className={`project-status-text is-${status.tone}`}>{status.label}</strong></div>
         </div>
         <div className="project-summary-copy"><small>Descripción</small><p>{project.description}</p><small>Objetivo general</small><p>{project.generalObjective}</p></div>
+        <DefenseScheduleStatus defenses={project.defenses} />
         {status.tone === 'rejected' && <section className="project-rejection-reasons"><div><p>REVISIÓN DEL PERFIL</p><h3>Motivos de rechazo</h3><span>Corrige cada punto desde Documentos antes de adjuntar una nueva versión.</span></div>{rejectionReasons.length === 0 ? <p className="project-rejection-empty">El perfil fue devuelto para correcciones. Revisa la sección Documentos para conocer el detalle.</p> : <div className="rejection-reason-list">{rejectionReasons.map((reason) => <article key={`${reason.reviewer}-${reason.roundNumber}`}><header><strong>{reason.reviewer}</strong><span>Ronda {reason.roundNumber} · V{reason.sourceVersion}</span></header>{reason.comment && <p className="rejection-general-comment">{reason.comment}</p>}{reason.observations.length > 0 && <ol>{reason.observations.map((observation) => <li key={observation.number}><b>{observation.number}</b><span>{observation.detail}</span></li>)}</ol>}</article>)}</div>}</section>}
       </section>
     </>
@@ -987,6 +1016,15 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat('es-BO', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
+function defenseInputParts(value: string | null) {
+  if (!value) return { date: '', time: '' }
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/La_Paz', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(value))
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? ''
+  return { date: `${part('year')}-${part('month')}-${part('day')}`, time: `${part('hour')}:${part('minute')}` }
+}
+
 function formatFileSize(bytes: number) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
@@ -1127,6 +1165,8 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
                   <section className="overview-card tutor-card"><div className="overview-card-heading"><Icon name="user" /><div><p>Tutor</p><h2>{overview.tutor?.name ?? 'Pendiente de asignación'}</h2></div></div>{overview.tutor ? <><span className={overview.tutor.status === 'CONFIRMADO' ? 'assignment-status confirmed' : 'assignment-status proposed'}>{overview.tutor.status === 'CONFIRMADO' ? 'Tutor confirmado' : 'Tutor propuesto · pendiente de respuesta'}</span><p className="overview-card-note">Solicitud registrada el {formatDate(overview.tutor.assignedAt)}.</p></> : <p className="overview-card-note">Cuando propongas un tutor, recibirá una invitación para responderla.</p>}</section>
                   <section className="overview-card profile-card"><div className="overview-card-heading"><Icon name="file" /><div><p>Perfil del proyecto</p><h2>{overview.profile?.filename ?? 'Sin archivo registrado'}</h2></div></div>{overview.profile?.version ? <><p className="overview-card-note">Versión {overview.profile.version} · {overview.profile.uploadedAt ? formatDate(overview.profile.uploadedAt) : 'Sin fecha disponible'}</p><a className="document-download" href={`/api/documents/${overview.profile.documentId}/download`}><Icon name="download" />Descargar perfil</a></> : <p className="overview-card-note">El perfil aparecerá aquí cuando se registre en el Formulario 1.</p>}</section>
                 </div>
+
+                <DefenseScheduleStatus defenses={project.defenses} />
 
                 <section className="overview-card objectives-card"><div className="overview-card-heading"><Icon name="clipboard" /><div><p>Objetivos del proyecto</p><h2>Objetivo general y objetivos específicos</h2></div></div><div className="general-objective"><small>Objetivo general</small><p>{project.generalObjective}</p></div>{overview.objectives.length > 0 && <ol className="overview-objectives">{overview.objectives.map((objective) => <li key={objective.number}><span>{objective.number}</span><p>{objective.description}</p></li>)}</ol>}</section>
 
@@ -1282,6 +1322,12 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
       setView('projects')
       onNavigationHandled()
     }
+    if (navigationTarget === '/tutor/defensas-privada' || navigationTarget === '/tutor/defensas-publica') {
+      setSelectedEvaluation(null)
+      setDefenseType(navigationTarget === '/tutor/defensas-privada' ? 'PRIVATE' : 'PUBLIC')
+      setView('defenses')
+      onNavigationHandled()
+    }
     if (navigationTarget === '/tutor') {
       setSelectedEvaluation(null)
       setView('home')
@@ -1356,14 +1402,13 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
       <p className="tutor-card-description">{project.description}</p>
       {project.teamReviews.length > 0 && <ReviewProgress reviews={project.teamReviews} />}
       <div className="tutor-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="clipboard" />{project.modality}</span><span><Icon name="check" />{project.phase} · {project.status}</span></div>
+      <DefenseScheduleStatus defenses={project.defenses} />
       <div className="tutor-project-footer"><div><small>Objetivo general</small><p>{project.generalObjective}</p></div>{project.profile && <a className="document-download tutor-document-link" href={`/api/tutor/documents/${project.profile.documentId}/download`}><Icon name="download" />{project.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'Documento final' : project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Documento privado' : 'Perfil'} V{project.profile.version}</a>}</div>{project.canReviewProfile && <div className="tutor-actions"><button className="primary-button" onClick={() => { setSelectedEvaluation(project); setFormatRatings({}); setBackgroundRatings({}); setPublicRatification(''); setEvaluationObservations('') }} type="button"><Icon name="clipboard" />{project.reviewDocumentType === 'DOCUMENTO_PUBLICO' ? 'Evaluar defensa pública' : project.reviewDocumentType === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Evaluar Formulario 2'}</button></div>}
     </article>
   }
 
   const reviewedProjects = data.projects.filter((project) => project.teamReviews.some((review) => review.decision !== 'PENDIENTE'))
-  const defenseProjects = data.projects.filter((project) => defenseType === 'PRIVATE'
-    ? project.reviewDocumentType === 'DOCUMENTO_PRIVADO' || project.profile?.type === 'DOCUMENTO_PRIVADO' || project.statusCode === 'EN_DOCUMENTO_PRIVADO'
-    : project.reviewDocumentType === 'DOCUMENTO_PUBLICO' || project.profile?.type === 'DOCUMENTO_PUBLICO' || project.statusCode === 'EN_DOCUMENTO_PUBLICO')
+  const defenseProjects = data.projects.filter((project) => defenseType === 'PRIVATE' ? project.defenses.private.available : project.defenses.public.available)
   const heading = view === 'home' ? 'Inicio' : view === 'invitations' ? 'Invitaciones de tutoría' : view === 'projects' ? 'Mis proyectos' : view === 'reviewed' ? 'Proyectos revisados' : view === 'defenses' ? 'Defensas' : 'Notificaciones'
   const copy = view === 'home' ? 'Revisa las solicitudes y el estado de los proyectos que acompañas.' : view === 'invitations' ? 'Responde cada solicitud para confirmar o declinar la tutoría.' : view === 'projects' ? 'Consulta los proyectos cuya tutoría aceptaste.' : view === 'reviewed' ? 'Consulta los dictámenes emitidos, el estado de cada proyecto y las revisiones pendientes.' : view === 'defenses' ? 'Revisa y emite el dictamen para documentos de defensa privada o pública.' : 'Mantente al tanto de las solicitudes y actualizaciones de tus proyectos.'
 
@@ -1435,6 +1480,12 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
     if (navigationTarget === '/revisor/pendientes') {
       closeReview()
       setView('pending')
+      onNavigationHandled()
+    }
+    if (navigationTarget === '/revisor/defensas-privada' || navigationTarget === '/revisor/defensas-publica') {
+      closeReview()
+      setDefenseType(navigationTarget === '/revisor/defensas-privada' ? 'PRIVATE' : 'PUBLIC')
+      setView('defenses')
       onNavigationHandled()
     }
     if (navigationTarget === '/revisor') {
@@ -1529,13 +1580,26 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
       <p className="tutor-card-description">{review.description}</p>
       <ReviewProgress reviews={review.teamReviews} />
       <div className="tutor-project-meta"><span><Icon name="user" />{review.students}</span><span><Icon name="clipboard" />{review.modality}</span><span><Icon name="check" />{review.phase} · {review.status}</span></div>
+      <DefenseScheduleStatus defenses={review.defenses} />
       <div className="reviewer-card-info"><div><small>Revisión habilitada</small><strong>{formatDate(review.requestedAt)}</strong></div><div><small>Perfil asignado</small><a className="document-download reviewer-document-link" href={`/api/reviewer/documents/${review.profile.documentId}/download?version=${review.profile.versionId}`}><Icon name="download" />V{review.profile.version} · Descargar</a></div></div>
       {review.decision !== 'PENDIENTE' && <div className={isObserved ? 'reviewer-result is-observed' : 'reviewer-result'}><strong>{isObserved ? `${review.observations.length} observación${review.observations.length === 1 ? '' : 'es'} registrada${review.observations.length === 1 ? '' : 's'}` : 'Dictamen emitido sin observaciones'}</strong>{review.generalComment && <p>{review.generalComment}</p>}</div>}
       {showAction && review.canSubmit && <div className="tutor-actions"><button className="primary-button" onClick={() => openReview(review)} type="button"><Icon name="clipboard" />{review.profile.type === 'DOCUMENTO_PUBLICO' ? 'Evaluar defensa pública' : review.profile.type === 'DOCUMENTO_PRIVADO' ? 'Evaluar defensa privada' : 'Revisar perfil'}</button></div>}
     </article>
   }
 
+  function defenseProjectCard(project: ReviewerDashboard['defenseProjects'][number]) {
+    return <article className="reviewer-card reviewer-defense-card" key={project.projectId}>
+      <div className="reviewer-card-top"><span className="tutor-code">{project.code}</span><span className="reviewer-decision decision-pendiente">Defensa</span></div>
+      <h2>{project.title}</h2>
+      <div className="tutor-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="check" />{project.phase} · {project.status}</span></div>
+      <DefenseScheduleStatus defenses={project.defenses} />
+    </article>
+  }
+
   const defenseReviews = [...data.pendingReviews, ...data.completedReviews].filter((review) => defenseType === 'PRIVATE' ? review.profile.type === 'DOCUMENTO_PRIVADO' : review.profile.type === 'DOCUMENTO_PUBLICO')
+  const scheduleProjects = data.defenseProjects.filter((project) => defenseType === 'PRIVATE' ? project.defenses.private.available : project.defenses.public.available)
+  const reviewedProjectIds = new Set(defenseReviews.map((review) => review.projectId))
+  const scheduleOnlyProjects = scheduleProjects.filter((project) => !reviewedProjectIds.has(project.projectId))
   const heading = selectedReview ? 'Emitir dictamen' : view === 'home' ? 'Inicio' : view === 'pending' ? 'Revisiones pendientes' : view === 'completed' ? 'Proyectos revisados' : view === 'defenses' ? 'Defensas' : 'Notificaciones'
   const copy = selectedReview
     ? 'Revisa el perfil asignado y registra un dictamen definitivo para esta ronda.'
@@ -1586,7 +1650,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
         </>}
         {!selectedReview && view === 'pending' && (data.pendingReviews.length > 0 ? <div className="tutor-cards">{data.pendingReviews.map((review) => reviewCard(review))}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No tienes revisiones pendientes.</strong><span>Las nuevas asignaciones aparecerán automáticamente en esta sección.</span></section>)}
         {!selectedReview && view === 'completed' && (data.completedReviews.length > 0 ? <div className="tutor-cards">{data.completedReviews.map((review) => reviewCard(review, false))}</div> : <section className="tutor-empty"><Icon name="clipboard" /><strong>Aún no emitiste dictámenes.</strong><span>Cuando finalices una revisión aparecerá en este historial.</span></section>)}
-        {!selectedReview && view === 'defenses' && <><div className="defense-tabs"><button className={defenseType === 'PRIVATE' ? 'is-active' : ''} onClick={() => setDefenseType('PRIVATE')} type="button">Defensa privada</button><button className={defenseType === 'PUBLIC' ? 'is-active' : ''} onClick={() => setDefenseType('PUBLIC')} type="button">Defensa pública</button></div>{defenseReviews.length > 0 ? <div className="tutor-cards">{defenseReviews.map((review) => reviewCard(review, review.canSubmit))}</div> : <section className="tutor-empty"><Icon name="file" /><strong>No tienes documentos para esta defensa.</strong><span>Las nuevas asignaciones aparecerán aquí.</span></section>}</>}
+        {!selectedReview && view === 'defenses' && <><div className="defense-tabs"><button className={defenseType === 'PRIVATE' ? 'is-active' : ''} onClick={() => setDefenseType('PRIVATE')} type="button">Defensa privada</button><button className={defenseType === 'PUBLIC' ? 'is-active' : ''} onClick={() => setDefenseType('PUBLIC')} type="button">Defensa pública</button></div>{scheduleOnlyProjects.length > 0 && <div className="tutor-cards">{scheduleOnlyProjects.map(defenseProjectCard)}</div>}{defenseReviews.length > 0 ? <div className="tutor-cards">{defenseReviews.map((review) => reviewCard(review, review.canSubmit))}</div> : scheduleOnlyProjects.length === 0 && <section className="tutor-empty"><Icon name="file" /><strong>No tienes proyectos en esta defensa.</strong><span>La programación y los documentos aparecerán aquí.</span></section>}</>}
         {!selectedReview && view === 'notifications' && <section className="notification-list">{notifications.length === 0 ? <div className="tutor-empty"><Icon name="bell" /><strong>No tienes notificaciones.</strong><span>Las asignaciones y cambios del proceso aparecerán aquí.</span></div> : notifications.map((notification) => <article className={`${notification.readAt ? 'notification-item' : 'notification-item is-unread'} role-${notification.role.toLowerCase()}`} key={notification.id}><div className="notification-icon"><Icon name="bell" /></div><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p><small>{formatDate(notification.createdAt)}</small></div>{!notification.readAt && <button className="text-button" onClick={() => void markRead(notification.id)} type="button">Marcar como leída</button>}</article>)}</section>}
       </div>
     </section>
@@ -1604,6 +1668,10 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const [profileVersionId, setProfileVersionId] = useState('')
   const [cancelReason, setCancelReason] = useState('')
   const [cancelDetail, setCancelDetail] = useState('')
+  const [defenseForms, setDefenseForms] = useState({
+    PRIVATE: { date: '', time: '', location: '' },
+    PUBLIC: { date: '', time: '', location: '' },
+  })
 
   async function loadDetail() {
     setIsLoading(true)
@@ -1614,6 +1682,12 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
       setReviewer1Id(payload.assignments.find((item) => item.type === 'REVISOR_1')?.teacherId ?? '')
       setReviewer2Id(payload.assignments.find((item) => item.type === 'REVISOR_2')?.teacherId ?? '')
       setProfileVersionId(payload.profiles[0]?.versionId ?? '')
+      const privateDefense = defenseInputParts(payload.project.defenses.private.scheduledAt)
+      const publicDefense = defenseInputParts(payload.project.defenses.public.scheduledAt)
+      setDefenseForms({
+        PRIVATE: { ...privateDefense, location: payload.project.defenses.private.location ?? '' },
+        PUBLIC: { ...publicDefense, location: payload.project.defenses.public.location ?? '' },
+      })
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible cargar el proyecto.')
     } finally {
@@ -1687,6 +1761,27 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
     }
   }
 
+  async function submitDefenseSchedule(event: FormEvent<HTMLFormElement>, defenseType: 'PRIVATE' | 'PUBLIC') {
+    event.preventDefault()
+    const form = defenseForms[defenseType]
+    setIsSubmitting(true)
+    setMessage('')
+    try {
+      const result = await api<{ message: string }>(`/api/admin/projects/${projectId}/defense-schedules/${defenseType}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      })
+      setMessage(result.message)
+      await onRefresh()
+      await loadDetail()
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible guardar la programación de la defensa.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
   const tutors = detail?.staff.filter((item) => item.roles.includes('TUTOR')) ?? []
   const reviewers = detail?.staff.filter((item) => item.roles.includes('REVISOR')) ?? []
   const isCancelled = detail?.project.statusCode === 'ANULADO'
@@ -1697,6 +1792,9 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const hasOpenRound = Boolean(detail?.rounds.some((round) => !round.closedAt))
   const canScheduleReview = Boolean(tutorConfirmed && assignedReviewers.length === 2 && !hasOpenRound)
   const firstReviewReady = Boolean(canScheduleReview && detail?.rounds.length === 0)
+  const privateDefenseAvailable = Boolean(detail?.project.defenses.private.available)
+  const publicDefenseAvailable = Boolean(detail?.project.defenses.public.available)
+  const isClosed = isCancelled || detail?.project.statusCode === 'FINALIZADO'
 
   return <main className="student-page admin-page">
     <aside className="student-sidebar admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></aside>
@@ -1716,6 +1814,8 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
           <form className="admin-operation-card" onSubmit={(event) => void submitAssignments(event)}><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>PASO 2 · EQUIPO EVALUADOR</p><h2>Asignar revisores</h2></div></div><p>{hasOpenRound ? 'La ronda está en curso. Si reemplazas a un revisor que aún no emitió dictamen, su evaluación pendiente se transferirá al nuevo revisor.' : tutorConfirmed ? 'El tutor aceptó la invitación. Define Revisor 1 y Revisor 2; el tutor recibirá una notificación cuando el equipo quede asignado.' : 'La asignación se habilitará cuando el tutor propuesto acepte la invitación.'}</p><label className="form-field"><span>Revisor 1 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer1Id(event.target.value)} value={reviewer1Id}><option value="">Selecciona al Revisor 1</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label className="form-field"><span>Revisor 2 <b>*</b></span><select disabled={isSubmitting || !tutorConfirmed} onChange={(event) => setReviewer2Id(event.target.value)} value={reviewer2Id}><option value="">Selecciona al Revisor 2</option>{reviewers.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !tutorConfirmed || !reviewer1Id || !reviewer2Id} type="submit">{hasOpenRound ? 'Guardar cambios y reasignar pendientes' : 'Guardar equipo evaluador'}</button></form>
           <form className="admin-operation-card" onSubmit={(event) => void startReview(event)}><div className="admin-operation-heading"><Icon name="file" /><div><p>PASO 3 · INICIO DE REVISIÓN</p><h2>{firstReviewReady ? 'Habilitar primera revisión' : 'Habilitar revisión'}</h2></div></div><p>{canScheduleReview ? 'Selecciona la versión del perfil para habilitarla al tutor y a los dos revisores. Si siguen pendientes, recibirán recordatorios desde el segundo día.' : 'Esta acción se habilita cuando el tutor haya aceptado, estén asignados los dos revisores y no exista una ronda abierta.'}</p><label className="form-field"><span>Versión del perfil <b>*</b></span><select disabled={isSubmitting || detail.profiles.length === 0} onChange={(event) => setProfileVersionId(event.target.value)} value={profileVersionId}><option value="">Selecciona una versión</option>{detail.profiles.map((item) => <option key={item.versionId} value={item.versionId}>V{item.version} · {item.filename}</option>)}</select></label><button className="primary-button" disabled={isSubmitting || !canScheduleReview || detail.profiles.length === 0 || !profileVersionId} type="submit">Habilitar revisión</button></form>
         </div>}
+
+        {!isCancelled && <section className="admin-defense-scheduling"><div className="admin-operation-heading"><Icon name="check" /><div><p>PROGRAMACIÓN DE DEFENSAS</p><h2>Fecha, hora y lugar</h2></div></div><p>Cuando la fase esté habilitada, registra la convocatoria. Cada actualización notifica al estudiante, tutor y revisores activos del proyecto.</p><div className="admin-operation-grid"><form className="admin-operation-card" onSubmit={(event) => void submitDefenseSchedule(event, 'PRIVATE')}><div className="admin-operation-heading"><Icon name="file" /><div><p>DEFENSA PRIVADA</p><h2>{detail.project.defenses.private.scheduledAt ? 'Actualizar convocatoria' : 'Programar defensa'}</h2></div></div><p>{privateDefenseAvailable ? detail.project.defenses.private.scheduledAt ? `Programada: ${formatDate(detail.project.defenses.private.scheduledAt)} · ${detail.project.defenses.private.location}` : 'Falta asignar la fecha, hora y lugar de la defensa privada.' : 'Se habilitará cuando el proyecto pase a defensa privada.'}</p><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || !privateDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PRIVATE: { ...current.PRIVATE, date: event.target.value } }))} required type="date" value={defenseForms.PRIVATE.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || !privateDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PRIVATE: { ...current.PRIVATE, time: event.target.value } }))} required type="time" value={defenseForms.PRIVATE.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || !privateDefenseAvailable || isClosed} maxLength={500} minLength={3} onChange={(event) => setDefenseForms((current) => ({ ...current, PRIVATE: { ...current.PRIVATE, location: event.target.value } }))} placeholder="Ej.: Auditorio del bloque A" required value={defenseForms.PRIVATE.location} /></label><button className="primary-button" disabled={isSubmitting || !privateDefenseAvailable || isClosed} type="submit">{detail.project.defenses.private.scheduledAt ? 'Guardar cambios' : 'Programar defensa privada'}</button></form><form className="admin-operation-card" onSubmit={(event) => void submitDefenseSchedule(event, 'PUBLIC')}><div className="admin-operation-heading"><Icon name="file" /><div><p>DEFENSA PÚBLICA</p><h2>{detail.project.defenses.public.scheduledAt ? 'Actualizar convocatoria' : 'Programar defensa'}</h2></div></div><p>{publicDefenseAvailable ? detail.project.defenses.public.scheduledAt ? `Programada: ${formatDate(detail.project.defenses.public.scheduledAt)} · ${detail.project.defenses.public.location}` : 'Falta asignar la fecha, hora y lugar de la defensa pública.' : 'Se habilitará cuando el proyecto pase a defensa pública.'}</p><label className="form-field"><span>Fecha <b>*</b></span><input disabled={isSubmitting || !publicDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PUBLIC: { ...current.PUBLIC, date: event.target.value } }))} required type="date" value={defenseForms.PUBLIC.date} /></label><label className="form-field"><span>Hora <b>*</b></span><input disabled={isSubmitting || !publicDefenseAvailable || isClosed} onChange={(event) => setDefenseForms((current) => ({ ...current, PUBLIC: { ...current.PUBLIC, time: event.target.value } }))} required type="time" value={defenseForms.PUBLIC.time} /></label><label className="form-field"><span>Lugar <b>*</b></span><input disabled={isSubmitting || !publicDefenseAvailable || isClosed} maxLength={500} minLength={3} onChange={(event) => setDefenseForms((current) => ({ ...current, PUBLIC: { ...current.PUBLIC, location: event.target.value } }))} placeholder="Ej.: Sala de conferencias" required value={defenseForms.PUBLIC.location} /></label><button className="primary-button" disabled={isSubmitting || !publicDefenseAvailable || isClosed} type="submit">{detail.project.defenses.public.scheduledAt ? 'Guardar cambios' : 'Programar defensa pública'}</button></form></div></section>}
 
         <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se habilitó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Habilitada: {formatDate(round.requestedAt)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
 

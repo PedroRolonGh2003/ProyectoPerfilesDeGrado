@@ -352,6 +352,23 @@ async function ensureRegistrationSchema() {
     CREATE INDEX IF NOT EXISTS ix_password_reset_tokens_expiracion
       ON titulacion.password_reset_tokens (expires_at);
   `)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS titulacion.defensas_programadas (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      proyecto_id uuid NOT NULL REFERENCES titulacion.proyectos(id) ON DELETE CASCADE,
+      tipo varchar(20) NOT NULL CHECK (tipo IN ('PRIVADA', 'PUBLICA')),
+      fecha_hora timestamptz NOT NULL,
+      lugar text NOT NULL CHECK (length(btrim(lugar)) >= 3),
+      programada_por_usuario_id uuid NOT NULL REFERENCES titulacion.usuarios(id),
+      programada_en timestamptz NOT NULL DEFAULT now(),
+      actualizada_en timestamptz NOT NULL DEFAULT now(),
+      UNIQUE (proyecto_id, tipo)
+    );
+  `)
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ix_defensas_programadas_proyecto
+      ON titulacion.defensas_programadas (proyecto_id, tipo);
+  `)
 }
 
 async function issueEmailConfirmation(databaseClient, userId) {
@@ -479,7 +496,43 @@ function projectPayload(row) {
     statusCode: row.estado_codigo,
     registeredAt: row.registrado_en,
     needsTutorProposal: Boolean(row.requiere_proponer_tutor),
+    defenses: defenseSchedulesPayload(row),
   }
+}
+
+function defenseAvailability(phaseCode) {
+  const privateAvailable = ['DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO', 'CIERRE'].includes(phaseCode)
+  const publicAvailable = ['DOCUMENTO_PUBLICO', 'CIERRE'].includes(phaseCode)
+  return { privateAvailable, publicAvailable }
+}
+
+function defenseSchedulesPayload(row) {
+  const availability = defenseAvailability(row.fase_codigo)
+  return {
+    private: {
+      available: availability.privateAvailable,
+      scheduledAt: row.defensa_privada_en ?? null,
+      location: row.defensa_privada_lugar ?? null,
+    },
+    public: {
+      available: availability.publicAvailable,
+      scheduledAt: row.defensa_publica_en ?? null,
+      location: row.defensa_publica_lugar ?? null,
+    },
+  }
+}
+
+function defenseTypeFromRequest(value) {
+  const normalized = text(value).toUpperCase()
+  if (normalized === 'PRIVATE' || normalized === 'PRIVADA') return 'PRIVADA'
+  if (normalized === 'PUBLIC' || normalized === 'PUBLICA') return 'PUBLICA'
+  return null
+}
+
+function defenseDateTime(date, time) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return null
+  const value = new Date(`${date}T${time}:00-04:00`)
+  return Number.isNaN(value.valueOf()) ? null : value
 }
 
 function isUuid(value) {
@@ -959,10 +1012,11 @@ async function scheduleCorrectionReview(databaseClient, { project, documentId, v
 async function lockedProject(databaseClient, projectId) {
   const project = await databaseClient.query(
     `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.estado_actual_id, p.fase_actual_id,
-            ep.codigo AS estado_codigo, g.carrera_id
+            ep.codigo AS estado_codigo, f.codigo AS fase_codigo, g.carrera_id
      FROM titulacion.proyectos p
      JOIN titulacion.gestiones g ON g.id = p.gestion_id
      JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+     JOIN titulacion.fases f ON f.id = p.fase_actual_id
      WHERE p.id = $1
      FOR UPDATE`,
     [projectId],
@@ -2456,12 +2510,23 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
               g.nombre AS gestion_nombre, g.carrera_id,
               m.nombre AS modalidad_nombre,
               f.codigo AS fase_codigo, f.nombre AS fase_nombre,
-              ep.codigo AS estado_codigo, ep.nombre AS estado_nombre
+              ep.codigo AS estado_codigo, ep.nombre AS estado_nombre,
+              defense_schedule.defensa_privada_en, defense_schedule.defensa_privada_lugar,
+              defense_schedule.defensa_publica_en, defense_schedule.defensa_publica_lugar
        FROM titulacion.proyectos p
        JOIN titulacion.gestiones g ON g.id = p.gestion_id
        JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
        JOIN titulacion.fases f ON f.id = p.fase_actual_id
        JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       LEFT JOIN LATERAL (
+         SELECT
+           max(fecha_hora) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_en,
+           max(lugar) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_lugar,
+           max(fecha_hora) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_en,
+           max(lugar) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_lugar
+         FROM titulacion.defensas_programadas
+         WHERE proyecto_id = p.id
+       ) defense_schedule ON true
        WHERE p.id = $1`,
       [projectId],
     )
@@ -2559,6 +2624,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
         statusCode: project.estado_codigo,
         status: project.estado_nombre,
         registeredAt: project.registrado_en,
+        defenses: defenseSchedulesPayload(project),
       },
       students: students.rows.map((item) => ({ name: item.name, registration: item.registration })),
       staff: staff.rows.map((item) => ({ id: item.id, name: item.name, email: item.correo, roles: item.roles })),
@@ -2888,6 +2954,132 @@ app.patch('/api/admin/projects/:projectId/status', requireAdministrator, (_reque
   })
 })
 
+app.put('/api/admin/projects/:projectId/defense-schedules/:defenseType', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    const defenseType = defenseTypeFromRequest(request.params.defenseType)
+    const date = text(request.body?.date)
+    const time = text(request.body?.time)
+    const location = text(request.body?.location)
+    const scheduledAt = defenseDateTime(date, time)
+    if (!isUuid(projectId) || !defenseType) {
+      return response.status(422).json({ message: 'La defensa seleccionada no es válida.' })
+    }
+    if (!scheduledAt || location.length < 3 || location.length > 500) {
+      return response.status(422).json({ message: 'Registra una fecha, una hora y un lugar válidos para la defensa.' })
+    }
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'ANULADO' || project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes programar defensas para un proyecto cerrado.' })
+    }
+    const availability = defenseAvailability(project.fase_codigo)
+    const isAvailable = defenseType === 'PRIVADA' ? availability.privateAvailable : availability.publicAvailable
+    if (!isAvailable) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({
+        message: defenseType === 'PRIVADA'
+          ? 'La programación se habilitará cuando el proyecto pase a defensa privada.'
+          : 'La programación se habilitará cuando el proyecto pase a defensa pública.',
+      })
+    }
+
+    const existing = await databaseClient.query(
+      `SELECT id
+       FROM titulacion.defensas_programadas
+       WHERE proyecto_id = $1 AND tipo = $2
+       FOR UPDATE`,
+      [projectId, defenseType],
+    )
+    const schedule = await databaseClient.query(
+      `INSERT INTO titulacion.defensas_programadas
+        (proyecto_id, tipo, fecha_hora, lugar, programada_por_usuario_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (proyecto_id, tipo) DO UPDATE
+       SET fecha_hora = EXCLUDED.fecha_hora,
+           lugar = EXCLUDED.lugar,
+           programada_por_usuario_id = EXCLUDED.programada_por_usuario_id,
+           actualizada_en = now()
+       RETURNING id, tipo, fecha_hora, lugar, programada_en, actualizada_en`,
+      [projectId, defenseType, scheduledAt, location, request.session.usuario_id],
+    )
+    const defenseLabel = defenseType === 'PRIVADA' ? 'defensa privada' : 'defensa pública'
+    const formattedDate = new Intl.DateTimeFormat('es-BO', {
+      dateStyle: 'full',
+      timeStyle: 'short',
+      timeZone: 'America/La_Paz',
+    }).format(scheduledAt)
+    const recipients = await databaseClient.query(
+      `WITH recipients AS (
+         SELECT student_user.id AS usuario_id, student_user.correo, '/student'::text AS enlace, 1 AS prioridad
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes student ON student.id = pe.estudiante_id
+         JOIN titulacion.usuarios student_user ON student_user.id = student.usuario_id AND student_user.activo
+         WHERE pe.proyecto_id = $1 AND pe.activo
+         UNION ALL
+         SELECT teacher_user.id AS usuario_id, teacher_user.correo,
+                CASE assignment.tipo
+                  WHEN 'TUTOR' THEN '/tutor/defensas-' || lower($2)
+                  ELSE '/revisor/defensas-' || lower($2)
+                END AS enlace,
+                CASE WHEN assignment.tipo = 'TUTOR' THEN 2 ELSE 3 END AS prioridad
+         FROM titulacion.asignaciones_proyecto assignment
+         JOIN titulacion.docentes teacher ON teacher.id = assignment.docente_id
+         JOIN titulacion.usuarios teacher_user ON teacher_user.id = teacher.usuario_id AND teacher_user.activo
+         WHERE assignment.proyecto_id = $1
+           AND assignment.activo
+           AND assignment.fecha_fin IS NULL
+           AND assignment.tipo IN ('TUTOR', 'REVISOR_1', 'REVISOR_2')
+       )
+       SELECT DISTINCT ON (usuario_id) usuario_id, correo, enlace
+       FROM recipients
+       ORDER BY usuario_id, prioridad`,
+      [projectId, defenseType],
+    )
+    for (const recipient of recipients.rows) {
+      await createNotification(databaseClient, {
+        userId: recipient.usuario_id,
+        recipientEmail: recipient.correo,
+        projectId,
+        type: defenseType === 'PRIVADA' ? 'DEFENSA_PRIVADA_PROGRAMADA' : 'DEFENSA_PUBLICA_PROGRAMADA',
+        title: existing.rows[0] ? 'Defensa actualizada' : 'Defensa programada',
+        message: `Administración ${existing.rows[0] ? 'actualizó' : 'programó'} la ${defenseLabel} del proyecto ${project.codigo_seguimiento} para ${formattedDate}, en ${location}.`,
+        link: recipient.enlace,
+      })
+    }
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: existing.rows[0] ? 'ACTUALIZAR_PROGRAMACION_DEFENSA' : 'PROGRAMAR_DEFENSA',
+      entity: 'defensas_programadas',
+      entityId: schedule.rows[0].id,
+      detail: { type: defenseType, date, time, location },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({
+      message: `${existing.rows[0] ? 'La programación fue actualizada' : 'La defensa fue programada'} y se notificó a los participantes del proyecto.`,
+      schedule: {
+        type: schedule.rows[0].tipo,
+        scheduledAt: schedule.rows[0].fecha_hora,
+        location: schedule.rows[0].lugar,
+        scheduledAtCreated: schedule.rows[0].programada_en,
+        updatedAt: schedule.rows[0].actualizada_en,
+      },
+    })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
 app.post('/api/admin/projects/:projectId/cancel', requireAdministrator, async (request, response, next) => {
   const databaseClient = await pool.connect()
   try {
@@ -2993,11 +3185,13 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       SELECT a.id AS assignment_id, a.proyecto_id, a.fecha_asignacion,
              a.respondida_en, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
              p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
-             f.nombre AS fase_nombre, ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
+             f.nombre AS fase_nombre, f.codigo AS fase_codigo, ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
              students.nombres_estudiantes, students.registros_estudiantes,
              profile.documento_id, profile.tipo_documento AS profile_document_type, profile.version_id, profile.nombre_archivo,
              profile.numero_version, profile.subida_en,
              current_review.revision_id, current_review.decision AS review_decision,
+             defense_schedule.defensa_privada_en, defense_schedule.defensa_privada_lugar,
+             defense_schedule.defensa_publica_en, defense_schedule.defensa_publica_lugar,
              COALESCE(review_summary.items, '[]'::json) AS team_reviews
       FROM titulacion.asignaciones_proyecto a
       JOIN titulacion.proyectos p ON p.id = a.proyecto_id
@@ -3028,6 +3222,15 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
         ORDER BY CASE d.tipo_documento WHEN 'DOCUMENTO_PUBLICO' THEN 0 WHEN 'DOCUMENTO_PRIVADO' THEN 1 ELSE 2 END, d.creado_en DESC
         LIMIT 1
       ) profile ON true
+      LEFT JOIN LATERAL (
+        SELECT
+          max(fecha_hora) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_en,
+          max(lugar) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_lugar,
+          max(fecha_hora) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_en,
+          max(lugar) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_lugar
+        FROM titulacion.defensas_programadas
+        WHERE proyecto_id = p.id
+      ) defense_schedule ON true
       LEFT JOIN LATERAL (
         SELECT r.id AS revision_id, r.decision, d.tipo_documento AS document_type
         FROM titulacion.rondas_revision rr
@@ -3096,8 +3299,10 @@ app.get('/api/tutor/dashboard', requireTutor, async (request, response, next) =>
       management: assignment.gestion_nombre,
       modality: assignment.modalidad_nombre,
       phase: assignment.fase_nombre,
+      phaseCode: assignment.fase_codigo,
       status: assignment.estado_nombre,
       statusCode: assignment.estado_codigo,
+      defenses: defenseSchedulesPayload(assignment),
       students: assignment.nombres_estudiantes ?? 'Estudiante no disponible',
       registrations: assignment.registros_estudiantes ?? '',
       requestedAt: assignment.fecha_asignacion,
@@ -3477,10 +3682,12 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
               rr.id AS round_id, rr.numero_ronda, rr.fecha_solicitud, rr.cerrada_en,
               p.id AS project_id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
               p.objetivo_general, g.nombre AS gestion_nombre, m.nombre AS modalidad_nombre,
-              f.nombre AS fase_nombre, ep.nombre AS estado_nombre,
+              f.nombre AS fase_nombre, f.codigo AS fase_codigo, ep.nombre AS estado_nombre,
               document.id AS document_id, document.tipo_documento AS document_type, version.id AS version_id, version.numero_version,
               version.nombre_archivo, version.subida_en,
               students.nombres_estudiantes, students.registros_estudiantes,
+              defense_schedule.defensa_privada_en, defense_schedule.defensa_privada_lugar,
+              defense_schedule.defensa_publica_en, defense_schedule.defensa_publica_lugar,
               COALESCE(observations.items, '[]'::json) AS observations,
               COALESCE(team.items, '[]'::json) AS team_reviews
        FROM titulacion.revisiones r
@@ -3493,6 +3700,15 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
        JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
        JOIN titulacion.fases f ON f.id = p.fase_actual_id
        JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       LEFT JOIN LATERAL (
+         SELECT
+           max(fecha_hora) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_en,
+           max(lugar) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_lugar,
+           max(fecha_hora) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_en,
+           max(lugar) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_lugar
+         FROM titulacion.defensas_programadas
+         WHERE proyecto_id = p.id
+       ) defense_schedule ON true
        JOIN LATERAL (
          SELECT string_agg(trim(concat(u.nombres, ' ', u.apellidos)), ', ' ORDER BY u.apellidos, u.nombres) AS nombres_estudiantes,
                 string_agg(e.registro_universitario, ', ' ORDER BY e.registro_universitario) AS registros_estudiantes
@@ -3545,6 +3761,43 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
       ),
     ])
 
+    const defenseProjects = await pool.query(
+      `SELECT DISTINCT ON (p.id)
+              p.id AS project_id, p.codigo_seguimiento, p.titulo_tentativo,
+              f.codigo AS fase_codigo, f.nombre AS fase_nombre,
+              ep.nombre AS estado_nombre,
+              students.nombres_estudiantes,
+              defense_schedule.defensa_privada_en, defense_schedule.defensa_privada_lugar,
+              defense_schedule.defensa_publica_en, defense_schedule.defensa_publica_lugar
+       FROM titulacion.asignaciones_proyecto a
+       JOIN titulacion.proyectos p ON p.id = a.proyecto_id
+       JOIN titulacion.fases f ON f.id = p.fase_actual_id
+       JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+       LEFT JOIN LATERAL (
+         SELECT string_agg(trim(concat(u.nombres, ' ', u.apellidos)), ', ' ORDER BY u.apellidos, u.nombres) AS nombres_estudiantes
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes e ON e.id = pe.estudiante_id
+         JOIN titulacion.usuarios u ON u.id = e.usuario_id
+         WHERE pe.proyecto_id = p.id AND pe.activo
+       ) students ON true
+       LEFT JOIN LATERAL (
+         SELECT
+           max(fecha_hora) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_en,
+           max(lugar) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_lugar,
+           max(fecha_hora) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_en,
+           max(lugar) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_lugar
+         FROM titulacion.defensas_programadas
+         WHERE proyecto_id = p.id
+       ) defense_schedule ON true
+       WHERE a.docente_id = $1
+         AND a.activo
+         AND a.fecha_fin IS NULL
+         AND a.tipo IN ('REVISOR_1', 'REVISOR_2')
+         AND f.codigo IN ('DOCUMENTO_PRIVADO', 'DOCUMENTO_PUBLICO', 'CIERRE')
+       ORDER BY p.id, a.fecha_asignacion DESC`,
+      [session.docente_id],
+    )
+
     const reviewPayload = (review) => ({
       id: review.review_id,
       roundId: review.round_id,
@@ -3558,7 +3811,14 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
       management: review.gestion_nombre,
       modality: review.modalidad_nombre,
       phase: review.fase_nombre,
+      phaseCode: review.fase_codigo,
       status: review.estado_nombre,
+      defenses: review.assignment_active && !review.assignment_finished_at
+        ? defenseSchedulesPayload(review)
+        : {
+            private: { available: false, scheduledAt: null, location: null },
+            public: { available: false, scheduledAt: null, location: null },
+          },
       students: review.nombres_estudiantes ?? 'Estudiante no disponible',
       registrations: review.registros_estudiantes ?? '',
       roundNumber: review.numero_ronda,
@@ -3587,6 +3847,16 @@ app.get('/api/reviewer/dashboard', requireReviewer, async (request, response, ne
       summary: { pending: pendingReviews.length, completed: completedReviews.length },
       pendingReviews,
       completedReviews,
+      defenseProjects: defenseProjects.rows.map((project) => ({
+        projectId: project.project_id,
+        code: project.codigo_seguimiento,
+        title: project.titulo_tentativo,
+        phase: project.fase_nombre,
+        phaseCode: project.fase_codigo,
+        status: project.estado_nombre,
+        students: project.nombres_estudiantes ?? 'Estudiante no disponible',
+        defenses: defenseSchedulesPayload(project),
+      })),
       notifications: notifications.rows.map(notificationPayload),
       unreadCount: unread.rows[0].total,
     })
@@ -3893,6 +4163,8 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
                 p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
                 m.nombre AS modalidad_nombre, f.nombre AS fase_nombre, f.codigo AS fase_codigo,
                 ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
+                defense_schedule.defensa_privada_en, defense_schedule.defensa_privada_lugar,
+                defense_schedule.defensa_publica_en, defense_schedule.defensa_publica_lugar,
                 (
                   f.codigo = 'REGISTRO'
                   AND ep.codigo = 'REGISTRADO'
@@ -3919,6 +4191,15 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
          JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
          JOIN titulacion.fases f ON f.id = p.fase_actual_id
          JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+         LEFT JOIN LATERAL (
+           SELECT
+             max(fecha_hora) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_en,
+             max(lugar) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_lugar,
+             max(fecha_hora) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_en,
+             max(lugar) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_lugar
+           FROM titulacion.defensas_programadas
+           WHERE proyecto_id = p.id
+         ) defense_schedule ON true
          WHERE pe.estudiante_id = $1 AND pe.activo
          ORDER BY p.registrado_en DESC
          LIMIT 1`,
@@ -4000,6 +4281,8 @@ app.get('/api/student/overview', requireStudent, async (request, response, next)
               p.objetivo_general, p.registrado_en, g.nombre AS gestion_nombre,
               m.nombre AS modalidad_nombre, f.nombre AS fase_nombre, f.codigo AS fase_codigo,
               ep.nombre AS estado_nombre, ep.codigo AS estado_codigo,
+              defense_schedule.defensa_privada_en, defense_schedule.defensa_privada_lugar,
+              defense_schedule.defensa_publica_en, defense_schedule.defensa_publica_lugar,
               (
                 f.codigo = 'REGISTRO'
                 AND ep.codigo = 'REGISTRADO'
@@ -4026,6 +4309,15 @@ app.get('/api/student/overview', requireStudent, async (request, response, next)
        JOIN titulacion.modalidades_titulacion m ON m.id = p.modalidad_id
        JOIN titulacion.fases f ON f.id = p.fase_actual_id
        JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+         LEFT JOIN LATERAL (
+           SELECT
+             max(fecha_hora) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_en,
+             max(lugar) FILTER (WHERE tipo = 'PRIVADA') AS defensa_privada_lugar,
+             max(fecha_hora) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_en,
+             max(lugar) FILTER (WHERE tipo = 'PUBLICA') AS defensa_publica_lugar
+           FROM titulacion.defensas_programadas
+           WHERE proyecto_id = p.id
+         ) defense_schedule ON true
        WHERE pe.estudiante_id = $1 AND pe.activo
        ORDER BY p.registrado_en DESC
        LIMIT 1`,

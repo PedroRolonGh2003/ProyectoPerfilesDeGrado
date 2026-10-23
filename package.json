@@ -12,6 +12,7 @@
     "qa:flow": "node server/qa-fullflow.mjs",
     "qa:admin": "node server/qa-admin-dashboard.mjs",
     "qa:admin-operations": "node server/qa-admin-operations.mjs",
+    "qa:defenses": "node server/qa-defense-scheduling.mjs",
     "qa:admin-users": "node server/qa-admin-users.mjs",
     "qa:tutor": "node server/qa-tutor-flow.mjs",
     "qa:reviewer": "node server/qa-reviewer-flow.mjs",

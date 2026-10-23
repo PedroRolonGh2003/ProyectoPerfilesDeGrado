@@ -268,6 +268,15 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .project-summary-copy { border-top: 1px solid #eee8e9; display: grid; gap: 6px; padding-top: 20px; }
 .project-summary-copy p { color: #66595d; font-size: 13px; line-height: 1.55; margin: 0 0 13px; }
 .project-status-text { border-radius: 99px; display: inline-flex; padding: 5px 8px; width: fit-content; }
+.defense-schedule-status { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 18px; }
+.defense-schedule-status article { border: 1px solid #e8e1e2; border-radius: 8px; display: grid; gap: 5px; padding: 13px; }
+.defense-schedule-status article.is-pending { background: #fff8e9; border-color: #ead7aa; }
+.defense-schedule-status article.is-scheduled { background: #eef8f0; border-color: #cce5d2; }
+.defense-schedule-status small { color: #896d77; font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.defense-schedule-status strong { color: #4c3f43; font-size: 12px; line-height: 1.4; }
+.defense-schedule-status span { color: #736569; font-size: 11px; line-height: 1.45; }
+.defense-schedule-status .is-pending strong { color: #8b6017; }
+.defense-schedule-status .is-scheduled strong { color: #29643d; }
 .project-rejection-reasons { background: #fff7f7; border: 1px solid #f0d2d4; border-radius: 8px; display: grid; gap: 15px; margin-top: 22px; padding: 18px; }
 .project-rejection-reasons > div:first-child { display: grid; gap: 4px; }
 .project-rejection-reasons > div:first-child p { color: #ad333a; font-size: 10px; font-weight: 800; letter-spacing: .08em; margin: 0; }
@@ -579,6 +588,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-operation-heading p { color: var(--univalle-wine); font-size: 9px; font-weight: 700; letter-spacing: .08em; margin: 1px 0 5px; }
 .admin-operation-heading h2 { color: #4b3e42; font-size: 14px; margin: 0; }
 .admin-operation-card > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
+.admin-defense-scheduling { background: #fff; border: 1px solid #e8e1e2; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); margin-bottom: 17px; padding: 21px; }
+.admin-defense-scheduling > p { color: #807276; font-size: 11px; line-height: 1.55; margin: 15px 0 17px; }
+.admin-defense-scheduling .admin-operation-grid { margin-bottom: 0; }
 .admin-project-proposal { margin-bottom: 18px; }
 .admin-proposal-data { display: grid; gap: 12px; margin-top: 18px; }
 .admin-proposal-data > div { border-top: 1px solid #eee7e9; display: grid; gap: 5px; padding-top: 12px; }
@@ -836,6 +848,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .upload-box > span { margin-left: 35px; }
   .student-message { padding-left: 18px; padding-right: 18px; }
   .project-summary-grid { grid-template-columns: 1fr 1fr; }
+  .defense-schedule-status { grid-template-columns: 1fr; }
   .document-project-tag { width: 100%; }
   .document-latest { align-items: flex-start; flex-direction: column; gap: 10px; }
   .document-actions { align-items: flex-start; flex-direction: column; }
