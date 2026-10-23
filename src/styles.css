@@ -926,9 +926,16 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .overview-facts { grid-template-columns: 1fr 1fr; }
   .overview-two-columns { grid-template-columns: 1fr; }
   .notification-summary { width: 100%; }
-  .tutor-stats { grid-template-columns: 1fr; }
-  .admin-stats { grid-template-columns: 1fr 1fr; }
-  .admin-user-stats { grid-template-columns: 1fr 1fr; }
+  .tutor-stats, .admin-stats { gap: 8px; margin-bottom: 18px; }
+  .tutor-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .reviewer-stats, .admin-stats, .admin-user-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tutor-stats > div, .admin-stats > div { align-content: start; gap: 6px; min-height: 0; min-width: 0; padding: 12px 10px; }
+  .tutor-stats small, .admin-stats small { color: #706267; font-size: 10px; line-height: 1.35; min-height: 2.7em; overflow-wrap: anywhere; }
+  .tutor-stats strong, .admin-stats strong { font-size: 26px; }
+  .tutor-stats span, .admin-stats span { color: #706267; font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+  .overview-facts { gap: 10px; margin-top: 16px; padding-top: 12px; }
+  .overview-facts > div { min-width: 0; }
+  .overview-facts strong { font-size: 11px; overflow-wrap: anywhere; }
   .tutor-project-footer { align-items: flex-start; flex-direction: column; }
   .notification-item { display: flex; flex-direction: column; }
   .notification-item .text-button { align-self: flex-start; }
