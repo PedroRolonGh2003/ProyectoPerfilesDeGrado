@@ -836,7 +836,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .admin-defense-editor { margin-top: 18px; }
 .admin-defense-form-fields { display: grid; gap: 12px; grid-template-columns: .8fr .65fr 1.55fr; margin-top: 16px; }
 .admin-defense-editor .form-field { margin-bottom: 0; }
-.admin-defense-modal-backdrop { align-items: center; backdrop-filter: blur(6px); background: rgba(43, 33, 38, .44); display: flex; inset: 0; justify-content: center; padding: 24px; position: fixed; z-index: 200; }
+.admin-defense-modal-backdrop { align-items: center; background: rgba(35, 25, 30, .45); display: flex; inset: 0; justify-content: center; padding: 24px; position: fixed; z-index: 200; }
 .admin-defense-modal { box-shadow: 0 22px 58px rgba(32, 20, 25, .24); margin: 0; max-height: calc(100dvh - 48px); max-width: 880px; overflow-y: auto; width: 100%; }
 .admin-defense-modal-heading { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
 .admin-defense-modal-close { align-items: center; background: #f5f1f3; border: 0; border-radius: 50%; color: #65595d; display: inline-flex; flex: 0 0 auto; font-size: 24px; height: 32px; justify-content: center; line-height: 1; padding: 0 0 3px; width: 32px; }
