@@ -1,0 +1,20 @@
+{
+  "id": "/",
+  "name": "Seguimiento de Titulación | Univalle",
+  "short_name": "Titulación Univalle",
+  "description": "Seguimiento académico de proyectos de titulación de Univalle.",
+  "lang": "es-BO",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f6f4f4",
+  "theme_color": "#a50046",
+  "icons": [
+    {
+      "src": "/univalle-logo.png",
+      "sizes": "447x447",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

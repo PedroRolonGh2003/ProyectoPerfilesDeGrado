@@ -255,6 +255,11 @@ type AdminProjectDetail = {
 }
 type SessionResponse = { user: User }
 type NotificationsResponse = { notifications: AppNotification[]; unreadCount: number }
+type PushConfig = { configured: boolean; publicKey: string | null }
+type BeforeInstallPromptEvent = Event & {
+  prompt: () => Promise<void>
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
+}
 
 type Option = { id: string; codigo: string; nombre: string }
 type Tutor = { id: string; name: string }
@@ -362,6 +367,115 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+function vapidKeyBytes(value: string) {
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized.padEnd(normalized.length + (4 - normalized.length % 4) % 4, '=')
+  const bytes = atob(padded)
+  return Uint8Array.from(bytes, (character) => character.charCodeAt(0))
+}
+
+function PwaControls() {
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
+  const [configured, setConfigured] = useState(false)
+  const [isSubscribed, setIsSubscribed] = useState(false)
+  const [isWorking, setIsWorking] = useState(false)
+  const [message, setMessage] = useState('')
+  const supported = typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
+
+  useEffect(() => {
+    const captureInstallPrompt = (event: Event) => {
+      event.preventDefault()
+      setInstallPrompt(event as BeforeInstallPromptEvent)
+    }
+    window.addEventListener('beforeinstallprompt', captureInstallPrompt)
+    if (!supported) return () => window.removeEventListener('beforeinstallprompt', captureInstallPrompt)
+    void (async () => {
+      try {
+        const [config, registration] = await Promise.all([
+          api<PushConfig>('/api/push/config'),
+          navigator.serviceWorker.ready,
+        ])
+        setConfigured(config.configured)
+        setIsSubscribed(Boolean(await registration.pushManager.getSubscription()))
+      } catch {
+        setConfigured(false)
+      }
+    })()
+    return () => window.removeEventListener('beforeinstallprompt', captureInstallPrompt)
+  }, [supported])
+
+  async function install() {
+    if (!installPrompt) return
+    setIsWorking(true)
+    try {
+      await installPrompt.prompt()
+      await installPrompt.userChoice
+      setInstallPrompt(null)
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  async function togglePush() {
+    if (!supported) return
+    setIsWorking(true)
+    setMessage('')
+    try {
+      const registration = await navigator.serviceWorker.ready
+      const currentSubscription = await registration.pushManager.getSubscription()
+      if (currentSubscription && isSubscribed) {
+        await api('/api/push/subscriptions', {
+          method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: currentSubscription.endpoint }),
+        })
+        await currentSubscription.unsubscribe()
+        setIsSubscribed(false)
+        setMessage('Avisos desactivados en este dispositivo.')
+        return
+      }
+
+      const config = await api<PushConfig>('/api/push/config')
+      if (!config.configured || !config.publicKey) {
+        setConfigured(false)
+        setMessage('Las notificaciones push aún no están disponibles.')
+        return
+      }
+      if (Notification.permission === 'denied') {
+        setMessage('Las notificaciones están bloqueadas en el navegador. Actívalas desde los permisos del sitio.')
+        return
+      }
+      const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
+      if (permission !== 'granted') {
+        setMessage('Necesitamos tu autorización para enviar avisos a este dispositivo.')
+        return
+      }
+      const subscription = currentSubscription ?? await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: vapidKeyBytes(config.publicKey) as BufferSource,
+      })
+      await api('/api/push/subscriptions', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: subscription.toJSON() }),
+      })
+      setConfigured(true)
+      setIsSubscribed(true)
+      setMessage('Avisos activados en este dispositivo.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar los avisos.')
+    } finally {
+      setIsWorking(false)
+    }
+  }
+
+  return <div className="pwa-controls">
+    {installPrompt && <button className="pwa-control-button" disabled={isWorking} onClick={() => void install()} type="button">Instalar app</button>}
+    {supported && <button aria-pressed={isSubscribed} className={isSubscribed ? 'pwa-control-button is-active' : 'pwa-control-button'} disabled={isWorking} onClick={() => void togglePush()} title={configured ? (isSubscribed ? 'Desactivar avisos en este dispositivo' : 'Activar avisos en este dispositivo') : 'Las notificaciones push no están configuradas'} type="button">{isSubscribed ? 'Avisos activos' : 'Activar avisos'}</button>}
+    {message && <span className="pwa-control-message" role="status">{message}</span>}
+  </div>
+}
+
+function PushToast({ notification, onClose, onOpen }: { notification: AppNotification; onClose: () => void; onOpen: () => void }) {
+  return <aside aria-live="polite" className="push-toast"><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p></div><div><button className="text-button" onClick={onOpen} type="button">Ver</button><button aria-label="Cerrar aviso" className="push-toast-close" onClick={onClose} type="button">×</button></div></aside>
+}
+
 function notificationDestination(link: string | null): NotificationDestination | null {
   const destinations: NotificationDestination[] = ['/student', '/student/proponer-tutor', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/tutor/defensas-privada', '/tutor/defensas-publica', '/revisor', '/revisor/pendientes', '/revisor/completados', '/revisor/defensas-privada', '/revisor/defensas-publica', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
   return destinations.includes(link as NotificationDestination) ? link as NotificationDestination : null
@@ -447,6 +561,7 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
         {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
       </div>
     </div>
+    <PwaControls />
     <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
     <span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span>
   </div>
@@ -2312,6 +2427,11 @@ function App() {
   const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
   const [navigationTarget, setNavigationTarget] = useState<NotificationDestination | null>(null)
+  const [pushNotice, setPushNotice] = useState<AppNotification | null>(null)
+  const [pendingPushNotification, setPendingPushNotification] = useState<{ id: string; open: boolean } | null>(() => {
+    const notificationId = new URLSearchParams(window.location.search).get('notification')
+    return notificationId ? { id: notificationId, open: true } : null
+  })
 
   async function loadPortal() {
     const session = await api<SessionResponse>('/api/auth/session')
@@ -2343,6 +2463,17 @@ function App() {
     void loadPortal().catch(() => setData(null)).finally(() => setIsLoading(false))
   }, [])
 
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const onServiceWorkerMessage = (event: MessageEvent<{ type?: string; notificationId?: string }>) => {
+      const notificationId = event.data?.notificationId
+      if (!notificationId || (event.data?.type !== 'PUSH_NOTIFICATION' && event.data?.type !== 'PUSH_NOTIFICATION_CLICK')) return
+      setPendingPushNotification({ id: notificationId, open: event.data.type === 'PUSH_NOTIFICATION_CLICK' })
+    }
+    navigator.serviceWorker.addEventListener('message', onServiceWorkerMessage)
+    return () => navigator.serviceWorker.removeEventListener('message', onServiceWorkerMessage)
+  }, [])
+
   async function handleLogout() {
     try {
       await api('/api/auth/logout', { method: 'POST' })
@@ -2350,6 +2481,7 @@ function App() {
       setData(null)
       setNotifications([])
       setNavigationTarget(null)
+      setPushNotice(null)
       setView('home')
     }
   }
@@ -2389,20 +2521,43 @@ function App() {
     await loadPortal()
   }
 
+  useEffect(() => {
+    if (!data || !pendingPushNotification) return
+    const pending = pendingPushNotification
+    setPendingPushNotification(null)
+    if (pending.open) {
+      const url = new URL(window.location.href)
+      url.searchParams.delete('notification')
+      window.history.replaceState({}, '', url)
+    }
+    void api<AppNotification>(`/api/notifications/${pending.id}`).then((notification) => {
+      setNotifications((current) => current.some((item) => item.id === notification.id) ? current : [notification, ...current].slice(0, 20))
+      if (pending.open) {
+        void handleNotificationClick(notification)
+      } else {
+        setPushNotice(notification)
+        void loadPortal()
+      }
+    }).catch(() => undefined)
+  }, [data, pendingPushNotification])
+
   function sessionActions(user: User) {
     return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
   }
 
-  if (isLoading) return <main className="app-loading">Conectando con el sistema académico…</main>
-  if (!data || isPasswordResetFlow) return <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
-  if ('pendingReviews' in data) return <ReviewerPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  if ('summary' in data) return <AdminPortal data={data} navigationTarget={navigationTarget} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  if ('invitations' in data) return <TutorPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
-  return view === 'home'
+  let content: ReactNode
+  if (isLoading) content = <main className="app-loading">Conectando con el sistema académico…</main>
+  else if (!data || isPasswordResetFlow) content = <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
+  else if ('pendingReviews' in data) content = <ReviewerPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  else if ('summary' in data) content = <AdminPortal data={data} navigationTarget={navigationTarget} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  else if ('invitations' in data) content = <TutorPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
+  else content = view === 'home'
     ? <HomeView data={data} navigationTarget={navigationTarget} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} onRefresh={loadPortal} onNavigationHandled={() => setNavigationTarget(null)} sessionActions={sessionActions(data.user)} />
     : view === 'documents'
       ? <DocumentsView data={data} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
       : <StudentForm data={data} onDocuments={() => setView('documents')} onHome={() => setView('home')} onLogout={handleLogout} onRegistered={loadPortal} sessionActions={sessionActions(data.user)} />
+
+  return <>{content}{pushNotice && data && !isPasswordResetFlow && <PushToast notification={pushNotice} onClose={() => setPushNotice(null)} onOpen={() => { const notification = pushNotice; setPushNotice(null); void handleNotificationClick(notification) }} />}</>
 }
 
 export default App

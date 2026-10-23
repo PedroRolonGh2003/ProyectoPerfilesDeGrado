@@ -64,6 +64,20 @@ Las migraciones aplicadas se conservan en `database/`.
 
 En Vercel, `vercel.json` ejecuta el recordatorio de revisiones una vez al día a las 08:00 (hora de Bolivia). Define `CRON_SECRET` como una variable de entorno aleatoria de al menos 16 caracteres para proteger la tarea programada.
 
+## PWA y notificaciones push
+
+La plataforma es instalable como PWA en navegadores compatibles. El Service Worker solo conserva recursos públicos de la interfaz; no almacena respuestas de `/api`, sesiones, documentos ni datos académicos privados.
+
+Para habilitar las notificaciones push, genera una pareja VAPID una sola vez y configura los valores en el entorno local y en Vercel:
+
+```bash
+npm exec web-push generate-vapid-keys
+```
+
+Configura `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT` (por ejemplo, `mailto:soporte.titulacion@univalle.edu`). Nunca publiques la clave privada. Una vez configurado, cada usuario puede usar **Activar avisos** desde su sesión para autorizar el dispositivo; puede desactivarlos desde el mismo control. La suscripción se registra por dispositivo y cada evento interno se entrega una sola vez por suscripción.
+
+En Android, la instalación y los avisos funcionan en navegadores compatibles con Web Push. En iPhone/iPad, los avisos requieren iOS/iPadOS 16.4 o posterior y que la PWA se haya agregado a la pantalla de inicio desde Safari; el permiso se solicita desde el botón de la aplicación.
+
 ## Verificar compilación
 
 ```bash
