@@ -180,6 +180,27 @@ try {
 
   const client = await pool.connect()
   try { await moveTo(client, catalog.private_phase_id, catalog.private_state_id, 'QA: proyecto habilitado para defensa privada.') } finally { client.release() }
+  const privateDocument = await pool.query(
+    `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
+     VALUES ($1, $2, 'Documento privado QA', 'DOCUMENTO_PRIVADO', $3) RETURNING id`,
+    [projectId, catalog.private_phase_id, accounts.Student.userId],
+  )
+  const privateDocumentId = privateDocument.rows[0].id
+  const uploadPrivateVersion = () => {
+    const body = new FormData()
+    body.set('document', new Blob([new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0])], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), 'privado-qa.docx')
+    return fetch(`${apiUrl}/api/documents/${privateDocumentId}/versions`, { method: 'POST', headers: { Cookie: studentCookie }, body })
+  }
+  await expect(await uploadPrivateVersion(), 201, 'Primera entrega privada abre la ronda')
+  const studentDocuments = await expect(await fetch(`${apiUrl}/api/documents`, { headers: { Cookie: studentCookie } }), 200, 'Documentos con ronda privada abierta')
+  const privatePayload = (await studentDocuments.json()).documents.find((item) => item.id === privateDocumentId)
+  assert.equal(privatePayload.reviewInProgress, true)
+  assert.equal(privatePayload.canUploadVersion, false)
+  const blockedVersion = await expect(await uploadPrivateVersion(), 409, 'Nueva versión bloqueada durante revisión privada')
+  assert.match((await blockedVersion.json()).message, /revisión en curso/)
+  const versionsAfterBlock = await pool.query('SELECT count(*)::int AS total FROM titulacion.versiones_documento WHERE documento_id = $1', [privateDocumentId])
+  assert.equal(versionsAfterBlock.rows[0].total, 1, 'El rechazo no debe crear una segunda versión')
+
   const privateDetail = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Detalle administrativo de defensa privada')
   assert.equal((await privateDetail.json()).project.defenses.private.scheduledAt, null, 'El detalle administrativo no informa la convocatoria privada pendiente')
 

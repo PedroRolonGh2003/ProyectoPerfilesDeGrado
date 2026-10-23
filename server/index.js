@@ -4735,7 +4735,12 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
                 latest.id AS latest_version_id, latest.numero_version AS latest_numero_version,
                 latest.nombre_archivo AS latest_nombre_archivo, latest.mime_type AS latest_mime_type,
                 latest.tamano_bytes AS latest_tamano_bytes, latest.subida_en AS latest_subida_en,
-                version_count.total AS total_versiones
+                version_count.total AS total_versiones,
+                EXISTS (
+                  SELECT 1 FROM titulacion.rondas_revision rr
+                  JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+                  WHERE vd.documento_id = d.id AND rr.cerrada_en IS NULL
+                ) AS revision_en_curso
          FROM titulacion.documentos d
          JOIN titulacion.proyectos p ON p.id = d.proyecto_id
          JOIN titulacion.proyecto_estudiantes pe ON pe.proyecto_id = p.id AND pe.estudiante_id = $1 AND pe.activo
@@ -4823,7 +4828,8 @@ app.get('/api/documents', requireStudent, async (request, response, next) => {
         type: document.tipo_documento,
         phase: document.fase_nombre,
         status: document.estado_nombre,
-        canUploadVersion: document.permite_edicion_estudiante && (
+        reviewInProgress: document.revision_en_curso,
+        canUploadVersion: !document.revision_en_curso && document.permite_edicion_estudiante && (
           (document.tipo_documento === 'PERFIL_PROYECTO' && document.fase_codigo === 'REGISTRO')
           || (document.tipo_documento === 'DOCUMENTO_PRIVADO' && document.fase_codigo === 'DOCUMENTO_PRIVADO')
           || (document.tipo_documento === 'DOCUMENTO_PUBLICO' && document.fase_codigo === 'DOCUMENTO_PUBLICO')
@@ -4917,6 +4923,18 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
     if (!canUploadSelectedDocument) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Este documento no puede recibir una nueva versión en la fase actual.' })
+    }
+
+    const activeReview = await databaseClient.query(
+      `SELECT rr.id FROM titulacion.rondas_revision rr
+       JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+       WHERE vd.documento_id = $1 AND rr.cerrada_en IS NULL
+       FOR UPDATE OF rr`,
+      [selected.id],
+    )
+    if (activeReview.rowCount > 0) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Este documento tiene una revisión en curso. Espera a que termine antes de enviar una nueva versión.' })
     }
 
     let submittedResponses
