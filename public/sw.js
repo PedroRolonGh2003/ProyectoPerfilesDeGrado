@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'stit-public-v1'
+const STATIC_CACHE = 'stit-public-v2'
 const PUBLIC_ASSETS = ['/univalle-logo.png', '/manifest.webmanifest']
 
 self.addEventListener('install', (event) => {
@@ -15,13 +15,10 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return
 
   if (url.pathname.startsWith('/assets/') || PUBLIC_ASSETS.includes(url.pathname)) {
-    event.respondWith(caches.match(request).then(async (cached) => {
-      const network = fetch(request).then((response) => {
-        if (response.ok) void caches.open(STATIC_CACHE).then((cache) => cache.put(request, response.clone()))
-        return response
-      })
-      return cached ?? network
-    }))
+    event.respondWith(fetch(request).then(async (response) => {
+      if (response.ok) await caches.open(STATIC_CACHE).then((cache) => cache.put(request, response.clone()))
+      return response
+    }).catch(() => caches.match(request).then((cached) => cached ?? Response.error())))
   }
 })
 
