@@ -2,6 +2,7 @@ import 'dotenv/config'
 
 import assert from 'node:assert/strict'
 import bcrypt from 'bcryptjs'
+import crypto from 'node:crypto'
 import pg from 'pg'
 
 const { Pool } = pg
@@ -77,7 +78,8 @@ async function setup() {
         (SELECT id FROM titulacion.fases WHERE codigo = 'DOCUMENTO_PRIVADO') AS private_phase_id,
         (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'EN_DOCUMENTO_PRIVADO') AS private_state_id,
         (SELECT id FROM titulacion.fases WHERE codigo = 'DOCUMENTO_PUBLICO') AS public_phase_id,
-        (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'EN_DOCUMENTO_PUBLICO') AS public_state_id`,
+        (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'EN_DOCUMENTO_PUBLICO') AS public_state_id,
+        (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'APROBADO_INSTITUCIONAL') AS institutional_state_id`,
     )
     const values = catalog.rows[0]
     assert.ok(Object.values(values).every(Boolean), 'Faltan catálogos para QA de programación de defensas')
@@ -137,6 +139,9 @@ async function cleanup() {
     if (projectId) {
       await client.query('DELETE FROM titulacion.auditoria WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.notificaciones WHERE proyecto_id = $1', [projectId])
+      await client.query(`DELETE FROM titulacion.revisiones WHERE ronda_revision_id IN (SELECT rr.id FROM titulacion.rondas_revision rr JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id JOIN titulacion.documentos d ON d.id = vd.documento_id WHERE d.proyecto_id = $1)`, [projectId])
+      await client.query(`DELETE FROM titulacion.rondas_revision WHERE version_documento_id IN (SELECT vd.id FROM titulacion.versiones_documento vd JOIN titulacion.documentos d ON d.id = vd.documento_id WHERE d.proyecto_id = $1)`, [projectId])
+      await client.query('DELETE FROM titulacion.documentos WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.asignaciones_proyecto WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.historial_estados WHERE proyecto_id = $1', [projectId])
       await client.query('DELETE FROM titulacion.proyecto_estudiantes WHERE proyecto_id = $1', [projectId])
@@ -220,7 +225,82 @@ try {
   }), 200, 'Programación de defensa pública')
   const publicNotifications = await pool.query(`SELECT count(*)::int AS total FROM titulacion.notificaciones WHERE proyecto_id = $1 AND tipo = 'DEFENSA_PUBLICA_PROGRAMADA'`, [projectId])
   assert.equal(publicNotifications.rows[0].total, 4, 'La defensa pública no notificó a los cuatro participantes')
-  console.log('QA defensas aprobado: validación de fase, fecha/hora/lugar, estados y notificaciones para estudiante, tutor y revisores.')
+  const publicDocument = await pool.query(
+    `INSERT INTO titulacion.documentos (proyecto_id, fase_id, nombre, tipo_documento, creado_por_usuario_id)
+     VALUES ($1, $2, 'Documento final QA', 'DOCUMENTO_PUBLICO', $3)
+     RETURNING id`,
+    [projectId, catalog.public_phase_id, accounts.Student.userId],
+  )
+  const publicVersion = await pool.query(
+    `INSERT INTO titulacion.versiones_documento
+      (documento_id, numero_version, nombre_archivo, ruta_archivo, mime_type, tamano_bytes, hash_archivo, subido_por_usuario_id, comentario_entrega)
+     VALUES ($1, 1, 'documento-final-qa.docx', $2, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 128, $3, $4, 'Version final de QA.')
+     RETURNING id`,
+    [publicDocument.rows[0].id, `uploads/proyectos/${projectId}/documento-final-qa.docx`, crypto.createHash('sha256').update(`public-${suffix}`).digest('hex'), accounts.Student.userId],
+  )
+  const publicRound = await pool.query(
+    `INSERT INTO titulacion.rondas_revision (version_documento_id, fase_id, numero_ronda, solicitada_por_usuario_id)
+     VALUES ($1, $2, 1, $3)
+     RETURNING id`,
+    [publicVersion.rows[0].id, catalog.public_phase_id, accounts.Admin.userId],
+  )
+  await pool.query(
+    `INSERT INTO titulacion.revisiones (ronda_revision_id, asignacion_proyecto_id)
+     SELECT $1, id
+     FROM titulacion.asignaciones_proyecto
+     WHERE proyecto_id = $2 AND tipo IN ('TUTOR', 'REVISOR_1', 'REVISOR_2')`,
+    [publicRound.rows[0].id, projectId],
+  )
+
+  const closureBeforeApproval = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Detalle antes del cierre')
+  assert.equal((await closureBeforeApproval.json()).closure.eligible, false, 'El cierre se habilito antes de aprobar la ronda publica')
+  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/close`, {
+    method: 'POST', headers: { Cookie: adminCookie },
+  }), 409, 'Bloqueo del cierre antes de la aprobacion publica')
+
+  await pool.query(`UPDATE titulacion.revisiones SET decision = 'APROBADO', decidida_en = now() WHERE ronda_revision_id = $1`, [publicRound.rows[0].id])
+  await pool.query(`UPDATE titulacion.rondas_revision SET cerrada_en = now() WHERE id = $1`, [publicRound.rows[0].id])
+  const approvalClient = await pool.connect()
+  try {
+    await moveTo(approvalClient, catalog.public_phase_id, catalog.institutional_state_id, 'QA: public defense approved by the three participants.')
+  } finally {
+    approvalClient.release()
+  }
+
+  const closureReady = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}`, { headers: { Cookie: adminCookie } }), 200, 'Detalle listo para cierre')
+  const closureDetail = await closureReady.json()
+  assert.equal(closureDetail.closure.eligible, true, 'El cierre no se habilito tras los tres dictamenes aprobados')
+  assert.equal(closureDetail.closure.roundNumber, 1, 'El detalle no informa la ronda publica aprobada')
+  const closeResult = await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/close`, {
+    method: 'POST', headers: { Cookie: adminCookie },
+  }), 200, 'Cierre del proyecto')
+  assert.match((await closeResult.json()).message, /cerrado/i, 'El cierre no confirmo la finalizacion')
+
+  const finalState = await pool.query(
+    `SELECT ep.codigo AS estado_codigo, f.codigo AS fase_codigo
+     FROM titulacion.proyectos p
+     JOIN titulacion.estados_proyecto ep ON ep.id = p.estado_actual_id
+     JOIN titulacion.fases f ON f.id = p.fase_actual_id
+     WHERE p.id = $1`,
+    [projectId],
+  )
+  assert.deepEqual(finalState.rows[0], { estado_codigo: 'FINALIZADO', fase_codigo: 'CIERRE' }, 'El proyecto no llego al estado final de cierre')
+  const closingNotifications = await pool.query(
+    `SELECT enlace FROM titulacion.notificaciones
+     WHERE proyecto_id = $1 AND tipo = 'PROYECTO_FINALIZADO'
+     ORDER BY enlace`,
+    [projectId],
+  )
+  assert.deepEqual(closingNotifications.rows.map((item) => item.enlace), ['/revisor/completados', '/revisor/completados', '/student', '/tutor/proyectos'], 'Las notificaciones de cierre no conducen a las vistas de cada participante')
+  const finalStudent = await expect(await fetch(`${apiUrl}/api/student/bootstrap`, { headers: { Cookie: studentCookie } }), 200, 'Proyecto final visible para estudiante')
+  const finalStudentData = await finalStudent.json()
+  assert.equal(finalStudentData.project.statusCode, 'FINALIZADO', 'El estudiante no ve el proyecto finalizado')
+  assert.equal(finalStudentData.project.phaseCode, 'CIERRE', 'El estudiante no ve la fase de cierre')
+  await expect(await fetch(`${apiUrl}/api/admin/projects/${projectId}/close`, {
+    method: 'POST', headers: { Cookie: adminCookie },
+  }), 409, 'Bloqueo de un segundo cierre')
+
+  console.log('QA defensas aprobado: convocatorias, cierre condicionado a tres dictamenes, estado FINALIZADO/CIERRE y notificaciones verificados.')
 } finally {
   for (const cookie of [adminCookie, studentCookie, tutorCookie, reviewer1Cookie, reviewer2Cookie]) {
     if (cookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } }).catch(() => undefined)

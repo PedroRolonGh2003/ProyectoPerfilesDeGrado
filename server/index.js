@@ -1024,6 +1024,55 @@ async function lockedProject(databaseClient, projectId) {
   return project.rows[0] ?? null
 }
 
+async function publicDefenseApprovalReadiness(databaseClient, projectId) {
+  const round = await databaseClient.query(
+    `SELECT rr.id, rr.numero_ronda, rr.cerrada_en
+     FROM titulacion.rondas_revision rr
+     JOIN titulacion.versiones_documento vd ON vd.id = rr.version_documento_id
+     JOIN titulacion.documentos d ON d.id = vd.documento_id
+     WHERE d.proyecto_id = $1
+       AND d.tipo_documento = 'DOCUMENTO_PUBLICO'
+     ORDER BY rr.fecha_solicitud DESC, rr.numero_ronda DESC
+     LIMIT 1`,
+    [projectId],
+  )
+  const publicRound = round.rows[0]
+  if (!publicRound) {
+    return { ready: false, roundId: null, roundNumber: null, reason: 'Aún no existe una ronda de revisión para el documento de defensa pública.' }
+  }
+  if (!publicRound.cerrada_en) {
+    return { ready: false, roundId: publicRound.id, roundNumber: publicRound.numero_ronda, reason: 'La ronda de defensa pública sigue abierta; faltan dictámenes por registrar.' }
+  }
+
+  const reviews = await databaseClient.query(
+    `SELECT a.tipo, r.decision
+     FROM titulacion.revisiones r
+     JOIN titulacion.asignaciones_proyecto a ON a.id = r.asignacion_proyecto_id
+     WHERE r.ronda_revision_id = $1
+       AND a.tipo IN ('TUTOR', 'REVISOR_1', 'REVISOR_2')`,
+    [publicRound.id],
+  )
+  const requiredTypes = ['TUTOR', 'REVISOR_1', 'REVISOR_2']
+  const decisionsByType = new Map(reviews.rows.map((item) => [item.tipo, item.decision]))
+  const hasAllParticipants = reviews.rows.length === requiredTypes.length && requiredTypes.every((type) => decisionsByType.has(type))
+  if (!hasAllParticipants) {
+    return { ready: false, roundId: publicRound.id, roundNumber: publicRound.numero_ronda, reason: 'La ronda pública no cuenta con los tres dictámenes requeridos: tutor, Revisor 1 y Revisor 2.' }
+  }
+  if (!requiredTypes.every((type) => decisionsByType.get(type) === 'APROBADO')) {
+    return { ready: false, roundId: publicRound.id, roundNumber: publicRound.numero_ronda, reason: 'El cierre requiere la aprobación del tutor y de los dos revisores en la ronda pública.' }
+  }
+  return { ready: true, roundId: publicRound.id, roundNumber: publicRound.numero_ronda, reason: null }
+}
+
+function projectClosurePayload(project, readiness) {
+  if (project.estado_codigo === 'FINALIZADO') return { eligible: false, roundNumber: readiness.roundNumber, reason: 'El proyecto ya fue finalizado.' }
+  if (project.estado_codigo === 'ANULADO') return { eligible: false, roundNumber: readiness.roundNumber, reason: 'El proyecto fue anulado.' }
+  if (project.estado_codigo !== 'APROBADO_INSTITUCIONAL' || project.fase_codigo !== 'DOCUMENTO_PUBLICO') {
+    return { eligible: false, roundNumber: readiness.roundNumber, reason: 'El cierre se habilitará cuando la ronda de defensa pública esté aprobada por tutor y revisores.' }
+  }
+  return { eligible: readiness.ready, roundNumber: readiness.roundNumber, reason: readiness.reason }
+}
+
 async function staffWithRole(databaseClient, { teacherId, careerId, roleCode }) {
   const staff = await databaseClient.query(
     `SELECT d.id, d.usuario_id, trim(concat(u.nombres, ' ', u.apellidos)) AS name, u.correo
@@ -2533,7 +2582,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
     const project = projectResult.rows[0]
     if (!project) return response.status(404).json({ message: 'El proyecto no existe.' })
 
-    const [students, staff, assignments, profiles, rounds, statuses, phases, cancellation] = await Promise.all([
+    const [students, staff, assignments, profiles, rounds, statuses, phases, cancellation, closureReadiness] = await Promise.all([
       pool.query(
         `SELECT trim(concat(u.nombres, ' ', u.apellidos)) AS name, e.registro_universitario AS registration
          FROM titulacion.proyecto_estudiantes pe
@@ -2608,6 +2657,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
          WHERE proyecto_id = $1`,
         [projectId],
       ),
+      publicDefenseApprovalReadiness(pool, projectId),
     ])
 
     return response.json({
@@ -2658,6 +2708,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
       })),
       statuses: statuses.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
       phases: phases.rows.map((item) => ({ code: item.codigo, name: item.nombre })),
+      closure: projectClosurePayload(project, closureReadiness),
       cancellation: cancellation.rows[0] ? {
         reason: cancellation.rows[0].motivo,
         detail: cancellation.rows[0].detalle,
@@ -3072,6 +3123,104 @@ app.put('/api/admin/projects/:projectId/defense-schedules/:defenseType', require
         updatedAt: schedule.rows[0].actualizada_en,
       },
     })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.post('/api/admin/projects/:projectId/close', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const { projectId } = request.params
+    if (!isUuid(projectId)) return response.status(400).json({ message: 'El proyecto no es válido.' })
+
+    await databaseClient.query('BEGIN')
+    const project = await lockedProject(databaseClient, projectId)
+    if (!project) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'El proyecto no existe.' })
+    }
+    if (project.estado_codigo === 'FINALIZADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'El proyecto ya fue finalizado.' })
+    }
+    if (project.estado_codigo === 'ANULADO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'No puedes finalizar un proyecto anulado.' })
+    }
+    if (project.estado_codigo !== 'APROBADO_INSTITUCIONAL' || project.fase_codigo !== 'DOCUMENTO_PUBLICO') {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'El proyecto solo puede cerrarse después de aprobar la ronda de defensa pública.' })
+    }
+
+    const readiness = await publicDefenseApprovalReadiness(databaseClient, projectId)
+    if (!readiness.ready) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: readiness.reason })
+    }
+    const catalog = await databaseClient.query(
+      `SELECT
+         (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'FINALIZADO') AS state_id,
+         (SELECT id FROM titulacion.fases WHERE codigo = 'CIERRE' AND activa) AS phase_id`,
+    )
+    if (!catalog.rows[0]?.state_id || !catalog.rows[0]?.phase_id) throw new Error('Faltan los catálogos FINALIZADO o CIERRE para cerrar el proyecto.')
+
+    await recordProjectStatus(databaseClient, {
+      projectId,
+      previousStateId: project.estado_actual_id,
+      nextStateId: catalog.rows[0].state_id,
+      previousPhaseId: project.fase_actual_id,
+      nextPhaseId: catalog.rows[0].phase_id,
+      userId: request.session.usuario_id,
+      reason: `Proyecto cerrado tras la aprobación de la ronda pública ${readiness.roundNumber} por tutor y revisores.`,
+    })
+
+    const recipients = await databaseClient.query(
+      `WITH recipients AS (
+         SELECT student_user.id AS usuario_id, student_user.correo, '/student'::text AS enlace, 1 AS prioridad
+         FROM titulacion.proyecto_estudiantes pe
+         JOIN titulacion.estudiantes student ON student.id = pe.estudiante_id
+         JOIN titulacion.usuarios student_user ON student_user.id = student.usuario_id AND student_user.activo
+         WHERE pe.proyecto_id = $1 AND pe.activo
+         UNION ALL
+         SELECT teacher_user.id AS usuario_id, teacher_user.correo,
+                CASE assignment.tipo WHEN 'TUTOR' THEN '/tutor/proyectos' ELSE '/revisor/completados' END AS enlace,
+                2 AS prioridad
+         FROM titulacion.revisiones review
+         JOIN titulacion.asignaciones_proyecto assignment ON assignment.id = review.asignacion_proyecto_id
+         JOIN titulacion.docentes teacher ON teacher.id = assignment.docente_id
+         JOIN titulacion.usuarios teacher_user ON teacher_user.id = teacher.usuario_id AND teacher_user.activo
+         WHERE review.ronda_revision_id = $2
+           AND assignment.tipo IN ('TUTOR', 'REVISOR_1', 'REVISOR_2')
+       )
+       SELECT DISTINCT ON (usuario_id) usuario_id, correo, enlace
+       FROM recipients
+       ORDER BY usuario_id, prioridad`,
+      [projectId, readiness.roundId],
+    )
+    for (const recipient of recipients.rows) {
+      await createNotification(databaseClient, {
+        userId: recipient.usuario_id,
+        recipientEmail: recipient.correo,
+        projectId,
+        type: 'PROYECTO_FINALIZADO',
+        title: 'Proyecto finalizado',
+        message: `Administración cerró el proyecto ${project.codigo_seguimiento} después de completar y aprobar la defensa pública.`,
+        link: recipient.enlace,
+      })
+    }
+    await recordAudit(databaseClient, request.session, {
+      projectId,
+      action: 'CERRAR_PROYECTO',
+      entity: 'proyectos',
+      entityId: projectId,
+      detail: { publicRoundId: readiness.roundId, publicRoundNumber: readiness.roundNumber },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'El proyecto fue cerrado y se completó su línea de progreso.' })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)
