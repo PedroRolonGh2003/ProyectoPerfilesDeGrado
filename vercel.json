@@ -1,5 +1,8 @@
 {
   "framework": "vite",
+  "functions": {
+    "api/[...path].js": { "includeFiles": "database/20261023_pwa_sessions.sql" }
+  },
   "headers": [
     {
       "source": "/sw.js",

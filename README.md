@@ -74,9 +74,21 @@ Para habilitar las notificaciones push, genera una pareja VAPID una sola vez y c
 npm exec web-push generate-vapid-keys
 ```
 
-Configura `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT` (por ejemplo, `mailto:soporte.titulacion@univalle.edu`). Nunca publiques la clave privada. Una vez configurado, cada usuario puede usar **Activar avisos** desde su sesión para autorizar el dispositivo; puede desactivarlos desde el mismo control. La suscripción se registra por dispositivo y cada evento interno se entrega una sola vez por suscripción.
+Configura `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT` (por ejemplo, la URL HTTPS pública de la plataforma). Nunca publiques la clave privada ni regeneres las claves en cada despliegue. En **Avisos → Activar avisos**, cada usuario autoriza su dispositivo. El sistema solo indica que están activos después de guardar la suscripción en el servidor; no existe un modo alternativo que dependa de mantener abierta la aplicación.
+
+Cada notificación interna encola sus entregas dentro de la misma transacción de PostgreSQL. El servidor las envía mediante Web Push con TTL de hasta siete días; no necesita una pestaña ni una sesión abierta. `waitUntil` mantiene vivo el envío después de la respuesta en Vercel. Las entregas usan un registro único por notificación/dispositivo y una etiqueta común en el proveedor y el navegador. Los reintentos pueden repetir un envío aceptado si el proceso se interrumpió antes de guardarlo; no se promete entrega exactamente una vez.
+
+Los errores temporales se reintentan con espera creciente; 404/410 desactivan suscripciones inválidas. El servidor local revisa pendientes cada minuto. En Vercel, la tarea diaria existente también los procesa; `GET /api/cron/push-deliveries` admite un programador externo más frecuente con `Authorization: Bearer CRON_SECRET`. El plan Hobby solo admite cron diario: sin tráfico, un reintento pendiente puede esperar hasta la siguiente ejecución. El primer intento sí se lanza con la operación que creó el aviso. La aceptación por el proveedor **no confirma recepción en el teléfono**.
+
+**Sesiones:** «Recordar mi sesión» está seleccionado inicialmente. La cookie persistente es `HttpOnly`, `SameSite=Lax` y `Secure` en producción; en la base solo se guarda el hash del token. La ventana de inactividad es de 90 días por defecto (`REMEMBER_SESSION_DAYS`), renovable al usar la aplicación. Desmarcar la opción conserva la sesión corta de `SESSION_HOURS`. Cerrar/reiniciar el dispositivo no elimina la cookie; revocación, cambio de contraseña, vencimiento por inactividad o borrar datos del navegador requieren autenticarse otra vez. Los errores de red conservan la sesión y muestran «Reintentar conexión».
+
+**Móvil:** la barra inferior se conserva. El botón de menú junto al logo abre el lateral con «Cerrar sesión» fijo abajo, fuera del área desplazable y respetando el área segura. Salir revoca la sesión y cancela las entregas al dispositivo actual, sin afectar los otros dispositivos. El Service Worker descarta mensajes en tránsito de la cuenta anterior y cierra los avisos mostrados. Si no hay conexión para confirmar la revocación, la interfaz informa del fallo y permite volver a intentarlo.
+
+**Historial:** la campanita ofrece «Ver historial completo», con paginación y estado de lectura. Abrir la aplicación o recuperar conexión sincroniza los avisos. Enviar un push no los marca como leídos. Al tocarlo, se conserva su ID en la URL hasta que se puede abrir con la sesión y el rol autorizados.
 
 En Android, la instalación y los avisos funcionan en navegadores compatibles con Web Push. En iPhone/iPad, los avisos requieren iOS/iPadOS 16.4 o posterior y que la PWA se haya agregado a la pantalla de inicio desde Safari; el permiso se solicita desde el botón de la aplicación.
+
+Pruebas específicas: `npm run qa:pwa:flow` prueba API/base de datos con cuentas temporales y un proveedor simulado; `npm run qa:pwa:worker` prueba los manejadores del Service Worker. Ninguna equivale a recepción física. Consulta [la verificación móvil](docs/VERIFICACION_PWA.md) para los escenarios de dispositivo y producción.
 
 ## Verificar compilación
 

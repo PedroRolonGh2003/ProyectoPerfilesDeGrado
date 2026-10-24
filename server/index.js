@@ -2,7 +2,7 @@ import 'dotenv/config'
 
 import bcrypt from 'bcryptjs'
 import crypto from 'node:crypto'
-import { access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -10,11 +10,13 @@ import multer from 'multer'
 import nodemailer from 'nodemailer'
 import pg from 'pg'
 import webpush from 'web-push'
+import { waitUntil } from '@vercel/functions'
+import { deliverPendingPush } from './push-delivery.mjs'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const sessionHours = Number(process.env.SESSION_HOURS ?? 12)
-const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 30)
+const rememberSessionDays = Number(process.env.REMEMBER_SESSION_DAYS ?? 90)
 const confirmationHours = Number(process.env.EMAIL_CONFIRMATION_HOURS ?? 24)
 const passwordResetHours = Number(process.env.PASSWORD_RESET_HOURS ?? 1)
 const appBaseUrl = (process.env.APP_BASE_URL
@@ -77,11 +79,14 @@ const upload = multer({
 app.disable('x-powered-by')
 app.use(express.json({ limit: '1mb' }))
 app.use((request, response, next) => {
-  response.once('finish', () => {
-    if (pushEnabled && request.path.startsWith('/api/') && response.statusCode >= 200 && response.statusCode < 400) {
-      void processPendingPushDeliveries().catch((error) => console.error('No fue posible procesar entregas Web Push:', error instanceof Error ? error.message : error))
-    }
-  })
+  if (request.path.startsWith('/api/')) response.set('Cache-Control', 'no-store')
+  if (pushEnabled && request.path.startsWith('/api/')) {
+    // Register before returning the response so serverless execution stays alive.
+    const delivery = new Promise((resolve) => response.once('finish', resolve))
+      .then(() => (app.locals.dispatchPush ?? processPendingPushDeliveries)())
+      .catch(() => console.error('No fue posible procesar la cola Web Push. Se reintentar?.'))
+    if (process.env.VERCEL) waitUntil(delivery)
+  }
   next()
 })
 
@@ -102,13 +107,13 @@ function setSessionCookie(response, token, maxAge) {
   response.cookie('stit_session', token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL),
     maxAge,
     path: '/',
   })
 }
 
-async function createSession(response, request, account, { remember = false, databaseClient = pool } = {}) {
+async function createSession(response, request, account, { remember = true, databaseClient = pool } = {}) {
   const token = crypto.randomBytes(32).toString('base64url')
   const durationMs = remember
     ? rememberSessionDays * 24 * 60 * 60 * 1000
@@ -117,8 +122,8 @@ async function createSession(response, request, account, { remember = false, dat
 
   await databaseClient.query(
     `INSERT INTO titulacion.sesiones_usuario
-      (usuario_id, rol_activo_id, token_hash, ip_origen, agente_usuario, expira_en)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+      (usuario_id, rol_activo_id, token_hash, ip_origen, agente_usuario, expira_en, persistente)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       account.usuario_id,
       account.rol_id,
@@ -126,6 +131,7 @@ async function createSession(response, request, account, { remember = false, dat
       request.socket.remoteAddress ?? null,
       text(request.get('user-agent')).slice(0, 1000) || null,
       expiration,
+      remember,
     ],
   )
 
@@ -171,13 +177,13 @@ function notificationPayload(row) {
   }
 }
 
-async function sessionFromRequest(request) {
+async function sessionFromRequest(request, response) {
   const token = cookieValue(request, 'stit_session')
   if (!token) return null
 
   const result = await pool.query(
     `SELECT
-       s.id AS sesion_id,
+       s.id AS sesion_id, s.persistente, s.expira_en,
        u.id AS usuario_id,
        u.nombres,
        u.apellidos,
@@ -211,12 +217,20 @@ async function sessionFromRequest(request) {
     [hashToken(token)],
   )
 
-  return result.rows[0] ?? null
+  const session = result.rows[0] ?? null
+  if (session?.persistente && response && new Date(session.expira_en).getTime() - Date.now() < (rememberSessionDays - 1) * 86400000) {
+    const duration = rememberSessionDays * 86400000
+    const renewed = await pool.query(`UPDATE titulacion.sesiones_usuario SET expira_en = now() + $2 * interval '1 millisecond'
+      WHERE id = $1 AND cerrada_en IS NULL AND expira_en > now() RETURNING id`, [session.sesion_id, duration])
+    if (!renewed.rowCount) return null
+    setSessionCookie(response, token, duration)
+  }
+  return session
 }
 
 async function requireSession(request, response, next) {
   try {
-    const session = await sessionFromRequest(request)
+    const session = await sessionFromRequest(request, response)
     if (!session) return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
     request.session = session
     return next()
@@ -227,7 +241,7 @@ async function requireSession(request, response, next) {
 
 async function requireStudent(request, response, next) {
   try {
-    const session = await sessionFromRequest(request)
+    const session = await sessionFromRequest(request, response)
     if (!session) {
       return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
     }
@@ -245,7 +259,7 @@ async function requireStudent(request, response, next) {
 
 async function requireTutor(request, response, next) {
   try {
-    const session = await sessionFromRequest(request)
+    const session = await sessionFromRequest(request, response)
     if (!session) return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
     if (session.rol_codigo !== 'TUTOR' || !session.docente_id) {
       return response.status(403).json({ message: 'Esta vista está disponible únicamente para tutores.' })
@@ -259,7 +273,7 @@ async function requireTutor(request, response, next) {
 
 async function requireReviewer(request, response, next) {
   try {
-    const session = await sessionFromRequest(request)
+    const session = await sessionFromRequest(request, response)
     if (!session) return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
     if (session.rol_codigo !== 'REVISOR' || !session.docente_id) {
       return response.status(403).json({ message: 'Esta vista está disponible únicamente para revisores.' })
@@ -273,7 +287,7 @@ async function requireReviewer(request, response, next) {
 
 async function requireAdministrator(request, response, next) {
   try {
-    const session = await sessionFromRequest(request)
+    const session = await sessionFromRequest(request, response)
     if (!session) return response.status(401).json({ message: 'Tu sesión no está activa. Inicia sesión nuevamente.' })
     if (session.rol_codigo !== 'ADMINISTRADOR') {
       return response.status(403).json({ message: 'Esta vista está disponible únicamente para Administración.' })
@@ -315,7 +329,10 @@ function accountKind(email) {
 }
 
 export function initializeServerless() {
-  initialization.promise ??= ensureRegistrationSchema()
+  initialization.promise ??= ensureRegistrationSchema().catch((error) => {
+    initialization.promise = null
+    throw error
+  })
   return initialization.promise
 }
 
@@ -432,6 +449,7 @@ async function ensureRegistrationSchema() {
       ON titulacion.entregas_notificaciones_push (disponible_desde, creado_en)
       WHERE estado = 'PENDIENTE';
   `)
+  await pool.query(await readFile(new URL('../database/20261023_pwa_sessions.sql', import.meta.url), 'utf8'))
 }
 
 async function issueEmailConfirmation(databaseClient, userId) {
@@ -679,16 +697,6 @@ async function createNotification(databaseClient, { userId, recipientEmail, proj
       [notification.rows[0].id, recipientEmail, type, title, message],
     )
   }
-  if (pushEnabled) {
-    await databaseClient.query(
-      `INSERT INTO titulacion.entregas_notificaciones_push (notificacion_id, suscripcion_id)
-       SELECT $1, subscription.id
-       FROM titulacion.suscripciones_push subscription
-       WHERE subscription.usuario_id = $2 AND subscription.activa
-       ON CONFLICT (notificacion_id, suscripcion_id) DO NOTHING`,
-      [notification.rows[0].id, userId],
-    )
-  }
   return notification.rows[0].id
 }
 
@@ -699,95 +707,19 @@ function pushSubscriptionInput(value) {
   if (!endpoint || !p256dh || !auth || endpoint.length > 3000 || p256dh.length > 500 || auth.length > 500) return null
   try {
     const url = new URL(endpoint)
-    if (url.protocol !== 'https:') return null
+    const allowed = ['fcm.googleapis.com', 'updates.push.services.mozilla.com', 'push.services.mozilla.com', 'notify.windows.com', 'push.apple.com']
+    if (url.protocol !== 'https:' || url.username || url.password || (url.port && url.port !== '443') || !allowed.some((host) => url.hostname === host || url.hostname.endsWith('.' + host))) return null
+    if (Buffer.from(p256dh, 'base64url').length !== 65 || Buffer.from(auth, 'base64url').length !== 16) return null
   } catch {
     return null
   }
   return { endpoint, p256dh, auth }
 }
 
-function pushErrorMessage(error) {
-  return text(error instanceof Error ? error.message : String(error)).slice(0, 1000) || 'No fue posible entregar la notificación push.'
-}
-
 export async function processPendingPushDeliveries({ limit = 40 } = {}) {
   if (!pushEnabled) return 0
   await initializeServerless()
-  const batchSize = Math.min(Math.max(Number(limit) || 40, 1), 100)
-  const claimed = await pool.query(
-    `WITH candidates AS (
-       SELECT delivery.id
-       FROM titulacion.entregas_notificaciones_push delivery
-       JOIN titulacion.suscripciones_push subscription ON subscription.id = delivery.suscripcion_id AND subscription.activa
-       WHERE delivery.estado = 'PENDIENTE' AND delivery.disponible_desde <= now()
-       ORDER BY delivery.creado_en
-       LIMIT $1
-       FOR UPDATE OF delivery SKIP LOCKED
-     ), claimed AS (
-       UPDATE titulacion.entregas_notificaciones_push delivery
-       SET estado = 'PROCESANDO', intentos = delivery.intentos + 1, actualizada_en = now()
-       FROM candidates
-       WHERE delivery.id = candidates.id
-       RETURNING delivery.id, delivery.notificacion_id, delivery.suscripcion_id, delivery.intentos
-     )
-     SELECT claimed.id AS delivery_id, claimed.intentos, notification.id AS notification_id,
-            subscription.id AS subscription_id, subscription.endpoint, subscription.clave_p256dh, subscription.clave_auth
-     FROM claimed
-     JOIN titulacion.notificaciones notification ON notification.id = claimed.notificacion_id
-     JOIN titulacion.suscripciones_push subscription ON subscription.id = claimed.suscripcion_id`,
-    [batchSize],
-  )
-
-  let delivered = 0
-  for (const delivery of claimed.rows) {
-    try {
-      await webpush.sendNotification({
-        endpoint: delivery.endpoint,
-        keys: { p256dh: delivery.clave_p256dh, auth: delivery.clave_auth },
-      }, JSON.stringify({ notificationId: delivery.notification_id }), { TTL: 60, urgency: 'normal' })
-      await pool.query(
-        `UPDATE titulacion.entregas_notificaciones_push
-         SET estado = 'ENVIADO', enviado_en = now(), actualizada_en = now(), ultimo_error = NULL
-         WHERE id = $1`,
-        [delivery.delivery_id],
-      )
-      await pool.query(
-        `UPDATE titulacion.suscripciones_push
-         SET ultimo_envio_exitoso_en = now(), ultimo_error = NULL, actualizada_en = now()
-         WHERE id = $1`,
-        [delivery.subscription_id],
-      )
-      delivered += 1
-    } catch (error) {
-      const errorMessage = pushErrorMessage(error)
-      const invalidSubscription = error?.statusCode === 404 || error?.statusCode === 410
-      if (invalidSubscription) {
-        await pool.query(
-          `UPDATE titulacion.suscripciones_push
-           SET activa = false, ultimo_error = $2, actualizada_en = now()
-           WHERE id = $1`,
-          [delivery.subscription_id, errorMessage],
-        )
-        await pool.query(
-          `UPDATE titulacion.entregas_notificaciones_push
-           SET estado = 'CANCELADO', ultimo_error = $2, actualizada_en = now()
-           WHERE suscripcion_id = $1 AND estado IN ('PENDIENTE', 'PROCESANDO')`,
-          [delivery.subscription_id, errorMessage],
-        )
-      } else {
-        await pool.query(
-          `UPDATE titulacion.entregas_notificaciones_push
-           SET estado = CASE WHEN intentos >= 5 THEN 'ERROR' ELSE 'PENDIENTE' END,
-               disponible_desde = now() + interval '1 minute' * LEAST(intentos, 30),
-               ultimo_error = $2,
-               actualizada_en = now()
-           WHERE id = $1`,
-          [delivery.delivery_id, errorMessage],
-        )
-      }
-    }
-  }
-  return delivered
+  return deliverPendingPush({ pool, limit, send: webpush.sendNotification.bind(webpush) })
 }
 
 export async function runPendingReviewReminders({ databaseClient = null } = {}) {
@@ -1410,7 +1342,8 @@ app.get('/api/cron/review-reminders', async (request, response, next) => {
   }
   try {
     const sent = await runPendingReviewReminders()
-    return response.json({ sent })
+    const pushAccepted = await processPendingPushDeliveries({ limit: 100 })
+    return response.json({ sent, pushAccepted })
   } catch (error) {
     return next(error)
   }
@@ -1781,7 +1714,7 @@ app.post('/api/auth/login', async (request, response, next) => {
   try {
     const identifier = text(request.body?.identifier).toLowerCase()
     const password = request.body?.password
-    const remember = Boolean(request.body?.remember)
+    const remember = request.body?.remember !== false
 
     if (!identifier || typeof password !== 'string' || !password) {
       return response.status(422).json({ message: 'Ingresa tu correo institucional y tu contraseña.' })
@@ -1894,7 +1827,7 @@ app.post('/api/auth/active-role', requireSession, async (request, response, next
        WHERE id = $2 AND usuario_id = $3 AND cerrada_en IS NULL`,
       [availableRole.rows[0].id, request.session.sesion_id, request.session.usuario_id],
     )
-    const updatedSession = await sessionFromRequest(request)
+    const updatedSession = await sessionFromRequest(request, response)
     return response.json({ user: sanitizeUser(updatedSession) })
   } catch (error) {
     return next(error)
@@ -1902,33 +1835,41 @@ app.post('/api/auth/active-role', requireSession, async (request, response, next
 })
 
 app.post('/api/auth/logout', async (request, response, next) => {
+  const client = await pool.connect()
   try {
+    await client.query('BEGIN')
     const token = cookieValue(request, 'stit_session')
-    if (token) {
-      await pool.query(
-        `UPDATE titulacion.sesiones_usuario
-         SET cerrada_en = now()
-         WHERE token_hash = $1 AND cerrada_en IS NULL`,
-        [hashToken(token)],
-      )
+    const session = token ? (await client.query(`SELECT id, usuario_id, push_endpoint FROM titulacion.sesiones_usuario WHERE token_hash = $1`, [hashToken(token)])).rows[0] : null
+    if (session) {
+      const endpoint = session.push_endpoint || text(request.body?.endpoint)
+      const devices = await client.query(`SELECT id FROM titulacion.suscripciones_push WHERE usuario_id = $1 AND endpoint = $2 FOR UPDATE`, [session.usuario_id, endpoint])
+      const ids = devices.rows.map((row) => row.id)
+      await client.query(`UPDATE titulacion.suscripciones_push SET activa = false, actualizada_en = now() WHERE id = ANY($1::uuid[])`, [ids])
+      await client.query(`UPDATE titulacion.entregas_notificaciones_push SET estado = 'CANCELADO', actualizada_en = now(), ultimo_error = 'Sesión cerrada en el dispositivo.' WHERE suscripcion_id = ANY($1::uuid[]) AND estado IN ('PENDIENTE', 'PROCESANDO')`, [ids])
+      await client.query(`UPDATE titulacion.sesiones_usuario SET cerrada_en = COALESCE(cerrada_en, now()) WHERE id = $1`, [session.id])
     }
-    response.clearCookie('stit_session', { httpOnly: true, sameSite: 'lax', path: '/' })
+    await client.query('COMMIT')
+    response.clearCookie('stit_session', { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production' || Boolean(process.env.VERCEL), path: '/' })
     response.status(204).end()
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => undefined)
     next(error)
-  }
+  } finally { client.release() }
 })
 
 app.get('/api/notifications', requireSession, async (request, response, next) => {
   try {
+    const before = text(request.query.before) || null
+    if (before && !isUuid(before)) return response.status(400).json({ message: 'La página de notificaciones no es válida.' })
     const [notifications, unread] = await Promise.all([
       pool.query(
         `SELECT id, proyecto_id, tipo, titulo, mensaje, enlace, leida_en, creada_en
          FROM titulacion.notificaciones
          WHERE usuario_id = $1
-         ORDER BY creada_en DESC
-         LIMIT 20`,
-        [request.session.usuario_id],
+           AND ($2::uuid IS NULL OR (creada_en, id) < (SELECT creada_en, id FROM titulacion.notificaciones WHERE id = $2 AND usuario_id = $1))
+         ORDER BY creada_en DESC, id DESC
+         LIMIT 21`,
+        [request.session.usuario_id, before],
       ),
       pool.query(
         `SELECT count(*)::int AS total
@@ -1937,7 +1878,7 @@ app.get('/api/notifications', requireSession, async (request, response, next) =>
         [request.session.usuario_id],
       ),
     ])
-    return response.json({ notifications: notifications.rows.map(notificationPayload), unreadCount: unread.rows[0].total })
+    return response.json({ notifications: notifications.rows.slice(0, 20).map(notificationPayload), unreadCount: unread.rows[0].total, nextCursor: notifications.rows.length > 20 ? notifications.rows[19].id : null })
   } catch (error) {
     return next(error)
   }
@@ -2004,6 +1945,7 @@ app.post('/api/push/subscriptions', requireSession, async (request, response, ne
     if (!subscription) return response.status(422).json({ message: 'La suscripción del dispositivo no es válida.' })
     databaseClient = await pool.connect()
     await databaseClient.query('BEGIN')
+    await databaseClient.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [subscription.endpoint])
     const existing = await databaseClient.query(
       `SELECT id, usuario_id
        FROM titulacion.suscripciones_push
@@ -2034,6 +1976,7 @@ app.post('/api/push/subscriptions', requireSession, async (request, response, ne
        RETURNING id`,
       [request.session.usuario_id, subscription.endpoint, subscription.p256dh, subscription.auth, text(request.get('user-agent')).slice(0, 1000) || null],
     )
+    await databaseClient.query(`UPDATE titulacion.sesiones_usuario SET push_endpoint = $1 WHERE id = $2 AND cerrada_en IS NULL`, [subscription.endpoint, request.session.sesion_id])
     await databaseClient.query('COMMIT')
     return response.status(201).json({ id: saved.rows[0].id, message: 'Las notificaciones push están activadas en este dispositivo.' })
   } catch (error) {
@@ -2084,6 +2027,31 @@ app.delete('/api/push/subscriptions', requireSession, async (request, response, 
   } finally {
     databaseClient?.release()
   }
+})
+
+// Only sends to the authenticated user's registered devices; never accepts a recipient.
+app.post('/api/push/test', requireSession, async (request, response, next) => {
+  const client = await pool.connect()
+  try {
+    if (!pushEnabled) return response.status(503).json({ message: 'Web Push no está configurado en el servidor.' })
+    await client.query('BEGIN')
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, ['push-test:' + request.session.usuario_id])
+    const recent = await client.query(`SELECT id FROM titulacion.notificaciones WHERE usuario_id = $1 AND tipo = 'PRUEBA_PUSH' AND creada_en > now() - interval '1 minute' LIMIT 1`, [request.session.usuario_id])
+    if (recent.rowCount) { await client.query('ROLLBACK'); return response.status(429).json({ message: 'Espera un minuto antes de enviar otra prueba.' }) }
+    const devices = await client.query(`SELECT id FROM titulacion.suscripciones_push WHERE usuario_id = $1 AND activa LIMIT 1`, [request.session.usuario_id])
+    if (!devices.rowCount) { await client.query('ROLLBACK'); return response.status(422).json({ message: 'Primero activa los avisos en este dispositivo.' }) }
+    const links = { ESTUDIANTE: '/student', TUTOR: '/tutor', REVISOR: '/revisor', ADMINISTRADOR: '/admin' }
+    const id = await createNotification(client, { userId: request.session.usuario_id, type: 'PRUEBA_PUSH', title: 'Prueba de notificaciones', message: 'Este aviso permite comprobar la recepción en tu dispositivo.', link: links[request.session.rol_codigo] })
+    await client.query('COMMIT')
+    return response.status(201).json({ id, message: 'Prueba registrada y encolada. Comprueba si aparece en las notificaciones del teléfono; el registro no confirma su recepción.' })
+  } catch (error) { await client.query('ROLLBACK').catch(() => undefined); return next(error) }
+  finally { client.release() }
+})
+
+app.get('/api/cron/push-deliveries', async (request, response, next) => {
+  if (!process.env.CRON_SECRET || request.get('authorization') !== `Bearer ${process.env.CRON_SECRET}`) return response.sendStatus(401)
+  try { return response.json({ accepted: await processPendingPushDeliveries({ limit: 100 }) }) }
+  catch (error) { return next(error) }
 })
 
 app.get('/api/admin/users', requireAdministrator, async (request, response, next) => {
@@ -2465,6 +2433,7 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
     }
     if (!active) {
       await databaseClient.query(`UPDATE titulacion.sesiones_usuario SET cerrada_en = COALESCE(cerrada_en, now()) WHERE usuario_id = $1`, [userId])
+      await databaseClient.query(`UPDATE titulacion.suscripciones_push SET activa = false WHERE usuario_id = $1`, [userId])
     }
     if (active && wasPendingTeacher) {
       await createNotification(databaseClient, {
@@ -5420,7 +5389,7 @@ app.post('/api/documents/:documentId/versions', requireStudent, upload.single('d
         message: selected.tipo_documento === 'DOCUMENTO_PRIVADO'
           ? `El estudiante adjuntó la versión V${inserted.rows[0].numero_version} del documento para defensa privada ${project.codigo_seguimiento}.`
           : `El estudiante adjuntó la versión V${inserted.rows[0].numero_version} del perfil ${project.codigo_seguimiento}.`,
-        link: '/tutor/projects',
+        link: '/tutor/proyectos',
       })
     }
     const correctionReview = selected.tipo_documento === 'DOCUMENTO_PUBLICO'
@@ -5759,6 +5728,7 @@ if (!process.env.VERCEL && isMainModule) {
     })
     void runPendingReviewReminders().catch((error) => console.error('No fue posible enviar los recordatorios de revisión:', error))
     void processPendingPushDeliveries().catch((error) => console.error('No fue posible procesar entregas Web Push:', error))
+    setInterval(() => { void processPendingPushDeliveries().catch(() => console.error('Reintento Web Push pendiente.')) }, 60000).unref()
     setInterval(() => {
       void runPendingReviewReminders().catch((error) => console.error('No fue posible enviar los recordatorios de revisión:', error))
       void processPendingPushDeliveries().catch((error) => console.error('No fue posible procesar entregas Web Push:', error))

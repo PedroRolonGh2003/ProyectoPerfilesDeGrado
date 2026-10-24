@@ -1,5 +1,9 @@
 import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { api, ApiError } from './api'
+import { PwaControls, pushPreferenceKey } from './PwaControls'
+import { PortalSidebar } from './PortalSidebar'
+import { devicePushState } from './pwa'
+import { Modal } from './Modal'
 
 type IconName =
   | 'arrow'
@@ -255,12 +259,7 @@ type AdminProjectDetail = {
   cancellation: { reason: string; detail: string; cancelledAt: string } | null
 }
 type SessionResponse = { user: User }
-type NotificationsResponse = { notifications: AppNotification[]; unreadCount: number }
-type PushConfig = { configured: boolean; publicKey: string | null }
-type BeforeInstallPromptEvent = Event & {
-  prompt: () => Promise<void>
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>
-}
+type NotificationsResponse = { notifications: AppNotification[]; unreadCount: number; nextCursor: string | null }
 
 type Option = { id: string; codigo: string; nombre: string }
 type Tutor = { id: string; name: string }
@@ -361,179 +360,12 @@ type StudentOverview = {
   history: OverviewHistory[]
 }
 
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { credentials: 'same-origin', ...init })
-  const body = await response.json().catch(() => ({})) as { message?: string }
-  if (!response.ok) throw new Error(body.message ?? 'No fue posible completar la operación.')
-  return body as T
-}
-
-function vapidKeyBytes(value: string) {
-  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
-  const padded = normalized.padEnd(normalized.length + (4 - normalized.length % 4) % 4, '=')
-  const bytes = atob(padded)
-  return Uint8Array.from(bytes, (character) => character.charCodeAt(0))
-}
-
-function PwaControls({ userId }: { userId: string }) {
-  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
-  const [configured, setConfigured] = useState(false)
-  const [isSubscribed, setIsSubscribed] = useState(false)
-  const [localAlertsEnabled, setLocalAlertsEnabled] = useState(false)
-  const [isMobile, setIsMobile] = useState(false)
-  const [isMobilePromptOpen, setIsMobilePromptOpen] = useState(false)
-  const [isWorking, setIsWorking] = useState(false)
-  const [message, setMessage] = useState('')
-  const supported = typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window
-  const mobilePromptKey = `stit:mobile-push-prompt:${userId}`
-  const localAlertsKey = `stit:local-alerts:${userId}`
-
-  useEffect(() => {
-    const media = window.matchMedia('(max-width: 860px)')
-    const updateViewport = () => setIsMobile(media.matches)
-    updateViewport()
-    media.addEventListener('change', updateViewport)
-    return () => media.removeEventListener('change', updateViewport)
-  }, [])
-
-  useEffect(() => {
-    const captureInstallPrompt = (event: Event) => {
-      event.preventDefault()
-      setInstallPrompt(event as BeforeInstallPromptEvent)
-    }
-    window.addEventListener('beforeinstallprompt', captureInstallPrompt)
-    if (!supported) return () => window.removeEventListener('beforeinstallprompt', captureInstallPrompt)
-    void (async () => {
-      try {
-        const [config, registration] = await Promise.all([
-          api<PushConfig>('/api/push/config'),
-          navigator.serviceWorker.ready,
-        ])
-        setConfigured(config.configured)
-        setIsSubscribed(Boolean(await registration.pushManager.getSubscription()))
-        setLocalAlertsEnabled(window.localStorage.getItem(localAlertsKey) === 'enabled')
-      } catch {
-        setConfigured(false)
-        setLocalAlertsEnabled(window.localStorage.getItem(localAlertsKey) === 'enabled')
-      }
-    })()
-    return () => window.removeEventListener('beforeinstallprompt', captureInstallPrompt)
-  }, [localAlertsKey, supported])
-
-  useEffect(() => {
-    if (!isMobile || !supported || window.localStorage.getItem(mobilePromptKey)) return
-    const timer = window.setTimeout(() => setIsMobilePromptOpen(true), 250)
-    return () => window.clearTimeout(timer)
-  }, [isMobile, mobilePromptKey, supported])
-
-  function closeMobilePrompt() {
-    window.localStorage.setItem(mobilePromptKey, 'seen')
-    setIsMobilePromptOpen(false)
-  }
-
-  async function install() {
-    if (!installPrompt) return
-    setIsWorking(true)
-    try {
-      await installPrompt.prompt()
-      await installPrompt.userChoice
-      setInstallPrompt(null)
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
-  async function togglePush() {
-    if (!supported) return
-    setIsWorking(true)
-    setMessage('')
-    try {
-      const registration = await navigator.serviceWorker.ready
-      const currentSubscription = await registration.pushManager.getSubscription()
-      if (isSubscribed || localAlertsEnabled) {
-        if (currentSubscription && isSubscribed) {
-          await api('/api/push/subscriptions', {
-            method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: currentSubscription.endpoint }),
-          })
-          await currentSubscription.unsubscribe()
-        }
-        setIsSubscribed(false)
-        setLocalAlertsEnabled(false)
-        window.localStorage.removeItem(localAlertsKey)
-        setMessage('Avisos desactivados en este dispositivo.')
-        return
-      }
-
-      const config = await api<PushConfig>('/api/push/config')
-      setConfigured(config.configured)
-      if (!config.configured || !config.publicKey) {
-        if (Notification.permission === 'denied') {
-          setMessage('Las notificaciones están bloqueadas en el navegador. Actívalas desde los permisos del sitio.')
-          return
-        }
-        const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
-        if (permission !== 'granted') {
-          setMessage('Necesitamos tu autorización para mostrar avisos en este dispositivo.')
-          return
-        }
-        setLocalAlertsEnabled(true)
-        window.localStorage.setItem(localAlertsKey, 'enabled')
-        setMessage('Los avisos estarán activos mientras mantengas abierta la aplicación.')
-        return
-      }
-      if (Notification.permission === 'denied') {
-        setMessage('Las notificaciones están bloqueadas en el navegador. Actívalas desde los permisos del sitio.')
-        return
-      }
-      const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
-      if (permission !== 'granted') {
-        setMessage('Necesitamos tu autorización para enviar avisos a este dispositivo.')
-        return
-      }
-      const subscription = currentSubscription ?? await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: vapidKeyBytes(config.publicKey) as BufferSource,
-      })
-      await api('/api/push/subscriptions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: subscription.toJSON() }),
-      })
-      setConfigured(true)
-      setIsSubscribed(true)
-      setMessage('Avisos activados en este dispositivo.')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'No fue posible actualizar los avisos.')
-    } finally {
-      setIsWorking(false)
-    }
-  }
-
-  const alertsActive = isSubscribed || localAlertsEnabled
-
-  return <div className="pwa-controls">
-    {installPrompt && <button className="pwa-control-button" disabled={isWorking} onClick={() => void install()} type="button">Instalar app</button>}
-    {supported && <button aria-pressed={alertsActive} className={alertsActive ? 'pwa-control-button is-active' : 'pwa-control-button'} disabled={isWorking} onClick={() => void togglePush()} type="button">{alertsActive ? 'Avisos activos' : 'Activar avisos'}</button>}
-    {message && <span className="pwa-control-message" role="status">{message}</span>}
-    {isMobilePromptOpen && createPortal(<div aria-labelledby="mobile-push-title" aria-modal="true" className="mobile-push-backdrop" role="dialog">
-      <section className="mobile-push-dialog">
-        <div className="mobile-push-icon"><Icon name="bell" /></div>
-        <p className="eyebrow">AVISOS DEL PROCESO</p>
-        <h2 id="mobile-push-title">Mantente al tanto de tu proyecto</h2>
-        <p>{configured ? 'Activa los avisos para recibir las novedades de tu proceso aunque no estés usando la aplicación.' : 'Activa los avisos para recibir las novedades mientras mantengas abierta la aplicación.'}</p>
-        {message && <p className="mobile-push-message" role="status">{message}</p>}
-        <div className="mobile-push-actions">
-          <button className="secondary-button" disabled={isWorking} onClick={closeMobilePrompt} type="button">Ahora no</button>
-          <button className="primary-button" disabled={isWorking} onClick={() => alertsActive ? closeMobilePrompt() : void togglePush()} type="button">{isWorking ? 'Activando…' : alertsActive ? 'Listo' : 'Activar avisos'}</button>
-        </div>
-      </section>
-    </div>, document.body)}
-  </div>
-}
-
 function PushToast({ notification, onClose, onOpen }: { notification: AppNotification; onClose: () => void; onOpen: () => void }) {
   return <aside aria-live="polite" className="push-toast"><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p></div><div><button className="text-button" onClick={onOpen} type="button">Ver</button><button aria-label="Cerrar aviso" className="push-toast-close" onClick={onClose} type="button">×</button></div></aside>
 }
 
 function notificationDestination(link: string | null): NotificationDestination | null {
+  if (link === '/tutor/projects') return '/tutor/proyectos'
   const destinations: NotificationDestination[] = ['/student', '/student/proponer-tutor', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/tutor/defensas-privada', '/tutor/defensas-publica', '/revisor', '/revisor/pendientes', '/revisor/completados', '/revisor/defensas-privada', '/revisor/defensas-publica', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
   return destinations.includes(link as NotificationDestination) ? link as NotificationDestination : null
 }
@@ -605,10 +437,34 @@ function RoleSwitcher({ user, isSwitching, onRoleChange }: { user: User; isSwitc
   </div>
 }
 
-function SessionActions({ user, notifications, isSwitching, onRoleChange, onNotificationClick }: { user: User; notifications: AppNotification[]; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void> }) {
+function NotificationHistory({ onClose, onOpen }: { onClose: () => void; onOpen: (notification: AppNotification) => Promise<void> }) {
+  const [items, setItems] = useState<AppNotification[]>([])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [busy, setBusy] = useState(true)
+  const [error, setError] = useState('')
+  async function load(before?: string) {
+    setBusy(true); setError('')
+    try {
+      const result = await api<NotificationsResponse>(`/api/notifications${before ? `?before=${encodeURIComponent(before)}` : ''}`)
+      setItems((current) => before ? [...current, ...result.notifications.filter((item) => !current.some((old) => old.id === item.id))] : result.notifications)
+      setCursor(result.nextCursor)
+    } catch { setError('No se pudo recuperar el historial. Intenta nuevamente cuando tengas conexión.') }
+    finally { setBusy(false) }
+  }
+  useEffect(() => { void load() }, [])
+  return <Modal className="notification-history-dialog" label="Historial de notificaciones" onClose={onClose}>
+    <div className="mobile-menu-heading"><strong>Historial de notificaciones</strong><button aria-label="Cerrar historial" onClick={onClose} type="button">×</button></div>
+    <div className="notification-history-list">{items.map((item) => <button className={item.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={item.id} onClick={() => { onClose(); void onOpen(item) }} type="button"><span className={`notification-role-badge role-${item.role.toLowerCase()}`}>{roleLabel(item.role)}</span><strong>{item.title}</strong><small>{item.message}</small><small>{formatDate(item.createdAt)} · {item.readAt ? 'Leída' : 'Sin leer'}</small></button>)}</div>
+    {!busy && !items.length && !error && <p>No tienes notificaciones.</p>}
+    {error && <p role="alert">{error}</p>}
+    {(busy || cursor || error) && <button className="secondary-button" disabled={busy} onClick={() => void load(cursor ?? undefined)} type="button">{busy ? 'Cargando…' : error ? 'Reintentar' : 'Cargar anteriores'}</button>}
+  </Modal>
+}
+
+function SessionActions({ user, notifications, unreadCount, isSwitching, onRoleChange, onNotificationClick }: { user: User; notifications: AppNotification[]; unreadCount: number; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void> }) {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'U'
-  const unreadCount = notifications.filter((notification) => !notification.readAt).length
 
   return <div className="session-info">
     <div className={isNotificationOpen ? 'notification-menu is-open' : 'notification-menu'}>
@@ -616,9 +472,11 @@ function SessionActions({ user, notifications, isSwitching, onRoleChange, onNoti
       <div aria-label="Notificaciones" className="notification-popover">
         <div><strong>Notificaciones</strong><span>{unreadCount > 0 ? `${unreadCount} sin leer` : 'Todo al día'}</span></div>
         {notifications.length === 0 ? <p className="notification-empty">No tienes notificaciones.</p> : notifications.slice(0, 6).map((notification) => <button className={notification.readAt ? 'notification-popover-item' : 'notification-popover-item is-unread'} key={notification.id} onClick={() => { setIsNotificationOpen(false); void onNotificationClick(notification) }} type="button"><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><small>{notification.message}</small></button>)}
+        <button className="text-button" onClick={() => { setIsNotificationOpen(false); setHistoryOpen(true) }} type="button">Ver historial completo</button>
       </div>
     </div>
-    <PwaControls userId={user.id} />
+    {historyOpen && <NotificationHistory onClose={() => setHistoryOpen(false)} onOpen={onNotificationClick} />}
+    <PwaControls key={user.id} userId={user.id} />
     <RoleSwitcher isSwitching={isSwitching} onRoleChange={onRoleChange} user={user} />
     <span className="student-avatar">{initials}</span><span><strong>{user.fullName}</strong><small>{user.career}</small></span>
   </div>
@@ -643,7 +501,7 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
   const [showPassword, setShowPassword] = useState(false)
   const [showRegisterPassword, setShowRegisterPassword] = useState(false)
   const [showResetPassword, setShowResetPassword] = useState(false)
-  const [remember, setRemember] = useState(false)
+  const [remember, setRemember] = useState(true)
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const isStudentRegistration = /^[^\s@]+@est\.univalle\.edu$/i.test(registerEmail.trim())
@@ -1132,7 +990,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
 
   return (
     <main className="student-page">
-      <aside className="student-sidebar">
+      <PortalSidebar className="">
         <div>
           <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
           <p className="student-role">PORTAL DEL ESTUDIANTE</p>
@@ -1144,7 +1002,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
           </nav>
         </div>
         <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
-      </aside>
+      </PortalSidebar>
 
       <section className="student-content">
         <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
@@ -1312,7 +1170,7 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
 
   return (
     <main className="student-page">
-      <aside className="student-sidebar">
+      <PortalSidebar className="">
         <div>
           <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
           <p className="student-role">PORTAL DEL ESTUDIANTE</p>
@@ -1324,7 +1182,7 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
           </nav>
         </div>
         <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
-      </aside>
+      </PortalSidebar>
 
       <section className="student-content">
         <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
@@ -1440,7 +1298,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
 
   return (
     <main className="student-page">
-      <aside className="student-sidebar">
+      <PortalSidebar className="">
         <div>
           <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
           <p className="student-role">PORTAL DEL ESTUDIANTE</p>
@@ -1452,7 +1310,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
           </nav>
         </div>
         <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
-      </aside>
+      </PortalSidebar>
 
       <section className="student-content">
         <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
@@ -1603,7 +1461,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
   const copy = view === 'home' ? 'Revisa las solicitudes y el estado de los proyectos que acompañas.' : view === 'invitations' ? 'Responde cada solicitud para confirmar o declinar la tutoría.' : view === 'projects' ? 'Consulta los proyectos cuya tutoría aceptaste.' : view === 'reviewed' ? 'Consulta los dictámenes emitidos, el estado de cada proyecto y las revisiones pendientes.' : view === 'defenses' ? 'Revisa y emite el dictamen para documentos de defensa privada o pública.' : 'Mantente al tanto de las solicitudes y actualizaciones de tus proyectos.'
 
   return <main className="student-page tutor-page">
-    <aside className="student-sidebar tutor-sidebar">
+    <PortalSidebar className="tutor-sidebar">
       <div>
         <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
         <p className="student-role">PORTAL DEL TUTOR</p>
@@ -1617,7 +1475,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
         </nav>
       </div>
       <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
-    </aside>
+    </PortalSidebar>
 
     <section className="student-content">
       <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
@@ -1807,7 +1665,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           : 'Mantente al tanto de las asignaciones y cambios de tus revisiones.'
 
   return <main className="student-page reviewer-page">
-    <aside className="student-sidebar reviewer-sidebar">
+    <PortalSidebar className="reviewer-sidebar">
       <div>
         <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
         <p className="student-role">PORTAL DEL REVISOR</p>
@@ -1820,7 +1678,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
         </nav>
       </div>
       <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
-    </aside>
+    </PortalSidebar>
 
     <section className="student-content">
       <header className="student-header tutor-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
@@ -1974,7 +1832,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const isClosed = isCancelled || isFinalized
 
   return <main className="student-page admin-page">
-    <aside className="student-sidebar admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></aside>
+    <PortalSidebar className="admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></PortalSidebar>
     <section className="student-content"><header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header><div className="student-main admin-main admin-workspace">
       <button className="text-button admin-back" onClick={onBack} type="button">← Volver a proyectos</button>
       {isLoading && <section className="documents-loading">Cargando información operativa del proyecto…</section>}
@@ -2411,7 +2269,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
   }
 
   return <main className="student-page admin-page">
-    <aside className="student-sidebar admin-sidebar">
+    <PortalSidebar className="admin-sidebar">
       <div>
         <div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div>
         <p className="student-role">ADMINISTRACIÓN</p>
@@ -2426,7 +2284,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
         </nav>
       </div>
       <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
-    </aside>
+    </PortalSidebar>
 
     <section className="student-content">
       <header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header>
@@ -2479,7 +2337,11 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
 function App() {
   const [data, setData] = useState<Bootstrap | TutorDashboard | ReviewerDashboard | AdminDashboard | null>(null)
   const [notifications, setNotifications] = useState<AppNotification[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
   const [isLoading, setIsLoading] = useState(true)
+  const [connectionError, setConnectionError] = useState('')
+  const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const portalVersion = useRef(0)
   const [isSwitchingRole, setIsSwitchingRole] = useState(false)
   const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
@@ -2496,88 +2358,121 @@ function App() {
     const newNotifications = notificationFeedReady.current
       ? nextNotifications.filter((notification) => !knownNotificationIds.current.has(notification.id))
       : []
-    knownNotificationIds.current = new Set(nextNotifications.map((notification) => notification.id))
+    nextNotifications.forEach((notification) => knownNotificationIds.current.add(notification.id))
     notificationFeedReady.current = true
     setNotifications(nextNotifications)
 
     if (newNotifications.length > 0) {
       const newest = newNotifications[0]
       setPushNotice(newest)
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.visibilityState === 'visible' && 'serviceWorker' in navigator) {
-        void navigator.serviceWorker.ready.then((registration) => registration.showNotification('Seguimiento de Titulación', {
-          body: 'Tienes una nueva actualización. Ingresa para revisarla.',
-          icon: '/univalle-logo.png',
-          badge: '/univalle-logo.png',
-          data: { notificationId: newest.id },
-          tag: `stit-local-${newest.id}`,
-        })).catch(() => undefined)
-      }
+
     }
   }
 
   async function loadPortal() {
+    const version = ++portalVersion.current
     const session = await api<SessionResponse>('/api/auth/session')
     const notificationsRequest = api<NotificationsResponse>('/api/notifications')
     if (session.user.role === 'ADMINISTRADOR') {
       const [dashboard, notificationData] = await Promise.all([api<AdminDashboard>('/api/admin/dashboard'), notificationsRequest])
+      if (version !== portalVersion.current) return
+      setConnectionError('')
       setData(dashboard)
-      updateNotifications(notificationData.notifications)
+      updateNotifications(notificationData.notifications); setUnreadCount(notificationData.unreadCount)
       return
     }
     if (session.user.role === 'TUTOR') {
       const [dashboard, notificationData] = await Promise.all([api<TutorDashboard>('/api/tutor/dashboard'), notificationsRequest])
+      if (version !== portalVersion.current) return
+      setConnectionError('')
       setData(dashboard)
-      updateNotifications(notificationData.notifications)
+      updateNotifications(notificationData.notifications); setUnreadCount(notificationData.unreadCount)
       return
     }
     if (session.user.role === 'REVISOR') {
       const [dashboard, notificationData] = await Promise.all([api<ReviewerDashboard>('/api/reviewer/dashboard'), notificationsRequest])
+      if (version !== portalVersion.current) return
+      setConnectionError('')
       setData(dashboard)
-      updateNotifications(notificationData.notifications)
+      updateNotifications(notificationData.notifications); setUnreadCount(notificationData.unreadCount)
       return
     }
     const [bootstrap, notificationData] = await Promise.all([api<Bootstrap>('/api/student/bootstrap'), notificationsRequest])
+    if (version !== portalVersion.current) return
+    setConnectionError('')
     setData(bootstrap)
-    updateNotifications(notificationData.notifications)
+    updateNotifications(notificationData.notifications); setUnreadCount(notificationData.unreadCount)
+  }
+
+  function portalError(error: unknown) {
+    if (error instanceof ApiError && error.status === 401) {
+      portalVersion.current += 1
+      setData(null); setNotifications([]); setPushNotice(null); setConnectionError('')
+      knownNotificationIds.current.clear(); notificationFeedReady.current = false
+    } else setConnectionError('No pudimos conectar con el sistema. Tu sesión no se ha cerrado. Reintenta cuando tengas conexión.')
   }
 
   useEffect(() => {
-    void loadPortal().catch(() => setData(null)).finally(() => setIsLoading(false))
+    const restore = () => { void loadPortal().catch(portalError).finally(() => setIsLoading(false)) }
+    restore()
+    window.addEventListener('online', restore)
+    return () => window.removeEventListener('online', restore)
   }, [])
 
   useEffect(() => {
     if (!data) return
+    let cancelled = false
     const refreshNotifications = () => {
       if (document.visibilityState !== 'visible') return
-      void api<NotificationsResponse>('/api/notifications').then((result) => updateNotifications(result.notifications)).catch(() => undefined)
+      void api<NotificationsResponse>('/api/notifications').then((result) => { if (cancelled) return; setConnectionError(''); updateNotifications(result.notifications); setUnreadCount(result.unreadCount) }).catch(portalError)
     }
     const timer = window.setInterval(refreshNotifications, 30000)
-    return () => window.clearInterval(timer)
+    document.addEventListener('visibilitychange', refreshNotifications)
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', refreshNotifications) }
   }, [data?.user.id])
 
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
-    const onServiceWorkerMessage = (event: MessageEvent<{ type?: string; notificationId?: string }>) => {
+    const onServiceWorkerMessage = (event: MessageEvent<{ type?: string; notificationId?: string; userId?: string }>) => {
       const notificationId = event.data?.notificationId
-      if (!notificationId || (event.data?.type !== 'PUSH_NOTIFICATION' && event.data?.type !== 'PUSH_NOTIFICATION_CLICK')) return
+      if (!data || event.data.userId !== data.user.id || !notificationId || (event.data?.type !== 'PUSH_NOTIFICATION' && event.data?.type !== 'PUSH_NOTIFICATION_CLICK')) return
       setPendingPushNotification({ id: notificationId, open: event.data.type === 'PUSH_NOTIFICATION_CLICK' })
     }
     navigator.serviceWorker.addEventListener('message', onServiceWorkerMessage)
     return () => navigator.serviceWorker.removeEventListener('message', onServiceWorkerMessage)
-  }, [])
+  }, [data?.user.id])
 
   async function handleLogout() {
+    if (isLoggingOut) return
+    setIsLoggingOut(true)
+    setConnectionError('')
+    const userId = data?.user.id
     try {
-      await api('/api/auth/logout', { method: 'POST' })
-    } finally {
-      setData(null)
-      setNotifications([])
-      knownNotificationIds.current = new Set()
+      let subscription: PushSubscription | null = null
+      if ('serviceWorker' in navigator && 'PushManager' in window) {
+        // Block already queued messages before contacting the server.
+        const registration = await navigator.serviceWorker.getRegistration()
+        if (registration?.active) {
+          subscription = await registration.pushManager.getSubscription()
+          if (subscription) await devicePushState(null, false)
+          else await devicePushState(null, false).catch(() => undefined)
+        }
+      }
+      await api('/api/auth/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: subscription?.endpoint }) })
+      await subscription?.unsubscribe().catch(() => false)
+      if ('serviceWorker' in navigator) await devicePushState(null, false).catch(() => undefined)
+      if (userId) {
+        localStorage.removeItem(pushPreferenceKey(userId))
+        localStorage.removeItem(`stit:local-alerts:${userId}`)
+      }
+      portalVersion.current += 1
+      setData(null); setNotifications([]); knownNotificationIds.current.clear()
       notificationFeedReady.current = false
-      setNavigationTarget(null)
-      setPushNotice(null)
-      setView('home')
-    }
+      setNavigationTarget(null); setPushNotice(null); setPendingPushNotification(null); setView('home')
+      const url = new URL(window.location.href); url.searchParams.delete('notification'); window.history.replaceState({}, '', url)
+    } catch {
+      setConnectionError('No se pudo confirmar el cierre de sesión. Comprueba tu conexión y vuelve a pulsar Cerrar sesión.')
+    } finally { setIsLoggingOut(false) }
   }
 
   async function handleRoleChange(role: RoleCode) {
@@ -2596,51 +2491,40 @@ function App() {
   }
 
   async function handleNotificationClick(notification: AppNotification) {
-    if (!notification.readAt) {
-      await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
-      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, readAt: new Date().toISOString() } : item))
-    }
-    const destination = notificationDestination(notification.link)
-    if (destination === '/student') setView('home')
-    if (destination === '/student/proponer-tutor') {
-      setView('home')
-      setNavigationTarget(destination)
-    }
-    if (destination === '/documentos') setView('documents')
-    if (destination && !['/student', '/student/proponer-tutor', '/documentos'].includes(destination)) setNavigationTarget(destination)
-    if (data && notification.role !== data.user.role) {
-      await handleRoleChange(notification.role)
-      return
-    }
-    await loadPortal()
+    try {
+      if (data && notification.role !== data.user.role) await handleRoleChange(notification.role)
+      if (!notification.readAt) await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
+      const destination = notificationDestination(notification.link)
+      if (destination === '/student' || destination === '/student/proponer-tutor') setView('home')
+      if (destination === '/documentos') setView('documents')
+      if (destination && !['/student', '/documentos'].includes(destination)) setNavigationTarget(destination)
+      await loadPortal()
+      const url = new URL(window.location.href); url.searchParams.delete('notification'); window.history.replaceState({}, '', url)
+    } catch (error) { portalError(error) }
   }
 
   useEffect(() => {
     if (!data || !pendingPushNotification) return
     const pending = pendingPushNotification
     setPendingPushNotification(null)
-    if (pending.open) {
-      const url = new URL(window.location.href)
-      url.searchParams.delete('notification')
-      window.history.replaceState({}, '', url)
-    }
     void api<AppNotification>(`/api/notifications/${pending.id}`).then((notification) => {
       setNotifications((current) => current.some((item) => item.id === notification.id) ? current : [notification, ...current].slice(0, 20))
       if (pending.open) {
         void handleNotificationClick(notification)
       } else {
-        setPushNotice(notification)
-        void loadPortal()
+        knownNotificationIds.current.add(notification.id)
+        void loadPortal().catch(portalError)
       }
-    }).catch(() => undefined)
+    }).catch(portalError)
   }, [data, pendingPushNotification])
 
   function sessionActions(user: User) {
-    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
+    return <SessionActions isSwitching={isSwitchingRole} notifications={notifications} unreadCount={unreadCount} onNotificationClick={handleNotificationClick} onRoleChange={handleRoleChange} user={user} />
   }
 
   let content: ReactNode
   if (isLoading) content = <main className="app-loading">Conectando con el sistema académico…</main>
+  else if (!data && connectionError) content = <main className="app-loading"><div role="status"><p>{connectionError}</p><button className="primary-button" onClick={() => void loadPortal().catch(portalError)} type="button">Reintentar conexión</button></div></main>
   else if (!data || isPasswordResetFlow) content = <LoginView onAuthenticated={loadPortal} onPasswordReset={() => { setData(null); setNotifications([]); setIsPasswordResetFlow(false) }} />
   else if ('pendingReviews' in data) content = <ReviewerPortal data={data} navigationTarget={navigationTarget} notifications={notifications} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
   else if ('summary' in data) content = <AdminPortal data={data} navigationTarget={navigationTarget} onNavigationHandled={() => setNavigationTarget(null)} onLogout={handleLogout} onRefresh={loadPortal} sessionActions={sessionActions(data.user)} />
@@ -2651,7 +2535,7 @@ function App() {
       ? <DocumentsView data={data} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
       : <StudentForm data={data} onDocuments={() => setView('documents')} onHome={() => setView('home')} onLogout={handleLogout} onRegistered={loadPortal} sessionActions={sessionActions(data.user)} />
 
-  return <>{content}{pushNotice && data && !isPasswordResetFlow && <PushToast notification={pushNotice} onClose={() => setPushNotice(null)} onOpen={() => { const notification = pushNotice; setPushNotice(null); void handleNotificationClick(notification) }} />}</>
+  return <>{content}{data && connectionError && <div className="connection-status" role="alert">{connectionError}<button onClick={() => void loadPortal().catch(portalError)} type="button">Reintentar</button></div>}{isLoggingOut && <div className="connection-status" role="status">Cerrando sesión…</div>}{pushNotice && data && !isPasswordResetFlow && <PushToast notification={pushNotice} onClose={() => setPushNotice(null)} onOpen={() => { const notification = pushNotice; setPushNotice(null); void handleNotificationClick(notification) }} />}</>
 }
 
 export default App
