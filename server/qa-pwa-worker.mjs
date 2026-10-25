@@ -20,10 +20,12 @@ async function emit(type, event) {
   handlers.get(type)({ ...event, waitUntil: (promise) => { work = promise } })
   await work
 }
-const payload = { notificationId: 'n-1', userId: 'student-a' }
+const payload = { notificationId: 'n-1', userId: 'student-a', title: 'Perfil pendiente de revisión', body: 'El proyecto DEMO-2026-003 está listo para evaluar.' }
 windows = [{ visibilityState: 'visible', postMessage: (message) => messages.push(message) }]
 await emit('push', { data: { json: () => payload } })
 assert.equal(shown.length, 1, 'También debe mostrar una notificación del sistema con la app visible (iOS userVisibleOnly)')
+assert.equal(shown[0].title, payload.title)
+assert.equal(shown[0].body, payload.body)
 assert.equal(messages.length, 1)
 assert.equal(shown[0].tag, 'stit-n-1')
 account.enabled = false

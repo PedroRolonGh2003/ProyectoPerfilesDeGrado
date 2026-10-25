@@ -1,4 +1,4 @@
-const STATIC_CACHE = 'stit-public-v3'
+const STATIC_CACHE = 'stit-public-v4'
 const PUBLIC_ASSETS = ['/univalle-logo.png', '/manifest.webmanifest', '/index.html']
 
 function deviceState(value) {
@@ -58,8 +58,10 @@ self.addEventListener('push', (event) => {
     const state = await deviceState()
     if (!state?.enabled || state.userId !== payload.userId) return
     // userVisibleOnly requires a system notification, also in iOS foreground.
-    await self.registration.showNotification('Seguimiento de Titulación', {
-      body: 'Tienes una nueva actualización. Ingresa para revisarla.',
+    const title = typeof payload.title === 'string' && payload.title.trim() ? payload.title : 'Seguimiento de Titulación'
+    const body = typeof payload.body === 'string' && payload.body.trim() ? payload.body : 'Tienes una nueva actualización. Ingresa para revisarla.'
+    await self.registration.showNotification(title, {
+      body,
       data: { notificationId: payload.notificationId, userId: payload.userId },
       icon: '/univalle-logo.png', badge: '/univalle-logo.png',
       tag: `stit-${payload.notificationId}`, renotify: false,

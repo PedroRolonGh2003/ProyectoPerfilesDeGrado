@@ -46,7 +46,7 @@ Cada nueva notificación interna se encola mediante un trigger de base de datos 
 
 1. Actualizar la PWA e iniciar sesión con «Recordar mi sesión». En iOS 16.4+, instalar desde Safari y abrir desde el icono de inicio.
 2. En el diálogo inicial, pulsar **Permitir notificaciones** y conceder el permiso del sistema. El diálogo debe cerrarse y no debe aparecer de nuevo al entrar en la misma cuenta con ese dispositivo.
-3. Generar una nueva notificación desde otro dispositivo mediante una acción real del proyecto. Comprobar la notificación del sistema y tocarla para abrir la vista del rol correspondiente.
+3. Generar una nueva notificación desde otro dispositivo mediante una acción real del proyecto. Comprobar que el aviso del sistema muestra el título y mensaje del evento, y tocarlo para abrir la vista del rol correspondiente.
 4. Para la prueba con app cerrada/bloqueada, cerrar la app antes de generar la nueva notificación desde el otro dispositivo.
 5. Repetir en segundo plano, con pantalla bloqueada y con el teléfono apagado al generarse el aviso. Encenderlo y recuperar conexión. Comprobar tanto el push como el historial; el proveedor/SO puede limitar la entrega de mensajes antiguos.
 6. Cerrar/reabrir la PWA, bloquear/desbloquear y reiniciar. Debe conservarse la sesión válida. Desconectar Internet y recuperar conexión: no debe sustituirse un error de red por Login.

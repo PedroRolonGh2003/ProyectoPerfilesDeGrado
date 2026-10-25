@@ -1,6 +1,10 @@
 import crypto from 'node:crypto'
 
 export const PUSH_TTL = 7 * 24 * 60 * 60
+const excerpt = (value, length) => {
+  const characters = Array.from(String(value ?? '').replace(/\s+/g, ' ').trim())
+  return characters.length > length ? characters.slice(0, length - 1).join('') + '…' : characters.join('')
+}
 
 // A delivery is accepted by a push provider, not necessarily received by a phone.
 // Locks serialize sending with logout and changes of subscription owner.
@@ -24,7 +28,7 @@ export async function deliverPendingPush({ pool, send, limit = 40 }) {
         await client.query('BEGIN')
         const subscription = (await client.query(`SELECT * FROM titulacion.suscripciones_push WHERE id = $1 FOR UPDATE`, [job.suscripcion_id])).rows[0]
         const delivery = (await client.query(`
-          SELECT d.*, n.usuario_id, n.creada_en, u.activo AS usuario_activo
+          SELECT d.*, n.usuario_id, n.titulo, n.mensaje, n.creada_en, u.activo AS usuario_activo
           FROM titulacion.entregas_notificaciones_push d
           JOIN titulacion.notificaciones n ON n.id = d.notificacion_id
           JOIN titulacion.usuarios u ON u.id = n.usuario_id
@@ -36,7 +40,12 @@ export async function deliverPendingPush({ pool, send, limit = 40 }) {
         } else {
           try {
             await send({ endpoint: subscription.endpoint, keys: { p256dh: subscription.clave_p256dh, auth: subscription.clave_auth } },
-              JSON.stringify({ notificationId: delivery.notificacion_id, userId: delivery.usuario_id }),
+              JSON.stringify({
+                notificationId: delivery.notificacion_id,
+                userId: delivery.usuario_id,
+                title: excerpt(delivery.titulo, 100),
+                body: excerpt(delivery.mensaje, 240),
+              }),
               { TTL: ttl, urgency: 'normal', timeout: 10000, topic: crypto.createHash('sha256').update(delivery.notificacion_id).digest('base64url').slice(0, 32) })
             await client.query(`UPDATE titulacion.entregas_notificaciones_push SET estado = 'ENVIADO', enviado_en = now(), actualizada_en = now(), ultimo_error = NULL WHERE id = $1`, [job.id])
             await client.query(`UPDATE titulacion.suscripciones_push SET ultimo_envio_exitoso_en = now(), ultimo_error = NULL WHERE id = $1`, [subscription.id])

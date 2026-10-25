@@ -105,7 +105,15 @@ try {
     return { nid, did }
   }
   let calls = 0
-  const send = async (_sub, body, options) => { calls++; assert.equal(JSON.parse(body).userId, uid); assert.ok(options.TTL > 86400 && options.TTL <= PUSH_TTL); assert.equal(options.topic.length, 32) }
+  const send = async (_sub, body, options) => {
+    calls++
+    const payload = JSON.parse(body)
+    assert.equal(payload.userId, uid)
+    assert.equal(payload.title, 'QA')
+    assert.equal(payload.body, 'QA')
+    assert.ok(options.TTL > 86400 && options.TTL <= PUSH_TTL)
+    assert.equal(options.topic.length, 32)
+  }
   await queue()
   await Promise.all([deliverPendingPush({ pool: scoped, send }), deliverPendingPush({ pool: scoped, send })])
   assert.equal(calls, 1)
