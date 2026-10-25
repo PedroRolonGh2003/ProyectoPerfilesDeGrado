@@ -15,7 +15,7 @@
 - `server/index.js`, `server/push-delivery.mjs`: cookies persistentes renovables, autorización, registro de dispositivos, salida atómica, envío protegido con `waitUntil`, TTL, reintentos y prueba autenticada.
 - `database/20261023_pwa_sessions.sql`: campos de sesión y trigger transaccional de la cola. La inicialización aplica la migración idempotente.
 - `public/sw.js`, `src/pwa.ts`, `src/main.tsx`: registro único, estado local de la cuenta en IndexedDB, recepción/clic, descarte tras logout y caché exclusiva del shell público.
-- `src/PwaControls.tsx`: permiso explícito, vinculación real al backend, reparación de suscripción existente, instrucciones iOS y botón «Enviar prueba».
+- `src/PwaControls.tsx`: diálogo de permiso al iniciar sesión en móvil, vinculación real al backend, restauración de la suscripción tras volver a entrar e instrucciones iOS.
 - `src/App.tsx`, `src/api.ts`: errores HTTP diferenciados de fallos de conexión, sincronización, historial completo y navegación con cambio de rol.
 - `src/PortalSidebar.tsx`, `src/Modal.tsx`, `src/styles.css`, `index.html`: lateral móvil con foco contenido, Escape, fondo inactivo, scroll propio, `100dvh` y áreas seguras.
 - `.env.example`, `README.md`, `package.json` y lockfile: configuración, dependencia de Vercel y comandos de comprobación.
@@ -44,10 +44,10 @@ Cada nueva notificación interna se encola mediante un trigger de base de datos 
 
 ## Prueba real en un teléfono
 
-1. Actualizar la PWA, iniciar sesión con «Recordar mi sesión» y abrir **Avisos**. En iOS 16.4+, instalar desde Safari y abrir desde el icono de inicio.
-2. Pulsar **Activar avisos** y conceder el permiso del sistema. Comprobar que la interfaz permite **Enviar prueba**.
-3. Pulsar **Enviar prueba**: debe crearse un aviso interno y una entrega al dispositivo. Comprobar la notificación del sistema y tocarla para abrir el dashboard del rol correspondiente.
-4. Para la prueba con app cerrada/bloqueada, generar una nueva notificación desde otro dispositivo mediante una acción real del proyecto. No basta con pulsar «Enviar prueba» y cerrar después: podría llegar antes de cerrar.
+1. Actualizar la PWA e iniciar sesión con «Recordar mi sesión». En iOS 16.4+, instalar desde Safari y abrir desde el icono de inicio.
+2. En el diálogo inicial, pulsar **Permitir notificaciones** y conceder el permiso del sistema. El diálogo debe cerrarse y no debe aparecer de nuevo al entrar en la misma cuenta con ese dispositivo.
+3. Generar una nueva notificación desde otro dispositivo mediante una acción real del proyecto. Comprobar la notificación del sistema y tocarla para abrir la vista del rol correspondiente.
+4. Para la prueba con app cerrada/bloqueada, cerrar la app antes de generar la nueva notificación desde el otro dispositivo.
 5. Repetir en segundo plano, con pantalla bloqueada y con el teléfono apagado al generarse el aviso. Encenderlo y recuperar conexión. Comprobar tanto el push como el historial; el proveedor/SO puede limitar la entrega de mensajes antiguos.
 6. Cerrar/reabrir la PWA, bloquear/desbloquear y reiniciar. Debe conservarse la sesión válida. Desconectar Internet y recuperar conexión: no debe sustituirse un error de red por Login.
 7. Abrir **Menú**; desplazar opciones y comprobar **Cerrar sesión** fijo abajo. Salir y generar otra notificación: ese teléfono no debe mostrarla, pero otro dispositivo suscrito de la misma cuenta sí.

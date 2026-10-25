@@ -1,6 +1,6 @@
 import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { api, ApiError } from './api'
-import { PwaControls, pushPreferenceKey } from './PwaControls'
+import { PwaControls, pushPromptKey } from './PwaControls'
 import { PortalSidebar } from './PortalSidebar'
 import { devicePushState } from './pwa'
 import { Modal } from './Modal'
@@ -1016,7 +1016,6 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
             <button onClick={onHome} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
             <button className="is-active" type="button"><Icon name="clipboard" /><span>Mi proyecto</span></button>
             <button onClick={onDocuments} type="button"><Icon name="file" /><span>Documentos</span></button>
-            <button type="button"><Icon name="help" /><span>Ayuda</span></button>
           </nav>
         </div>
         <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
@@ -1196,7 +1195,6 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
             <button className="is-active" type="button"><Icon name="dashboard" /><span>Inicio</span></button>
             <button onClick={onProject} type="button"><Icon name="clipboard" /><span>Mi proyecto</span></button>
             <button onClick={onDocuments} type="button"><Icon name="file" /><span>Documentos</span></button>
-            <button type="button"><Icon name="help" /><span>Ayuda</span></button>
           </nav>
         </div>
         <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
@@ -1324,7 +1322,6 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
             <button onClick={onHome} type="button"><Icon name="dashboard" /><span>Inicio</span></button>
             <button onClick={onProject} type="button"><Icon name="clipboard" /><span>Mi proyecto</span></button>
             <button className="is-active" type="button"><Icon name="file" /><span>Documentos</span></button>
-            <button type="button"><Icon name="help" /><span>Ayuda</span></button>
           </nav>
         </div>
         <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
@@ -1489,7 +1486,6 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Mis proyectos</span></button>
           <button className={view === 'reviewed' ? 'is-active' : ''} onClick={() => setView('reviewed')} type="button"><Icon name="check" /><span>Proyectos revisados</span></button>
           <button className={view === 'defenses' ? 'is-active' : ''} onClick={() => setView('defenses')} type="button"><Icon name="file" /><span>Defensas</span></button>
-          <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
       </div>
       <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
@@ -1692,7 +1688,6 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           <button className={!selectedReview && view === 'pending' ? 'is-active' : ''} onClick={() => { closeReview(); setView('pending') }} type="button"><Icon name="clipboard" /><span>Por revisar</span>{data.summary.pending > 0 && <b className="nav-count">{data.summary.pending}</b>}</button>
           <button className={!selectedReview && view === 'completed' ? 'is-active' : ''} onClick={() => { closeReview(); setView('completed') }} type="button"><Icon name="check" /><span>Proyectos revisados</span></button>
           <button className={!selectedReview && view === 'defenses' ? 'is-active' : ''} onClick={() => { closeReview(); setView('defenses') }} type="button"><Icon name="file" /><span>Defensas</span></button>
-          <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
       </div>
       <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
@@ -1850,7 +1845,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const isClosed = isCancelled || isFinalized
 
   return <main className="student-page admin-page">
-    <PortalSidebar className="admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button><button type="button"><Icon name="help" /><span>Ayuda</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></PortalSidebar>
+    <PortalSidebar className="admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></PortalSidebar>
     <section className="student-content"><header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header><div className="student-main admin-main admin-workspace">
       <button className="text-button admin-back" onClick={onBack} type="button">← Volver a proyectos</button>
       {isLoading && <section className="documents-loading">Cargando información operativa del proyecto…</section>}
@@ -2298,7 +2293,6 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
           <button className={view === 'projects' ? 'is-active' : ''} onClick={() => setView('projects')} type="button"><Icon name="clipboard" /><span>Proyectos</span></button>
           <button className={isDefenseView ? 'is-active' : ''} onClick={() => setView('defenses-private')} type="button"><Icon name="file" /><span>Defensas</span></button>
           <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
-          <button type="button"><Icon name="help" /><span>Ayuda</span></button>
         </nav>
       </div>
       <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
@@ -2480,7 +2474,7 @@ function App() {
       await subscription?.unsubscribe().catch(() => false)
       if ('serviceWorker' in navigator) await devicePushState(null, false).catch(() => undefined)
       if (userId) {
-        localStorage.removeItem(pushPreferenceKey(userId))
+        sessionStorage.removeItem(pushPromptKey(userId))
         localStorage.removeItem(`stit:local-alerts:${userId}`)
       }
       portalVersion.current += 1

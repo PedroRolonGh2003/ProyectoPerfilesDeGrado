@@ -74,7 +74,7 @@ Para habilitar las notificaciones push, genera una pareja VAPID una sola vez y c
 npm exec web-push generate-vapid-keys
 ```
 
-Configura `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT` (por ejemplo, la URL HTTPS pública de la plataforma). Nunca publiques la clave privada ni regeneres las claves en cada despliegue. En **Avisos → Activar avisos**, cada usuario autoriza su dispositivo. El sistema solo indica que están activos después de guardar la suscripción en el servidor; no existe un modo alternativo que dependa de mantener abierta la aplicación.
+Configura `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT` (por ejemplo, la URL HTTPS pública de la plataforma). Nunca publiques la clave privada ni regeneres las claves en cada despliegue. Al iniciar sesión por primera vez en un móvil, un diálogo solicita permiso para las notificaciones; el usuario debe pulsar **Permitir notificaciones**. Si elige **Ahora no**, se le vuelve a preguntar al iniciar otra sesión. Una vez activadas, la suscripción se restablece automáticamente al volver a entrar en la misma cuenta. No hace falta mantener abierta la aplicación.
 
 Cada notificación interna encola sus entregas dentro de la misma transacción de PostgreSQL. El servidor las envía mediante Web Push con TTL de hasta siete días; no necesita una pestaña ni una sesión abierta. `waitUntil` mantiene vivo el envío después de la respuesta en Vercel. Las entregas usan un registro único por notificación/dispositivo y una etiqueta común en el proveedor y el navegador. Los reintentos pueden repetir un envío aceptado si el proceso se interrumpió antes de guardarlo; no se promete entrega exactamente una vez.
 
@@ -86,7 +86,7 @@ Los errores temporales se reintentan con espera creciente; 404/410 desactivan su
 
 **Historial:** la campanita ofrece «Ver historial completo», con paginación y estado de lectura. Abrir la aplicación o recuperar conexión sincroniza los avisos. Enviar un push no los marca como leídos. Al tocarlo, se conserva su ID en la URL hasta que se puede abrir con la sesión y el rol autorizados.
 
-En Android, la instalación y los avisos funcionan en navegadores compatibles con Web Push. En iPhone/iPad, los avisos requieren iOS/iPadOS 16.4 o posterior y que la PWA se haya agregado a la pantalla de inicio desde Safari; el permiso se solicita desde el botón de la aplicación.
+En Android, la instalación y los avisos funcionan en navegadores compatibles con Web Push. En iPhone/iPad, los avisos requieren iOS/iPadOS 16.4 o posterior y que la PWA se haya agregado a la pantalla de inicio desde Safari; el permiso se solicita desde el diálogo de bienvenida.
 
 Pruebas específicas: `npm run qa:pwa:flow` prueba API/base de datos con cuentas temporales y un proveedor simulado; `npm run qa:pwa:worker` prueba los manejadores del Service Worker. Ninguna equivale a recepción física. Consulta [la verificación móvil](docs/VERIFICACION_PWA.md) para los escenarios de dispositivo y producción.
 

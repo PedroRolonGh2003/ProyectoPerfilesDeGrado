@@ -419,11 +419,6 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .notification-bell svg { height: 18px; width: 18px; }
 .notification-bell b { align-items: center; background: #d64519; border: 2px solid #fff; border-radius: 50%; color: #fff; display: flex; font-size: 8px; height: 17px; justify-content: center; min-width: 17px; position: absolute; right: -6px; top: -6px; }
 .session-info { isolation: isolate; }
-.pwa-controls { position: relative; }
-.pwa-control-button { background: #fff; border: 1px solid #e1d8da; border-radius: 99px; color: #6e5d63; font: inherit; font-size: 10px; font-weight: 700; min-height: 34px; padding: 0 10px; white-space: nowrap; }
-.pwa-control-button:hover:not(:disabled) { background: #fdf1f5; border-color: #dfb8c7; color: var(--univalle-wine); }
-.pwa-control-button.is-active { background: #f9eaf0; border-color: #e7c6d2; color: var(--univalle-wine); }
-.pwa-control-message { background: #4d3f43; border-radius: 7px; box-shadow: 0 8px 18px rgba(42, 26, 32, .18); color: #fff; font-size: 10px; line-height: 1.35; padding: 8px 10px; position: absolute; right: 0; top: calc(100% + 8px); width: 230px; z-index: 90; }
 .push-toast { align-items: flex-start; background: #fff; border: 1px solid #e8d4dc; border-left: 4px solid var(--univalle-wine); border-radius: 11px; bottom: 22px; box-shadow: 0 16px 36px rgba(52, 30, 39, .2); display: flex; gap: 16px; justify-content: space-between; max-width: min(390px, calc(100vw - 32px)); padding: 14px 15px; position: fixed; right: 22px; z-index: 300; }
 .push-toast > div:first-child { min-width: 0; }
 .push-toast .notification-role-badge { display: inline-flex; margin-bottom: 6px; }
@@ -888,8 +883,6 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .student-header { height: 62px; justify-content: space-between; padding: 0 16px; position: sticky; top: 0; }
   .mobile-student-brand { display: inline-flex; }
   .session-info > span:last-of-type { display: none; }
-  .session-info .pwa-controls { display: contents; }
-  .session-info .pwa-controls > .pwa-control-button, .session-info .pwa-controls > .pwa-control-message { display: none; }
   .role-single-badge { display: none; }
   .student-main { padding: 30px 24px calc(96px + env(safe-area-inset-bottom)); }
   .tutor-stats { grid-template-columns: repeat(3, 1fr); }
@@ -1002,7 +995,6 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .student-header { height: calc(62px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); }
   .mobile-menu-trigger { align-items: center; background: #fff; border: 1px solid #e8e1e2; border-radius: 9px; color: var(--univalle-wine); display: flex; height: 42px; justify-content: center; left: 58px; position: fixed; top: calc(10px + env(safe-area-inset-top)); width: 42px; z-index: 70; }
   .mobile-menu-trigger svg { height: 21px; width: 21px; }
-  .session-info .pwa-controls > .pwa-settings-button { display: inline-flex; }
 }
 
 @media (min-width: 861px) {
