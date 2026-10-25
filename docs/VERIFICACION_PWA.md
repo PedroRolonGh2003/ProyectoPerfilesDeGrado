@@ -32,6 +32,10 @@
 
 Estas pruebas no demuestran recepción en Android/iOS. «ENVIADO» significa aceptación por el proveedor.
 
+## Resultado comunicado por el usuario
+
+El 25 de octubre de 2026, el usuario confirmó que recibió un aviso en su teléfono. No indicó todavía la cuenta, la hora aproximada ni si la app estaba abierta o cerrada. Las entregas de prueba visibles en la cola consultada corresponden al 24 de octubre; por tanto, no se ha podido asociar esa confirmación a un envío específico del despliegue actual. Queda pendiente comprobar la entrega con la app cerrada y el destino al tocar el aviso.
+
 ## Prueba real en un teléfono
 
 1. Actualizar la PWA, iniciar sesión con «Recordar mi sesión» y abrir **Avisos**. En iOS 16.4+, instalar desde Safari y abrir desde el icono de inicio.
