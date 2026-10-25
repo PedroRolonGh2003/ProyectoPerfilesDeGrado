@@ -27,7 +27,7 @@ try {
   assert.equal(manifest.display, 'standalone', 'El manifiesto debe instalar la aplicación en modo independiente')
   assert.equal(manifest.start_url, '/', 'La PWA debe abrir en la plataforma existente')
   assert.ok(manifest.icons?.length > 0, 'El manifiesto necesita un ícono')
-  assert.match(serviceWorkerSource, /stit-public-v4/, 'El Service Worker debe renovar la caché pública al publicar una nueva interfaz')
+  assert.match(serviceWorkerSource, /stit-public-v5/, 'El Service Worker debe renovar la caché pública al publicar una nueva interfaz')
   assert.match(serviceWorkerSource, /fetch\(request\)\.then/, 'Los recursos de interfaz deben consultar primero la red para evitar una versión móvil antigua')
   assert.match(serviceWorkerSource, /url\.pathname\.startsWith\('\/api\/'\)/, 'El Service Worker debe excluir la API privada de la caché')
   assert.match(serviceWorkerSource, /notificationclick/, 'El Service Worker debe redirigir al presionar una notificación')

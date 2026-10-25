@@ -26,6 +26,8 @@ await emit('push', { data: { json: () => payload } })
 assert.equal(shown.length, 1, 'También debe mostrar una notificación del sistema con la app visible (iOS userVisibleOnly)')
 assert.equal(shown[0].title, payload.title)
 assert.equal(shown[0].body, payload.body)
+assert.equal(shown[0].icon, '/univalle-logo.png')
+assert.equal(shown[0].badge, '/notification-badge.png')
 assert.equal(messages.length, 1)
 assert.equal(shown[0].tag, 'stit-n-1')
 account.enabled = false

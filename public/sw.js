@@ -1,5 +1,5 @@
-const STATIC_CACHE = 'stit-public-v4'
-const PUBLIC_ASSETS = ['/univalle-logo.png', '/manifest.webmanifest', '/index.html']
+const STATIC_CACHE = 'stit-public-v5'
+const PUBLIC_ASSETS = ['/univalle-logo.png', '/notification-badge.png', '/manifest.webmanifest', '/index.html']
 
 function deviceState(value) {
   return new Promise((resolve, reject) => {
@@ -63,7 +63,7 @@ self.addEventListener('push', (event) => {
     await self.registration.showNotification(title, {
       body,
       data: { notificationId: payload.notificationId, userId: payload.userId },
-      icon: '/univalle-logo.png', badge: '/univalle-logo.png',
+      icon: '/univalle-logo.png', badge: '/notification-badge.png',
       tag: `stit-${payload.notificationId}`, renotify: false,
     })
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
