@@ -34,7 +34,7 @@ Estas pruebas no demuestran recepción en Android/iOS. «ENVIADO» significa ace
 
 ## Resultado comunicado por el usuario
 
-El 25 de octubre de 2026, el usuario confirmó que recibió un aviso de prueba en su teléfono con la app cerrada, usando la cuenta de estudiante. La notificación se creó a las 15:02:11 (hora de Bolivia) y la entrega quedó en `ENVIADO` a las 15:02:12, en el primer intento y sin error del proveedor. Esto vincula el registro de producción con la recepción reportada en el dispositivo. Queda pendiente comprobar el destino al tocar el aviso y repetir la prueba con una notificación originada por una acción académica.
+El 25 de octubre de 2026, el usuario confirmó que recibió un aviso de prueba en su teléfono con la app cerrada, usando la cuenta de estudiante. La notificación se creó a las 15:02:11 (hora de Bolivia) y la entrega quedó en `ENVIADO` a las 15:02:12, en el primer intento y sin error del proveedor. Esto vincula el registro de producción con la recepción reportada en el dispositivo. Al tocar el aviso se abrió la vista del estudiante, según confirmó el usuario. Queda pendiente repetir la prueba con una notificación originada por una acción académica.
 
 ## Prueba real en un teléfono
 
