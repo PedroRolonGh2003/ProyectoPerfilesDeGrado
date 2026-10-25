@@ -60,6 +60,13 @@ try {
   const notificationId = (await test.json()).id
   assert.equal((await request('/api/push/test', a, 'POST')).status, 429)
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM entregas_notificaciones_push WHERE notificacion_id=$1', [notificationId])).rows[0].n, 2)
+  // Academic notifications share the same transactional outbox as the test button.
+  const academicTypes = ['SOLICITUD_TUTORIA', 'REVISION_ASIGNADA', 'RECORDATORIO_REVISION_PENDIENTE', 'DEFENSA_PRIVADA_PROGRAMADA', 'DEFENSA_PUBLICA_PROGRAMADA']
+  const academic = await pool.query(`INSERT INTO notificaciones (usuario_id,tipo,titulo,mensaje,enlace)
+    SELECT $1, tipo, 'Aviso QA', 'Evento académico QA', '/admin' FROM unnest($2::text[]) AS tipo RETURNING id`, [ids[0], academicTypes])
+  const queued = await pool.query('SELECT count(*)::int AS n FROM entregas_notificaciones_push WHERE notificacion_id=ANY($1::uuid[])', [academic.rows.map((row) => row.id)])
+  assert.equal(queued.rows[0].n, academicTypes.length * 2)
+  await pool.query('DELETE FROM notificaciones WHERE id=ANY($1::uuid[])', [academic.rows.map((row) => row.id)])
   assert.equal((await request(`/api/notifications/${notificationId}`, b)).status, 404)
   // Move only this endpoint to the second account; the old queued delivery is cancelled.
   assert.equal((await request('/api/push/subscriptions', b, 'POST', { subscription: device1 })).status, 201)

@@ -872,6 +872,7 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 
 @media (max-width: 860px) {
   .student-page { padding-bottom: calc(78px + env(safe-area-inset-bottom)); }
+  .notification-popover { left: 12px; max-height: calc(100dvh - 150px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); min-width: 0; position: fixed; right: 12px; top: calc(70px + env(safe-area-inset-top)); width: auto; }
   .student-sidebar, .tutor-page .student-sidebar, .reviewer-page .student-sidebar, .admin-page .student-sidebar { background: #fff; border: 0; border-top: 1px solid #e6e0e1; bottom: 0; box-shadow: 0 -8px 22px rgba(63, 44, 51, .12); display: block; height: auto; left: 0; min-height: 0; overflow: hidden; padding: 0; position: fixed; right: 0; top: auto; width: 100%; z-index: 60; }
   .student-sidebar > div:first-child { overflow: visible; }
   .student-sidebar .student-brand, .student-sidebar .student-role, .student-sidebar .sidebar-bottom { display: none; }
@@ -919,6 +920,13 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .upload-box > span { margin-left: 35px; }
   .student-message { padding-left: 18px; padding-right: 18px; }
   .project-summary-grid { grid-template-columns: 1fr 1fr; }
+  .project-phase-timeline { padding: 18px; }
+  .project-phase-timeline ol { gap: 0; grid-template-columns: minmax(0, 1fr); margin-top: 16px; }
+  .project-phase-timeline li { align-items: start; display: grid; gap: 12px; grid-template-columns: 26px minmax(0, 1fr); padding-bottom: 16px; }
+  .project-phase-timeline li:last-child { padding-bottom: 0; }
+  .project-phase-timeline li:not(:last-child)::after { bottom: 0; height: auto; left: 12px; right: auto; top: 26px; width: 2px; }
+  .project-phase-timeline li strong { font-size: 12px; }
+  .project-phase-timeline li small { font-size: 11px; }
   .defense-schedule-status { grid-template-columns: 1fr; }
   .document-project-tag { width: 100%; }
   .document-latest { align-items: flex-start; flex-direction: column; gap: 10px; }
@@ -1005,4 +1013,9 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
   .student-sidebar .student-nav { padding-left: 5px; padding-right: 5px; }
   .student-sidebar .student-nav button { font-size: 8px; }
   .mobile-push-dialog { border-radius: 16px; padding: 23px 19px 19px; }
+}
+
+@media (max-width: 350px) {
+  .admin-page .student-sidebar .student-nav { gap: 1px; padding-left: 4px; padding-right: 4px; }
+  .admin-page .student-sidebar .student-nav button { flex-basis: 43px; min-width: 43px; padding-left: 1px; padding-right: 1px; }
 }

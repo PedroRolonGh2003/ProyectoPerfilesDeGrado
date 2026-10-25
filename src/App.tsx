@@ -464,10 +464,27 @@ function NotificationHistory({ onClose, onOpen }: { onClose: () => void; onOpen:
 function SessionActions({ user, notifications, unreadCount, isSwitching, onRoleChange, onNotificationClick }: { user: User; notifications: AppNotification[]; unreadCount: number; isSwitching: boolean; onRoleChange: (role: RoleCode) => Promise<void>; onNotificationClick: (notification: AppNotification) => Promise<void> }) {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
+  const notificationMenuRef = useRef<HTMLDivElement>(null)
   const initials = user.fullName.split(' ').filter(Boolean).slice(0, 2).map((name) => name[0]).join('').toUpperCase() || 'U'
 
+  useEffect(() => {
+    if (!isNotificationOpen) return
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (!notificationMenuRef.current?.contains(event.target as Node)) setIsNotificationOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsNotificationOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsideClick)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [isNotificationOpen])
+
   return <div className="session-info">
-    <div className={isNotificationOpen ? 'notification-menu is-open' : 'notification-menu'}>
+    <div className={isNotificationOpen ? 'notification-menu is-open' : 'notification-menu'} ref={notificationMenuRef}>
       <button aria-expanded={isNotificationOpen} aria-haspopup="menu" aria-label="Ver notificaciones" className="notification-bell" onClick={() => setIsNotificationOpen((open) => !open)} type="button"><Icon name="bell" />{unreadCount > 0 && <b>{unreadCount > 9 ? '9+' : unreadCount}</b>}</button>
       <div aria-label="Notificaciones" className="notification-popover">
         <div><strong>Notificaciones</strong><span>{unreadCount > 0 ? `${unreadCount} sin leer` : 'Todo al día'}</span></div>
@@ -484,6 +501,7 @@ function SessionActions({ user, notifications, unreadCount, isSwitching, onRoleC
 
 function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () => Promise<void>; onPasswordReset: () => void }) {
   const [view, setView] = useState<'login' | 'signup' | 'confirmation-pending' | 'role-assignment-pending' | 'password-recovery' | 'password-reset'>('login')
+  useEffect(() => { window.scrollTo(0, 0) }, [view])
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [firstName, setFirstName] = useState('')

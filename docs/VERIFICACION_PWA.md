@@ -36,6 +36,12 @@ Estas pruebas no demuestran recepción en Android/iOS. «ENVIADO» significa ace
 
 El 25 de octubre de 2026, el usuario confirmó que recibió un aviso de prueba en su teléfono con la app cerrada, usando la cuenta de estudiante. La notificación se creó a las 15:02:11 (hora de Bolivia) y la entrega quedó en `ENVIADO` a las 15:02:12, en el primer intento y sin error del proveedor. Esto vincula el registro de producción con la recepción reportada en el dispositivo. Al tocar el aviso se abrió la vista del estudiante, según confirmó el usuario. Queda pendiente repetir la prueba con una notificación originada por una acción académica.
 
+## Auditoría móvil y cobertura de avisos
+
+Se recorrieron 66 vistas de navegación de estudiante, tutor, revisor y administración en anchos de 320, 360 y 390 px, además del inicio de sesión y registro. En el contenido visible revisado no se detectó desplazamiento horizontal, elementos fuera del viewport, texto recortado involuntariamente ni errores de JavaScript. También se abrieron el menú lateral y la campana en los cuatro roles a 320 × 568 px: «Cerrar sesión» permaneció accesible. Se corrigió la línea de fases del estudiante, que comprimía sus cinco pasos, el panel de la campana, que aparecía parcialmente fuera de pantalla y no se cerraba al tocar fuera, y el ancho de los siete accesos inferiores de Administración a 320 px. Al entrar a «Crear cuenta» desde el pie del formulario, la página vuelve arriba y muestra el encabezado completo.
+
+Cada nueva notificación interna se encola mediante un trigger de base de datos para **cada suscripción activa** del destinatario, sin filtrar por tipo de evento. La prueba de integración verificó esa cola para invitación de tutoría, asignación de revisión, recordatorio y programación de defensas privada y pública, además del aviso de prueba. Si el usuario no activó Web Push en ese dispositivo, denegó el permiso o la suscripción caducó, el aviso sigue en el historial interno pero no puede aparecer como push en ese dispositivo. La recepción física de un evento académico real sigue pendiente de comprobación.
+
 ## Prueba real en un teléfono
 
 1. Actualizar la PWA, iniciar sesión con «Recordar mi sesión» y abrir **Avisos**. En iOS 16.4+, instalar desde Safari y abrir desde el icono de inicio.
