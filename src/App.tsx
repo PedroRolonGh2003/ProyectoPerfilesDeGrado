@@ -113,6 +113,7 @@ type AppNotification = {
   createdAt: string
 }
 type NotificationDestination = '/student' | '/student/proponer-tutor' | '/documentos' | '/tutor' | '/tutor/invitaciones' | '/tutor/proyectos' | '/tutor/defensas-privada' | '/tutor/defensas-publica' | '/revisor' | '/revisor/pendientes' | '/revisor/completados' | '/revisor/defensas-privada' | '/revisor/defensas-publica' | '/admin' | '/admin/nuevos-proyectos' | '/admin/revisiones-por-iniciar' | '/admin/nuevos-docentes'
+type NotificationTarget = { destination: NotificationDestination; projectId: string | null; type: string }
 type TutorDashboard = {
   user: TutorUser
   invitations: TutorAssignment[]
@@ -364,10 +365,20 @@ function PushToast({ notification, onClose, onOpen }: { notification: AppNotific
   return <aside aria-live="polite" className="push-toast"><div><span className={`notification-role-badge role-${notification.role.toLowerCase()}`}>{roleLabel(notification.role)}</span><strong>{notification.title}</strong><p>{notification.message}</p></div><div><button className="text-button" onClick={onOpen} type="button">Ver</button><button aria-label="Cerrar aviso" className="push-toast-close" onClick={onClose} type="button">×</button></div></aside>
 }
 
-function notificationDestination(link: string | null): NotificationDestination | null {
-  if (link === '/tutor/projects') return '/tutor/proyectos'
+function notificationDestination(notification: AppNotification, activeRole: RoleCode): NotificationDestination {
+  const { link } = notification
+  const fallback = ({ ESTUDIANTE: '/student', TUTOR: '/tutor', REVISOR: '/revisor', ADMINISTRADOR: '/admin' } as const)[activeRole]
+  const normalized = link === '/tutor/projects' ? '/tutor/proyectos'
+    : link === '/reviewer/reviews' ? '/revisor/pendientes'
+    : link === '/student/documents' ? '/documentos'
+    : link?.startsWith('/proyectos/') ? notification.type === 'REVISION' ? '/documentos' : '/student'
+    : link === '/tutor' && ['REVISION_TUTOR_ASIGNADA', 'REVISION_TUTOR_REASIGNADA', 'DEFENSA_PRIVADA_ASIGNADA', 'DEFENSA_PUBLICA_ASIGNADA'].includes(notification.type) ? '/tutor/proyectos'
+    : link
   const destinations: NotificationDestination[] = ['/student', '/student/proponer-tutor', '/documentos', '/tutor', '/tutor/invitaciones', '/tutor/proyectos', '/tutor/defensas-privada', '/tutor/defensas-publica', '/revisor', '/revisor/pendientes', '/revisor/completados', '/revisor/defensas-privada', '/revisor/defensas-publica', '/admin', '/admin/nuevos-proyectos', '/admin/revisiones-por-iniciar', '/admin/nuevos-docentes']
-  return destinations.includes(link as NotificationDestination) ? link as NotificationDestination : null
+  if (!destinations.includes(normalized as NotificationDestination)) return fallback
+  const destination = normalized as NotificationDestination
+  const destinationRole = destination.startsWith('/tutor') ? 'TUTOR' : destination.startsWith('/revisor') ? 'REVISOR' : destination.startsWith('/admin') ? 'ADMINISTRADOR' : 'ESTUDIANTE'
+  return destinationRole === activeRole ? destination : fallback
 }
 
 function Icon({ name }: { name: IconName }) {
@@ -1125,7 +1136,7 @@ function ReviewProgress({ reviews }: { reviews: ReviewParticipant[] }) {
   </div>
 }
 
-function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
+function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onDocuments: () => void; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationTarget | null; onNavigationHandled: () => void }) {
   const [overview, setOverview] = useState<StudentOverview | null>(null)
   const [isLoading, setIsLoading] = useState(Boolean(data.project))
   const [error, setError] = useState('')
@@ -1152,8 +1163,11 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
   }, [data.project?.id, data.project?.needsTutorProposal])
 
   useEffect(() => {
-    if (navigationTarget === '/student/proponer-tutor') {
+    if (navigationTarget?.destination === '/student/proponer-tutor') {
       setIsTutorProposalOpen(true)
+      onNavigationHandled()
+    } else if (navigationTarget?.destination === '/student') {
+      window.scrollTo({ top: 0 })
       onNavigationHandled()
     }
   }, [navigationTarget, onNavigationHandled])
@@ -1244,7 +1258,7 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
   )
 }
 
-function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onHome: () => void; sessionActions: ReactNode }) {
+function DocumentsView({ data, onLogout, onProject, onHome, sessionActions, navigationTarget, onNavigationHandled }: { data: Bootstrap; onLogout: () => Promise<void>; onProject: () => void; onHome: () => void; sessionActions: ReactNode; navigationTarget: NotificationTarget | null; onNavigationHandled: () => void }) {
   const [documents, setDocuments] = useState<StudentDocument[]>([])
   const [isLoading, setIsLoading] = useState(Boolean(data.project))
   const [error, setError] = useState('')
@@ -1272,6 +1286,21 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
   useEffect(() => {
     void loadDocuments()
   }, [data.project?.id])
+
+  useEffect(() => {
+    if (navigationTarget?.destination !== '/documentos' || isLoading) return
+    const requestedType = navigationTarget.type === 'DOCUMENTO_PRIVADO_HABILITADO' ? 'DOCUMENTO_PRIVADO'
+      : navigationTarget.type === 'DOCUMENTO_PUBLICO_HABILITADO' ? 'DOCUMENTO_PUBLICO' : 'PERFIL_PROYECTO'
+    const selected = navigationTarget.type === 'REVISION_DEVUELTA'
+      ? documents.find((item) => item.observations.some((observation) => observation.status === 'ABIERTA')) ?? documents.find((item) => item.canUploadVersion)
+      : documents.find((item) => item.type === requestedType)
+    const targetDocument = selected ?? documents[0]
+    if (targetDocument) {
+      if (navigationTarget.type === 'REVISION_DEVUELTA' && targetDocument.canUploadVersion) setSelectedDocumentId(targetDocument.id)
+      document.getElementById(`student-document-${targetDocument.id}`)?.scrollIntoView({ block: 'center' })
+    }
+    onNavigationHandled()
+  }, [navigationTarget, isLoading, documents, onNavigationHandled])
 
   async function submitVersion(event: FormEvent<HTMLFormElement>, document: StudentDocument) {
     event.preventDefault()
@@ -1342,7 +1371,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
               <div className="documents-list">
                 {documents.map((document) => {
                   const isUpdating = selectedDocumentId === document.id
-                  return <section className="document-card" key={document.id}>
+                  return <section className="document-card" id={`student-document-${document.id}`} key={document.id}>
                     <div className="document-card-header"><div className="document-symbol"><Icon name="file" /></div><div><p>{documentLabel(document.type)}</p><h2>{document.name}</h2><span>{document.phase} · Estado: {document.status}</span></div><div className="document-version-badge">{document.totalVersions} {document.totalVersions === 1 ? 'versión' : 'versiones'}</div></div>
                     {document.latest ? <div className="document-latest"><div><small>Última versión</small><strong>V{document.latest.number} · {document.latest.filename}</strong><span>{formatFileSize(document.latest.size)} · {formatDate(document.latest.uploadedAt)}</span></div><a className="document-download" href={`/api/documents/${document.id}/download`}><Icon name="download" />Descargar</a></div> : <p className="document-lock-note">Este registro aún no tiene un archivo disponible.</p>}
                     {document.observations.length > 0 && <section className="document-observations"><div className="document-observations-heading"><div><small>DEVOLUCIONES DE REVISORES</small><h3>Observaciones del perfil</h3><p>Consulta las observaciones de la versión devuelta. Las respuestas se completan junto con el archivo al subir la versión corregida.</p></div><span>{document.observations.filter((observation) => observation.status === 'ABIERTA').length} pendientes</span></div><ol>{document.observations.map((observation) => <li className={`document-observation is-${observation.status.toLowerCase()}`} key={observation.id}><div className="observation-number">{observation.number}</div><div className="observation-content"><div className="observation-meta"><strong>{observation.reviewer}</strong><span>Ronda {observation.roundNumber} · Perfil V{observation.sourceVersion}</span></div><p>{observation.detail}</p>{observation.status === 'ABIERTA' ? <p className="observation-pending-note">Pendiente de corrección. Responde este punto al seleccionar “Subir nueva versión”.</p> : <div className="observation-response"><strong>{observation.status === 'CERRADA' ? 'Corrección validada' : `Asociada a la versión V${observation.responseVersion}`}</strong><p>{observation.response}</p>{observation.respondedAt && <small>Respondida el {formatDate(observation.respondedAt)}</small>}</div>}</div></li>)}</ol></section>}
@@ -1361,7 +1390,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions }: { 
   )
 }
 
-function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
+function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: TutorDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationTarget | null; onNavigationHandled: () => void }) {
   const [view, setView] = useState<'home' | 'invitations' | 'projects' | 'reviewed' | 'defenses' | 'notifications'>('home')
   const [defenseType, setDefenseType] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE')
   const [decliningId, setDecliningId] = useState('')
@@ -1373,30 +1402,46 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
   const [declineReason, setDeclineReason] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
+  const [focusedProjectId, setFocusedProjectId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (navigationTarget === '/tutor/invitaciones') {
+    if (!navigationTarget) return
+    const { destination, projectId } = navigationTarget
+    setFocusedProjectId(projectId)
+    if (destination === '/tutor/invitaciones') {
       setSelectedEvaluation(null)
-      setView('invitations')
+      setView(projectId && !data.invitations.some((item) => item.projectId === projectId) && data.projects.some((item) => item.projectId === projectId) ? 'projects' : 'invitations')
       onNavigationHandled()
     }
-    if (navigationTarget === '/tutor/proyectos') {
-      setSelectedEvaluation(null)
+    if (destination === '/tutor/proyectos') {
+      const project = data.projects.find((item) => item.projectId === projectId)
+      if (project?.canReviewProfile && ['REVISION_TUTOR_ASIGNADA', 'REVISION_TUTOR_REASIGNADA', 'RECORDATORIO_REVISION_PENDIENTE', 'CORRECCION_PENDIENTE_REVISION', 'DEFENSA_PRIVADA_ASIGNADA', 'DEFENSA_PUBLICA_ASIGNADA'].includes(navigationTarget.type)) setSelectedEvaluation(project)
+      else setSelectedEvaluation(null)
       setView('projects')
       onNavigationHandled()
     }
-    if (navigationTarget === '/tutor/defensas-privada' || navigationTarget === '/tutor/defensas-publica') {
+    if (destination === '/tutor/defensas-privada' || destination === '/tutor/defensas-publica') {
       setSelectedEvaluation(null)
-      setDefenseType(navigationTarget === '/tutor/defensas-privada' ? 'PRIVATE' : 'PUBLIC')
+      setDefenseType(destination === '/tutor/defensas-privada' ? 'PRIVATE' : 'PUBLIC')
       setView('defenses')
       onNavigationHandled()
     }
-    if (navigationTarget === '/tutor') {
+    if (destination === '/tutor') {
       setSelectedEvaluation(null)
       setView('home')
       onNavigationHandled()
     }
   }, [navigationTarget, onNavigationHandled])
+
+  useEffect(() => {
+    if (!focusedProjectId || selectedEvaluation) return
+    const prefix = view === 'invitations' ? 'tutor-invitation' : view === 'projects' || view === 'defenses' ? 'tutor-project' : null
+    if (prefix) document.getElementById(`${prefix}-${focusedProjectId}`)?.scrollIntoView({ block: 'center' })
+  }, [focusedProjectId, selectedEvaluation, view])
+
+  useEffect(() => {
+    if (selectedEvaluation) document.querySelector('.tutor-page .reviewer-workspace')?.scrollIntoView({ block: 'start' })
+  }, [selectedEvaluation])
 
   async function respond(assignmentId: string, decision: 'ACEPTAR' | 'DECLINAR') {
     if (decision === 'DECLINAR' && declineReason.trim().length < 5) {
@@ -1446,7 +1491,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
 
   function invitationCard(invitation: TutorAssignment) {
     const isDeclining = decliningId === invitation.id
-    return <article className="tutor-card tutor-invitation" key={invitation.id}>
+    return <article className={`tutor-card tutor-invitation${focusedProjectId === invitation.projectId ? ' is-notification-target' : ''}`} id={`tutor-invitation-${invitation.projectId}`} key={invitation.id}>
       <div className="tutor-card-top"><span className="tutor-code">{invitation.code}</span><span className="tutor-request-status">Solicitud pendiente</span></div>
       <h2>{invitation.title}</h2>
       <p className="tutor-card-description">{invitation.description}</p>
@@ -1459,7 +1504,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
 
   function projectCard(project: TutorAssignment) {
     if (project.canReviewProfile) project.statusCode = 'PENDIENTE_APROBACION'
-    return <article className="tutor-card tutor-project-card" key={project.id}>
+    return <article className={`tutor-card tutor-project-card${focusedProjectId === project.projectId ? ' is-notification-target' : ''}`} id={`tutor-project-${project.projectId}`} key={project.id}>
       <div className="tutor-card-top"><span className="tutor-code">{project.code}</span><span className="assignment-status confirmed">Tutoría confirmada</span></div>
       <h2>{project.title}</h2>
       <p className="tutor-card-description">{project.description}</p>
@@ -1526,7 +1571,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
   </main>
 }
 
-function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: ReviewerDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
+function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: ReviewerDashboard; notifications: AppNotification[]; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationTarget | null; onNavigationHandled: () => void }) {
   const [view, setView] = useState<'home' | 'pending' | 'completed' | 'defenses' | 'notifications'>('home')
   const [defenseType, setDefenseType] = useState<'PRIVATE' | 'PUBLIC'>('PRIVATE')
   const [selectedReview, setSelectedReview] = useState<ReviewerReview | null>(null)
@@ -1537,30 +1582,41 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   const [publicRatification, setPublicRatification] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [message, setMessage] = useState('')
+  const [focusedProjectId, setFocusedProjectId] = useState<string | null>(null)
 
   useEffect(() => {
-    if (navigationTarget === '/revisor/pendientes') {
-      closeReview()
-      setView('pending')
+    if (!navigationTarget) return
+    const { destination, projectId } = navigationTarget
+    setFocusedProjectId(projectId)
+    if (destination === '/revisor/pendientes' || destination === '/revisor') {
+      const pending = data.pendingReviews.find((item) => item.projectId === projectId && item.canSubmit)
+      const completed = data.completedReviews.some((item) => item.projectId === projectId)
+      if (pending) openReview(pending)
+      else closeReview()
+      setView(pending ? 'pending' : completed ? 'completed' : destination === '/revisor' ? 'home' : 'pending')
       onNavigationHandled()
     }
-    if (navigationTarget === '/revisor/completados') {
+    if (destination === '/revisor/completados') {
       closeReview()
       setView('completed')
       onNavigationHandled()
     }
-    if (navigationTarget === '/revisor/defensas-privada' || navigationTarget === '/revisor/defensas-publica') {
+    if (destination === '/revisor/defensas-privada' || destination === '/revisor/defensas-publica') {
       closeReview()
-      setDefenseType(navigationTarget === '/revisor/defensas-privada' ? 'PRIVATE' : 'PUBLIC')
+      setDefenseType(destination === '/revisor/defensas-privada' ? 'PRIVATE' : 'PUBLIC')
       setView('defenses')
       onNavigationHandled()
     }
-    if (navigationTarget === '/revisor') {
-      closeReview()
-      setView('home')
-      onNavigationHandled()
-    }
   }, [navigationTarget, onNavigationHandled])
+
+  useEffect(() => {
+    if (!focusedProjectId || selectedReview) return
+    if (view === 'pending' || view === 'completed' || view === 'defenses') document.getElementById(`reviewer-project-${focusedProjectId}`)?.scrollIntoView({ block: 'center' })
+  }, [focusedProjectId, selectedReview, view, defenseType])
+
+  useEffect(() => {
+    if (selectedReview) document.querySelector('.reviewer-page .reviewer-workspace')?.scrollIntoView({ block: 'start' })
+  }, [selectedReview])
 
   function openReview(review: ReviewerReview) {
     setSelectedReview(review)
@@ -1641,7 +1697,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
 
   function reviewCard(review: ReviewerReview, showAction = true) {
     const isObserved = review.decision === 'OBSERVADO'
-    return <article className="reviewer-card" key={review.id}>
+    return <article className={`reviewer-card${focusedProjectId === review.projectId ? ' is-notification-target' : ''}`} id={`reviewer-project-${review.projectId}`} key={review.id}>
       <div className="reviewer-card-top"><div><span className="tutor-code">{review.code}</span><span className="reviewer-round">Ronda {review.roundNumber} · {review.assignmentType === 'REVISOR_1' ? 'Revisor 1' : 'Revisor 2'}</span></div><span className={`reviewer-decision decision-${review.decision.toLowerCase()}`}>{decisionLabel(review.decision)}</span></div>
       <h2>{review.title}</h2>
       <p className="tutor-card-description">{review.description}</p>
@@ -1655,7 +1711,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
   }
 
   function defenseProjectCard(project: ReviewerDashboard['defenseProjects'][number]) {
-    return <article className="reviewer-card reviewer-defense-card" key={project.projectId}>
+    return <article className={`reviewer-card reviewer-defense-card${focusedProjectId === project.projectId ? ' is-notification-target' : ''}`} id={`reviewer-project-${project.projectId}`} key={project.projectId}>
       <div className="reviewer-card-top"><span className="tutor-code">{project.code}</span><span className="reviewer-decision decision-pendiente">Defensa</span></div>
       <h2>{project.title}</h2>
       <div className="tutor-project-meta"><span><Icon name="user" />{project.students}</span><span><Icon name="check" />{project.phase} · {project.status}</span></div>
@@ -1752,6 +1808,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   }
 
   useEffect(() => { void loadDetail() }, [projectId])
+  useEffect(() => { window.scrollTo({ top: 0 }) }, [projectId])
 
   async function submitTutor(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -2132,7 +2189,7 @@ function AdminProjectCreateForm({ catalog, onCancel, onSave }: { catalog: Projec
   </form>
 }
 
-function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationDestination | null; onNavigationHandled: () => void }) {
+function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarget, onNavigationHandled }: { data: AdminDashboard; onLogout: () => Promise<void>; onRefresh: () => Promise<void>; sessionActions: ReactNode; navigationTarget: NotificationTarget | null; onNavigationHandled: () => void }) {
   const [view, setView] = useState<'home' | 'projects' | 'review-starts' | 'new-teachers' | 'defenses-private' | 'defenses-public' | 'users'>('home')
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
@@ -2163,14 +2220,15 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
   const heading = view === 'home' ? 'Inicio' : view === 'projects' ? 'Proyectos' : view === 'review-starts' ? 'Revisiones por iniciar' : view === 'new-teachers' ? 'Nuevos docentes' : view === 'defenses-private' ? 'Defensas privadas' : view === 'defenses-public' ? 'Defensas públicas' : 'Usuarios'
 
   useEffect(() => {
-    if (navigationTarget === '/admin/revisiones-por-iniciar' || navigationTarget === '/admin/nuevos-proyectos' || navigationTarget === '/admin') {
-      setView('review-starts')
-      onNavigationHandled()
-    }
-    if (navigationTarget === '/admin/nuevos-docentes') {
+    if (!navigationTarget) return
+    if (navigationTarget.projectId) {
+      setSelectedProjectId(navigationTarget.projectId)
+      setView('projects')
+    } else if (navigationTarget.destination === '/admin/nuevos-docentes') {
       setView('new-teachers')
-      onNavigationHandled()
-    }
+    } else if (navigationTarget.destination === '/admin/revisiones-por-iniciar' || navigationTarget.destination === '/admin/nuevos-proyectos') setView('review-starts')
+    else setView('home')
+    onNavigationHandled()
   }, [navigationTarget, onNavigationHandled])
 
   async function loadUsers() {
@@ -2357,7 +2415,7 @@ function App() {
   const [isSwitchingRole, setIsSwitchingRole] = useState(false)
   const [isPasswordResetFlow, setIsPasswordResetFlow] = useState(() => new URLSearchParams(window.location.search).has('resetToken'))
   const [view, setView] = useState<'home' | 'project' | 'documents'>('home')
-  const [navigationTarget, setNavigationTarget] = useState<NotificationDestination | null>(null)
+  const [navigationTarget, setNavigationTarget] = useState<NotificationTarget | null>(null)
   const [pushNotice, setPushNotice] = useState<AppNotification | null>(null)
   const knownNotificationIds = useRef(new Set<string>())
   const notificationFeedReady = useRef(false)
@@ -2504,13 +2562,15 @@ function App() {
 
   async function handleNotificationClick(notification: AppNotification) {
     try {
-      if (data && notification.role !== data.user.role) await handleRoleChange(notification.role)
-      if (!notification.readAt) await api(`/api/notifications/${notification.id}/read`, { method: 'POST' })
-      const destination = notificationDestination(notification.link)
+      const activeRole = data?.user.role ?? notification.role
+      const targetRole = data?.user.roles.includes(notification.role) ? notification.role : activeRole
+      if (data && targetRole !== activeRole) await handleRoleChange(targetRole)
+      if (!notification.readAt) await api(`/api/notifications/${notification.id}/read`, { method: 'POST' }).catch(portalError)
+      const destination = notificationDestination(notification, targetRole)
+      await loadPortal()
       if (destination === '/student' || destination === '/student/proponer-tutor') setView('home')
       if (destination === '/documentos') setView('documents')
-      if (destination && !['/student', '/documentos'].includes(destination)) setNavigationTarget(destination)
-      await loadPortal()
+      setNavigationTarget({ destination, projectId: notification.projectId, type: notification.type })
       const url = new URL(window.location.href); url.searchParams.delete('notification'); window.history.replaceState({}, '', url)
     } catch (error) { portalError(error) }
   }
@@ -2544,7 +2604,7 @@ function App() {
   else content = view === 'home'
     ? <HomeView data={data} navigationTarget={navigationTarget} onDocuments={() => setView('documents')} onLogout={handleLogout} onProject={() => setView('project')} onRefresh={loadPortal} onNavigationHandled={() => setNavigationTarget(null)} sessionActions={sessionActions(data.user)} />
     : view === 'documents'
-      ? <DocumentsView data={data} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
+      ? <DocumentsView data={data} navigationTarget={navigationTarget} onNavigationHandled={() => setNavigationTarget(null)} onHome={() => setView('home')} onLogout={handleLogout} onProject={() => setView('project')} sessionActions={sessionActions(data.user)} />
       : <StudentForm data={data} onDocuments={() => setView('documents')} onHome={() => setView('home')} onLogout={handleLogout} onRegistered={loadPortal} sessionActions={sessionActions(data.user)} />
 
   return <>{content}{data && connectionError && <div className="connection-status" role="alert">{connectionError}<button onClick={() => void loadPortal().catch(portalError)} type="button">Reintentar</button></div>}{isLoggingOut && <div className="connection-status" role="status">Cerrando sesión…</div>}{pushNotice && data && !isPasswordResetFlow && <PushToast notification={pushNotice} onClose={() => setPushNotice(null)} onOpen={() => { const notification = pushNotice; setPushNotice(null); void handleNotificationClick(notification) }} />}</>

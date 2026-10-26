@@ -158,7 +158,7 @@ function sanitizeUser(row) {
 function notificationRole(row) {
   const link = row.enlace ?? ''
   if (link.startsWith('/tutor')) return 'TUTOR'
-  if (link.startsWith('/revisor')) return 'REVISOR'
+  if (link.startsWith('/revisor') || link.startsWith('/reviewer')) return 'REVISOR'
   if (link.startsWith('/admin')) return 'ADMINISTRADOR'
   return 'ESTUDIANTE'
 }

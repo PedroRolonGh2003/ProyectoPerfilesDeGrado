@@ -692,6 +692,8 @@ button:disabled, input:disabled, select:disabled, textarea:disabled { cursor: no
 .reviewer-stats > div.requires-attention { background: #fff8f1; border-color: #f0d8b7; }
 .reviewer-stats > div.requires-attention strong { color: #a95a18; }
 .reviewer-card { background: #fff; border: 1px solid #e8e1e2; border-left: 4px solid #9a3159; border-radius: 10px; box-shadow: 0 8px 22px rgba(71, 39, 49, .035); padding: clamp(19px, 3vw, 25px); }
+.tutor-card.is-notification-target, .reviewer-card.is-notification-target { outline: 2px solid var(--univalle-wine); outline-offset: 3px; scroll-margin-block: 100px; }
+.document-card, .reviewer-workspace { scroll-margin-block: 100px; }
 .reviewer-card.is-overdue { border-left-color: #c4701f; }
 .reviewer-card-top { align-items: flex-start; display: flex; gap: 12px; justify-content: space-between; }
 .reviewer-card-top > div { display: grid; gap: 5px; }
