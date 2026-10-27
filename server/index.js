@@ -445,6 +445,7 @@ async function ensureRegistrationSchema() {
       WHERE estado = 'PENDIENTE';
   `)
   await pool.query(await readFile(new URL('../database/20261023_pwa_sessions.sql', import.meta.url), 'utf8'))
+  await pool.query(await readFile(new URL('../database/20261027_retirar_rol_director_carrera.sql', import.meta.url), 'utf8'))
 }
 
 async function issueEmailConfirmation(databaseClient, userId) {
