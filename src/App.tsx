@@ -17,7 +17,6 @@ type IconName =
   | 'eye'
   | 'eyeOff'
   | 'file'
-  | 'help'
   | 'lock'
   | 'plus'
   | 'trash'
@@ -253,7 +252,7 @@ type AdminProjectDetail = {
   staff: AdminStaff[]
   assignments: AdminAssignment[]
   profiles: { documentId: string; versionId: string; version: number; filename: string; uploadedAt: string; size: number }[]
-  rounds: { id: string; number: number; version: number; requestedAt: string; closedAt: string | null; reviews: { id: string; decision: string; decidedAt: string | null; comment: string | null; assignmentType: string; reviewer: string; openObservations: number }[] }[]
+  rounds: { id: string; number: number; version: number; documentType: 'PERFIL_PROYECTO' | 'DOCUMENTO_PRIVADO' | 'DOCUMENTO_PUBLICO'; requestedAt: string; closedAt: string | null; reviews: { id: string; decision: string; decidedAt: string | null; comment: string | null; assignmentType: string; reviewer: string; openObservations: number }[] }[]
   statuses: { code: string; name: string }[]
   phases: { code: string; name: string }[]
   closure: { eligible: boolean; roundNumber: number | null; reason: string | null }
@@ -403,7 +402,6 @@ function Icon({ name }: { name: IconName }) {
     eye: <><path d="M2.8 12s3.25-5 9.2-5 9.2 5 9.2 5-3.25 5-9.2 5-9.2-5-9.2-5Z" /><circle cx="12" cy="12" r="2.2" /></>,
     eyeOff: <><path d="M2.8 12s3.25-5 9.2-5 9.2 5 9.2 5-3.25 5-9.2 5-9.2-5-9.2-5Z" /><circle cx="12" cy="12" r="2.2" /><path d="m4 4 16 16" /></>,
     file: <><path d="M6.5 3.5h7l4 4v12a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5.5 19.5V5a1.5 1.5 0 0 1 1-1.5Z" /><path d="M13.5 3.5v4h4M8.5 12h7M8.5 15.5h5" /></>,
-    help: <><circle cx="12" cy="12" r="8.5" /><path d="M9.6 9.5a2.45 2.45 0 1 1 3.68 2.12c-.85.5-1.28.94-1.28 1.88" /><path d="M12 16.4h.01" /></>,
     lock: <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10" /></>,
     plus: <path d="M12 5v14M5 12h14" />,
     trash: <><path d="M4.5 7h15M9.5 7V5.2h5V7M7.5 7l.7 12h7.6l.7-12M10 10.5v5M14 10.5v5" /></>,
@@ -1041,7 +1039,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
             <button onClick={onDocuments} type="button"><Icon name="file" /><span>Documentos</span></button>
           </nav>
         </div>
-        <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+        <div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
       </PortalSidebar>
 
       <section className="student-content">
@@ -1123,6 +1121,12 @@ function documentLabel(type: string) {
   if (type === 'PERFIL_PROYECTO') return 'Perfil de proyecto'
   if (type === 'DOCUMENTO_PRIVADO') return 'Documento para defensa privada'
   return type.replaceAll('_', ' ')
+}
+
+function reviewRoundDocumentLabel(type: AdminProjectDetail['rounds'][number]['documentType']) {
+  if (type === 'PERFIL_PROYECTO') return 'Perfil'
+  if (type === 'DOCUMENTO_PRIVADO') return 'Documento privado'
+  return 'Documento público'
 }
 
 function reviewerRoleLabel(type: string) {
@@ -1223,7 +1227,7 @@ function HomeView({ data, onLogout, onProject, onDocuments, onRefresh, sessionAc
             <button onClick={onDocuments} type="button"><Icon name="file" /><span>Documentos</span></button>
           </nav>
         </div>
-        <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+        <div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
       </PortalSidebar>
 
       <section className="student-content">
@@ -1365,7 +1369,7 @@ function DocumentsView({ data, onLogout, onProject, onHome, sessionActions, navi
             <button className="is-active" type="button"><Icon name="file" /><span>Documentos</span></button>
           </nav>
         </div>
-        <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Tienes dudas?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+        <div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
       </PortalSidebar>
 
       <section className="student-content">
@@ -1545,7 +1549,7 @@ function TutorPortal({ data, notifications, onLogout, onRefresh, sessionActions,
           <button className={view === 'defenses' ? 'is-active' : ''} onClick={() => setView('defenses')} type="button"><Icon name="file" /><span>Defensas</span></button>
         </nav>
       </div>
-      <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+      <div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
     </PortalSidebar>
 
     <section className="student-content">
@@ -1758,7 +1762,7 @@ function ReviewerPortal({ data, notifications, onLogout, onRefresh, sessionActio
           <button className={!selectedReview && view === 'defenses' ? 'is-active' : ''} onClick={() => { closeReview(); setView('defenses') }} type="button"><Icon name="file" /><span>Defensas</span></button>
         </nav>
       </div>
-      <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>¿Necesitas apoyo?</strong><small>Contacta a Administración.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+      <div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
     </PortalSidebar>
 
     <section className="student-content">
@@ -1914,7 +1918,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
   const isClosed = isCancelled || isFinalized
 
   return <main className="student-page admin-page">
-    <PortalSidebar className="admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button></nav></div><div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></PortalSidebar>
+    <PortalSidebar className="admin-sidebar"><div><div className="student-brand"><BrandLogo /><span><strong>UNIVALLE</strong><small>Seguimiento de Titulación</small></span></div><p className="student-role">ADMINISTRACIÓN</p><nav aria-label="Navegación de Administración" className="student-nav"><button className="is-active" onClick={onBack} type="button"><Icon name="clipboard" /><span>Proyectos</span></button></nav></div><div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div></PortalSidebar>
     <section className="student-content"><header className="student-header"><div className="mobile-student-brand"><BrandLogo /><strong>UNIVALLE</strong></div>{sessionActions}</header><div className="student-main admin-main admin-workspace">
       <button className="text-button admin-back" onClick={onBack} type="button">← Volver a proyectos</button>
       {isLoading && <section className="documents-loading">Cargando información operativa del proyecto…</section>}
@@ -1933,7 +1937,7 @@ function AdminProjectWorkspace({ projectId, user, onBack, onLogout, onRefresh, s
         </div>}
 
 
-        <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se habilitó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · Perfil V{round.version}</strong><span>Habilitada: {formatDate(round.requestedAt)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
+        <section className="admin-operation-card admin-round-history"><div className="admin-operation-heading"><Icon name="clipboard" /><div><p>SEGUIMIENTO</p><h2>Rondas de revisión</h2></div></div>{detail.rounds.length === 0 ? <p className="admin-empty-copy">Aún no se habilitó una ronda de revisión para el perfil.</p> : <div className="admin-round-list">{detail.rounds.map((round) => <article className={round.closedAt ? 'admin-round is-closed' : 'admin-round'} key={round.id}><div><strong>Ronda {round.number} · {reviewRoundDocumentLabel(round.documentType)} V{round.version}</strong><span>Habilitada: {formatDate(round.requestedAt)}</span></div><div className="admin-reviewers">{round.reviews.map((review) => <span key={review.id}><b>{review.assignmentType === 'TUTOR' ? 'T' : review.assignmentType === 'REVISOR_1' ? 'R1' : 'R2'}</b>{review.reviewer}: {review.decision}{review.openObservations > 0 ? ` · ${review.openObservations} observación(es)` : ''}</span>)}</div></article>)}</div>}</section>
 
         {!isClosed && <section className="admin-operation-card admin-close-card"><div className="admin-operation-heading"><Icon name="check" /><div><p>CIERRE ACADÉMICO</p><h2>Cerrar proyecto</h2></div></div><p>{detail.closure.eligible ? `La ronda pública ${detail.closure.roundNumber ?? ''} fue aprobada por tutor, Revisor 1 y Revisor 2. El proyecto está listo para finalizar.` : detail.closure.reason}</p><button className="primary-button" disabled={isSubmitting || !detail.closure.eligible} onClick={() => void closeProject()} type="button">Cerrar proyecto</button></section>}
 
@@ -2357,7 +2361,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
           <button className={view === 'users' ? 'is-active' : ''} onClick={() => setView('users')} type="button"><Icon name="user" /><span>Usuarios</span></button>
         </nav>
       </div>
-      <div className="sidebar-bottom"><div className="student-help"><Icon name="help" /><span><strong>Gestión académica</strong><small>Control de proyectos y revisiones.</small></span></div><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
+      <div className="sidebar-bottom"><button className="logout-button" onClick={() => void onLogout()} type="button"><Icon name="exit" />Cerrar sesión</button></div>
     </PortalSidebar>
 
     <section className="student-content">

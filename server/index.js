@@ -3059,7 +3059,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
       ),
       pool.query(
         `SELECT rr.id, rr.numero_ronda, rr.fecha_solicitud, rr.cerrada_en,
-                vd.numero_version,
+                vd.numero_version, d.tipo_documento AS document_type,
                 COALESCE(json_agg(json_build_object(
                   'id', r.id,
                   'decision', r.decision,
@@ -3077,7 +3077,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
          LEFT JOIN titulacion.docentes reviewer_docente ON reviewer_docente.id = a.docente_id
          LEFT JOIN titulacion.usuarios u ON u.id = reviewer_docente.usuario_id
          WHERE d.proyecto_id = $1
-         GROUP BY rr.id, vd.numero_version
+         GROUP BY rr.id, vd.numero_version, d.tipo_documento
          ORDER BY rr.fecha_solicitud DESC`,
         [projectId],
       ),
@@ -3134,6 +3134,7 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
         id: item.id,
         number: item.numero_ronda,
         version: item.numero_version,
+        documentType: item.document_type,
         requestedAt: item.fecha_solicitud,
         closedAt: item.cerrada_en,
         reviews: item.revisiones ?? [],
@@ -4670,8 +4671,12 @@ app.post('/api/reviewer/reviews/:reviewId/decision', requireReviewer, async (req
     return response.json({
       message: roundCompleted
         ? roundResult === 'observed'
-          ? 'Dictamen registrado. La ronda se cerró y el perfil fue devuelto al estudiante con observaciones.'
-          : 'Dictamen registrado. La ronda se cerró y el perfil pasa a aprobación institucional.'
+          ? `Dictamen registrado. La ronda se cerró y ${isPublicDefense ? 'el documento público' : isPrivateDefense ? 'el documento privado' : 'el perfil'} fue devuelto al estudiante con observaciones.`
+          : roundResult === 'public-defense-approved'
+            ? 'Dictamen registrado. La ronda se cerró y el proyecto quedó aprobado institucionalmente.'
+            : roundResult === 'private-defense-approved'
+              ? 'Dictamen registrado. La ronda se cerró y se habilitó el documento para defensa pública.'
+              : 'Dictamen registrado. La ronda se cerró y se habilitó el documento para defensa privada.'
         : 'Dictamen registrado. La ronda se cerrará cuando el segundo revisor emita su dictamen.',
       roundCompleted,
       roundResult,
