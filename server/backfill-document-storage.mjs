@@ -3,9 +3,10 @@ import 'dotenv/config'
 import { access, readFile } from 'node:fs/promises'
 import path from 'node:path'
 import pg from 'pg'
+import { databaseConnectionOptions } from './database-config.mjs'
 
 const { Pool } = pg
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, options: '-c search_path=titulacion,public' })
+const pool = new Pool(databaseConnectionOptions())
 
 function localPath(relativePath, projectId) {
   const prefix = `uploads/proyectos/${projectId}/`

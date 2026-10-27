@@ -3,18 +3,12 @@ import 'dotenv/config'
 import assert from 'node:assert/strict'
 import bcrypt from 'bcryptjs'
 import pg from 'pg'
+import { databaseConnectionOptions } from './database-config.mjs'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const apiUrl = `http://127.0.0.1:${port}`
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT ?? 5432),
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  options: '-c search_path=titulacion,public',
-})
+const pool = new Pool(databaseConnectionOptions())
 
 async function expectStatus(response, status, label) {
   assert.equal(response.status, status, `${label}: se esperaba HTTP ${status} y se recibió ${response.status}`)

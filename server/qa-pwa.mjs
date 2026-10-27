@@ -2,19 +2,11 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import pg from 'pg'
 import 'dotenv/config'
+import { databaseConnectionOptions } from './database-config.mjs'
 
 const apiUrl = process.env.API_URL ?? 'http://127.0.0.1:3001'
 const { Pool } = pg
-const pool = new Pool(process.env.DATABASE_URL
-  ? { connectionString: process.env.DATABASE_URL, options: '-c search_path=titulacion,public' }
-  : {
-      host: process.env.DB_HOST,
-      port: Number(process.env.DB_PORT ?? 5432),
-      database: process.env.DB_NAME,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      options: '-c search_path=titulacion,public',
-    })
+const pool = new Pool(databaseConnectionOptions())
 
 try {
   const [manifestSource, serviceWorkerSource, appSource, stylesSource] = await Promise.all([

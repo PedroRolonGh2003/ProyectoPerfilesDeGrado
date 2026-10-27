@@ -1,129 +1,147 @@
 # ProyectoPerfilesDeGrado
 
-Aplicación para gestionar el seguimiento de proyectos de titulación: registro de perfil, revisiones, documentos, formularios, aprobaciones y reportes.
+Aplicación web para administrar el proceso de titulación de Univalle desde el registro del perfil hasta el cierre del proyecto. Incluye los portales de Estudiante, Tutor, Revisor y Administración.
 
-## Estado actual
+## Funcionalidades
 
-La primera entrega incluye inicio de sesión institucional real, el Formulario 1 y el portal de seguimiento para estudiantes, junto con un portal de Tutor. La interfaz usa tonos guindo Univalle y la API registra sesiones seguras en PostgreSQL. El tutor puede ver las invitaciones de tutoría, aceptarlas o declinarlas con motivo, consultar sus proyectos y documentos autorizados, y revisar las notificaciones internas.
+- Registro y confirmación por correo institucional, inicio de sesión, recuperación de contraseña y sesiones persistentes.
+- Gestión de roles: un estudiante puede ser también Administrador; Tutor, Revisor y Administrador se pueden combinar en perfiles docentes.
+- Registro y seguimiento de perfiles, proyectos, objetivos, tutorías, revisores y rondas de revisión.
+- Carga y versionado de documentos Word, observaciones, correcciones y dictámenes de perfil, defensa privada y defensa pública.
+- Programación administrativa de defensas con fecha, hora y lugar; cierre del proyecto después de las aprobaciones requeridas.
+- Notificaciones internas, correo encolado y Web Push para dispositivos compatibles.
+- PWA instalable con navegación móvil, historial de avisos y protección de sesiones por dispositivo.
+- Auditoría de acciones, historial de estados, recordatorios de revisión y controles de acceso por rol.
 
-## Tecnologías
+## Arquitectura
 
-- React + TypeScript
-- Vite
-- Node.js + Express
-- PostgreSQL (base existente: `seguimiento_titulacion`)
+- **Frontend:** React, TypeScript y Vite en `src/`.
+- **API:** Express en `server/index.js`; Vercel la expone mediante `api/[...path].js`.
+- **Base de datos:** PostgreSQL con el esquema `titulacion`.
+- **Documentos:** se almacenan en PostgreSQL cuando se usa `DATABASE_URL`; la copia local `uploads/` sirve para desarrollo y migración.
+- **PWA:** `public/sw.js`, `public/manifest.webmanifest` y los recursos gráficos de `public/`.
+- **Migraciones y mantenimiento:** scripts SQL en `database/` y utilidades en `server/`.
 
-## Ejecutar en desarrollo
+## Requisitos
+
+- Node.js 20 o posterior.
+- PostgreSQL con la base y el esquema `titulacion` disponibles.
+- SMTP configurado para enviar confirmaciones y recuperaciones de contraseña.
+- Claves VAPID para habilitar Web Push.
+
+## Instalación y desarrollo
 
 ```bash
 npm install
+Copy-Item .env.example .env
 npm run dev
 ```
 
-El comando inicia la aplicación web en `http://localhost:5173` y la API en `http://127.0.0.1:3001`.
+La interfaz queda disponible en `http://localhost:5173` y la API en `http://127.0.0.1:3001`.
 
-## Configuración local
+En PowerShell, completa `.env` con las credenciales locales antes de iniciar. El archivo `.env` está ignorado por Git y no debe publicarse.
 
-La conexión se toma de `.env`, que está ignorado por Git. Usa `.env.example` como referencia para otra instalación. No subas contraseñas ni archivos adjuntos: los perfiles se guardan localmente en `uploads/`, también ignorado por Git.
+## Variables de entorno
 
-## Registro y confirmación de cuentas
+`.env.example` contiene todas las variables usadas por la aplicación y sus utilidades. Las principales son:
 
-La pantalla inicial permite crear cuentas institucionales. El dominio determina el tipo de cuenta:
+- `DATABASE_URL`: conexión de PostgreSQL administrado; tiene prioridad cuando existe.
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: conexión local alternativa.
+- `SESSION_HOURS`, `REMEMBER_SESSION_DAYS`, `EMAIL_CONFIRMATION_HOURS`, `PASSWORD_RESET_HOURS`: tiempos de sesión y tokens.
+- `APP_BASE_URL`: URL pública usada en los enlaces por correo. En Vercel puede omitirse.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`: envío de correo.
+- `CRON_SECRET`: protege los endpoints programados.
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`: Web Push.
+- `NEON_DATABASE_URL`, `PG_DUMP_PATH`, `PG_RESTORE_PATH`: migración opcional a Neon.
+- `API_URL`, `QA_STUDENT_EMAIL`, `QA_STUDENT_PASSWORD`: pruebas opcionales; no son necesarias para ejecutar la aplicación.
 
-- `@est.univalle.edu`: crea un perfil de estudiante; tras confirmar el correo puede iniciar sesión.
-- `@univalle.edu`: crea su propio perfil docente con carrera, código y especialidad. Tras confirmar el correo, Administración solo asigna los roles de Tutor, Revisor y, cuando corresponde, Administrador.
+No incluyas secretos, cookies, endpoints Push ni contraseñas en documentación, commits o capturas.
 
-Administración también puede crear una cuenta directamente desde **Usuarios**. Las combinaciones permitidas son **Estudiante + Administrador** o cualquier combinación de **Tutor + Revisor + Administrador**; no se pueden mezclar perfiles de estudiante con Tutor o Revisor.
+La API y los QA que interactúan con ella usan la misma prioridad de conexión: `DATABASE_URL` cuando está definida y, en caso contrario, `DB_*`. Esto evita validar una base distinta de la que atiende la aplicación.
 
-Las cuentas nuevas permanecen inactivas hasta que se consume un enlace de un solo uso enviado por correo. Configura `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM`; en producción también define `APP_BASE_URL` si no deseas usar la URL de Vercel detectada automáticamente.
+## Base de datos y migraciones
 
-## Recuperación de contraseña
+Las migraciones conservadas en `database/` son acumulativas y documentan cambios aplicados al esquema: cuentas, recuperación de contraseña, documentos, matrices de revisión, defensas, recordatorios, sesiones y Web Push. No se deben ejecutar sobre producción sin revisar previamente el estado del esquema y realizar un respaldo.
 
-En el inicio de sesión, **¿Olvidaste tu contraseña?** envía un enlace de un solo uso al correo institucional de una cuenta activa. El enlace abre la vista para definir una nueva contraseña, vence en una hora por defecto (`PASSWORD_RESET_HOURS`) y, al usarse, invalida las sesiones activas de esa cuenta.
-
-## Base de datos en Neon
-
-La aplicacion admite una conexion administrada mediante `DATABASE_URL`. Cuando esta variable esta definida, tiene prioridad sobre las variables locales `DB_*`; la cadena debe incluir `sslmode=require`.
-
-Para migrar una base local hacia una base de Neon vacia, define temporalmente `NEON_DATABASE_URL` con la cadena de destino y ejecuta:
+Para trasladar una base local a una base Neon vacía:
 
 ```bash
 npm run db:migrate:neon
 ```
 
-En Windows, si PostgreSQL no esta en el `PATH`, define tambien `PG_DUMP_PATH` y `PG_RESTORE_PATH` con las rutas de los ejecutables. La migracion crea un respaldo temporal, lo restaura sin propietarios ni privilegios locales y elimina el respaldo al finalizar.
+Define previamente `NEON_DATABASE_URL`. En Windows, si PostgreSQL no está en `PATH`, define también `PG_DUMP_PATH` y `PG_RESTORE_PATH`. Comprueba una migración terminada con:
 
-## Actualizaciones de base de datos
+```bash
+npm run qa:neon-migration
+```
 
-Las migraciones aplicadas se conservan en `database/`.
+Para copiar documentos locales que aún no estén almacenados en PostgreSQL:
 
-- `20260908_catalogo_modalidad_y_funciones.sql`: incorpora la modalidad Trabajo dirigido para Sistemas y corrige funciones para usar el esquema `titulacion` de forma explícita.
-- `20260908_solicitudes_tutoria_y_cola_correos.sql`: agrega trazabilidad de respuesta a solicitudes de tutoría, índices de notificación y una cola persistente para los correos futuros. La aplicación no envía correos mientras no se configure un proveedor SMTP; solo registra los eventos pendientes de entrega.
-- `20261021_recordatorios_revision_sin_fecha_limite.sql`: elimina los plazos de las rondas abiertas. Desde el segundo día de una revisión pendiente, se crea un recordatorio diario para el tutor o revisor correspondiente.
-- `20261022_programacion_defensas.sql`: registra una convocatoria por defensa privada o pública, con fecha, hora, lugar y trazabilidad de la persona que la programó.
+```bash
+npm run storage:backfill
+```
 
-## Recordatorios en producción
+## PWA y Web Push
 
-En Vercel, `vercel.json` ejecuta el recordatorio de revisiones una vez al día a las 08:00 (hora de Bolivia). Define `CRON_SECRET` como una variable de entorno aleatoria de al menos 16 caracteres para proteger la tarea programada.
-
-## PWA y notificaciones push
-
-La plataforma es instalable como PWA en navegadores compatibles. El Service Worker solo conserva recursos públicos de la interfaz; no almacena respuestas de `/api`, sesiones, documentos ni datos académicos privados.
-
-Para habilitar las notificaciones push, genera una pareja VAPID una sola vez y configura los valores en el entorno local y en Vercel:
+Genera las claves VAPID una sola vez:
 
 ```bash
 npm exec web-push generate-vapid-keys
 ```
 
-Configura `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` y `VAPID_SUBJECT` (por ejemplo, la URL HTTPS pública de la plataforma). Nunca publiques la clave privada ni regeneres las claves en cada despliegue. Al iniciar sesión por primera vez en un móvil, un diálogo solicita permiso para las notificaciones; el usuario debe pulsar **Permitir notificaciones**. Si elige **Ahora no**, se le vuelve a preguntar al iniciar otra sesión. Una vez activadas, la suscripción se restablece automáticamente al volver a entrar en la misma cuenta. No hace falta mantener abierta la aplicación.
+Configura sus valores en el entorno local y en Vercel. En teléfonos, el usuario recibe la solicitud de permiso al iniciar sesión por primera vez. En iPhone o iPad se requiere iOS/iPadOS 16.4 o posterior, instalar la PWA desde Safari y abrirla desde el icono instalado.
 
-Cada notificación interna encola sus entregas dentro de la misma transacción de PostgreSQL. El servidor las envía mediante Web Push con su título y un extracto del mensaje para cualquier rol, incluso con la aplicación cerrada. El TTL es de hasta siete días; no necesita una pestaña ni una sesión abierta. `waitUntil` mantiene vivo el envío después de la respuesta en Vercel. Las entregas usan un registro único por notificación/dispositivo y una etiqueta común en el proveedor y el navegador. Los reintentos pueden repetir un envío aceptado si el proceso se interrumpió antes de guardarlo; no se promete entrega exactamente una vez.
+El Service Worker solo almacena el shell público. No almacena respuestas de API, sesiones, documentos ni datos académicos. La cola de entregas se procesa después de crear una notificación y se reintenta ante fallos temporales. La aceptación del proveedor no garantiza la recepción física en el dispositivo.
 
-Los errores temporales se reintentan con espera creciente; 404/410 desactivan suscripciones inválidas. El servidor local revisa pendientes cada minuto. En Vercel, la tarea diaria existente también los procesa; `GET /api/cron/push-deliveries` admite un programador externo más frecuente con `Authorization: Bearer CRON_SECRET`. El plan Hobby solo admite cron diario: sin tráfico, un reintento pendiente puede esperar hasta la siguiente ejecución. El primer intento sí se lanza con la operación que creó el aviso. La aceptación por el proveedor **no confirma recepción en el teléfono**.
+Consulta [la guía de verificación PWA](docs/VERIFICACION_PWA.md) para pruebas de dispositivos, sesiones y entregas Push.
 
-**Sesiones:** «Recordar mi sesión» está seleccionado inicialmente. La cookie persistente es `HttpOnly`, `SameSite=Lax` y `Secure` en producción; en la base solo se guarda el hash del token. La ventana de inactividad es de 90 días por defecto (`REMEMBER_SESSION_DAYS`), renovable al usar la aplicación. Desmarcar la opción conserva la sesión corta de `SESSION_HOURS`. Cerrar/reiniciar el dispositivo no elimina la cookie; revocación, cambio de contraseña, vencimiento por inactividad o borrar datos del navegador requieren autenticarse otra vez. Los errores de red conservan la sesión y muestran «Reintentar conexión».
+## Comandos
 
-**Móvil:** la barra inferior se conserva. El botón de menú junto al logo abre el lateral con «Cerrar sesión» fijo abajo, fuera del área desplazable y respetando el área segura. Salir revoca la sesión y cancela las entregas al dispositivo actual, sin afectar los otros dispositivos. El Service Worker descarta mensajes en tránsito de la cuenta anterior y cierra los avisos mostrados. Si no hay conexión para confirmar la revocación, la interfaz informa del fallo y permite volver a intentarlo.
+```bash
+npm run dev                 # API y frontend en desarrollo
+npm run dev:api             # Solo API con recarga
+npm run build               # Verificación TypeScript y build de Vite
+npm run preview             # Vista previa del build
+npm start                   # API en modo producción
+npm run qa                  # Salud de API, base, acceso y catálogo
+npm run qa:flow             # Flujo de estudiante con credenciales QA explícitas
+npm run qa:admin            # Panel de administración
+npm run qa:admin-operations # Operaciones administrativas
+npm run qa:admin-users      # Directorio, roles y altas administrativas
+npm run qa:tutor            # Flujo de tutoría
+npm run qa:reviewer         # Flujo de revisión
+npm run qa:defenses         # Programación de defensas
+npm run qa:pwa              # Configuración PWA
+npm run qa:pwa:flow         # API, cola y Push con proveedor simulado
+npm run qa:pwa:worker       # Manejadores del Service Worker
+npm run db:migrate:neon      # Copia una base local a Neon (requiere NEON_DATABASE_URL)
+npm run qa:neon-migration    # Compara la migración local con Neon
+npm run storage:backfill     # Copia documentos locales pendientes a PostgreSQL
+npm run seed:demo           # Datos de demostración
+npm run seed:multirole-demo # Datos de demostración multirol
+npm run qa:multirole-demo   # Verificación de esa carga demo
+```
 
-**Historial:** la campanita ofrece «Ver historial completo», con paginación y estado de lectura. Abrir la aplicación o recuperar conexión sincroniza los avisos. Enviar un push no los marca como leídos. Al tocarlo, se conserva su ID en la URL hasta que se puede abrir con la sesión y el rol autorizados.
+Los QA que consultan la API local requieren que `npm run dev:api` esté activo. `qa:pwa:flow` inicia una API aislada; `qa:pwa:worker` no necesita API. Los scripts que crean cuentas, proyectos y documentos temporales los eliminan al terminar; `qa:flow` usa la cuenta indicada por las variables QA y mantiene esa cuenta.
 
-En Android, la instalación y los avisos funcionan en navegadores compatibles con Web Push. En iPhone/iPad, los avisos requieren iOS/iPadOS 16.4 o posterior y que la PWA se haya agregado a la pantalla de inicio desde Safari; el permiso se solicita desde el diálogo de bienvenida.
+## Despliegue
 
-Pruebas específicas: `npm run qa:pwa:flow` prueba API/base de datos con cuentas temporales y un proveedor simulado; `npm run qa:pwa:worker` prueba los manejadores del Service Worker. Ninguna equivale a recepción física. Consulta [la verificación móvil](docs/VERIFICACION_PWA.md) para los escenarios de dispositivo y producción.
+Vercel usa `vercel.json` para enrutar `/api`, publicar la SPA y ejecutar el recordatorio de revisiones diario. Configura las variables de entorno de producción en el proyecto de Vercel, especialmente `DATABASE_URL`, `CRON_SECRET`, SMTP y VAPID. El cron se autentica mediante `Authorization: Bearer CRON_SECRET`.
 
-## Verificar compilación
+Antes de desplegar, ejecuta al menos:
 
 ```bash
 npm run build
-```
-
-## QA local
-
-Con `npm run dev` activo, ejecuta:
-
-```bash
 npm run qa
 ```
 
-La prueba valida la conexión PostgreSQL, las tablas requeridas, el catálogo de modalidades, la API y los rechazos de autenticación no autorizada. La prueba de registro completo requiere credenciales válidas de un estudiante sin proyecto activo.
+## Estructura principal
 
-Para probar el caso positivo de punta a punta sin guardar datos de prueba, define temporalmente `QA_STUDENT_EMAIL` y `QA_STUDENT_PASSWORD` en la terminal y ejecuta `npm run qa:flow`. El script elimina solo el proyecto, adjunto y relaciones que creó al finalizar; la cuenta de prueba permanece disponible.
-
-El flujo de Tutor se prueba de forma aislada y limpia sus propias cuentas, proyecto, documentos, sesiones y notificaciones al terminar:
-
-```bash
-npm run qa:tutor
-```
-
-La administración general se valida con cuentas y proyectos temporales que se eliminan al finalizar. Comprueba usuarios, roles múltiples, perfiles de estudiante/docente, creación de proyecto y bajas lógicas:
-
-```bash
-npm run qa:admin-users
-```
-
-La programación de defensas comprueba el bloqueo antes de cada fase, el guardado de fecha, hora y lugar, la información visible para estudiante, tutor y revisores, y las notificaciones con enlaces al portal correspondiente:
-
-```bash
-npm run qa:defenses
+```text
+api/        Adaptador serverless de Vercel
+database/   Migraciones SQL acumulativas
+docs/       Guías de operación y verificación
+public/     Manifest, Service Worker y recursos PWA
+server/     API, entregas Push, semillas, migración y QA
+src/        Interfaz React
 ```

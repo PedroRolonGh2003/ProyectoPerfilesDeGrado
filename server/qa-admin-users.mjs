@@ -5,20 +5,12 @@ import bcrypt from 'bcryptjs'
 import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import pg from 'pg'
+import { databaseConnectionOptions } from './database-config.mjs'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const apiUrl = `http://127.0.0.1:${port}`
-const pool = new Pool(process.env.DATABASE_URL
-  ? { connectionString: process.env.DATABASE_URL, options: '-c search_path=titulacion,public' }
-  : {
-      host: process.env.DB_HOST,
-      port: Number(process.env.DB_PORT ?? 5432),
-      database: process.env.DB_NAME,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      options: '-c search_path=titulacion,public',
-    })
+const pool = new Pool(databaseConnectionOptions())
 
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const password = 'AdminUsersQA-2026'

@@ -11,6 +11,7 @@ import nodemailer from 'nodemailer'
 import pg from 'pg'
 import webpush from 'web-push'
 import { waitUntil } from '@vercel/functions'
+import { databaseConnectionOptions } from './database-config.mjs'
 import { deliverPendingPush } from './push-delivery.mjs'
 
 const { Pool } = pg
@@ -36,7 +37,6 @@ const reviewFormatCriteria = ['TITULO', 'INDICE', 'ORDEN_GUIA', 'FORMATO', 'NUME
 const reviewBackgroundCriteria = ['PROBLEMA', 'JUSTIFICACION', 'FUENTES', 'ANALISIS_LITERATURA', 'PERSPECTIVA_TEORICA', 'VINCULO_TEORIA', 'VIABILIDAD_OBJETIVOS', 'COHERENCIA_OBJETIVOS', 'METODOLOGIA_PERTINENTE', 'METODOLOGIA_RESPONDE']
 const privateDefenseCriteria = ['FUENTES_ACTUALIZADAS', 'ANALISIS_LITERATURA', 'METODOLOGIA', 'RESULTADOS_OBJETIVOS', 'CONCLUSIONES_OBJETIVOS']
 const publicDefenseRatifications = ['SI', 'NO', 'PARCIALMENTE']
-const databaseUrl = process.env.DATABASE_URL?.trim()
 const initialization = { promise: null }
 const reviewReminderIntervalMs = 60 * 60 * 1000
 let pushEnabled = false
@@ -59,16 +59,7 @@ const mailTransport = smtpHost && smtpUser && smtpPassword && smtpFrom
     })
   : null
 
-const pool = new Pool(databaseUrl
-  ? { connectionString: databaseUrl, options: '-c search_path=titulacion,public' }
-  : {
-      host: process.env.DB_HOST,
-      port: Number(process.env.DB_PORT ?? 5432),
-      database: process.env.DB_NAME,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      options: '-c search_path=titulacion,public',
-    })
+const pool = new Pool(databaseConnectionOptions())
 
 const app = express()
 const upload = multer({

@@ -5,11 +5,12 @@ import { access, rm } from 'node:fs/promises'
 import path from 'node:path'
 import bcrypt from 'bcryptjs'
 import pg from 'pg'
+import { databaseConnectionOptions } from './database-config.mjs'
 
 const { Pool } = pg
 const port = Number(process.env.PORT ?? 3001)
 const apiUrl = `http://127.0.0.1:${port}`
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, options: '-c search_path=titulacion,public' })
+const pool = new Pool(databaseConnectionOptions())
 
 const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const studentEmail = `qa.tutor.student.${suffix}@univalle.edu`

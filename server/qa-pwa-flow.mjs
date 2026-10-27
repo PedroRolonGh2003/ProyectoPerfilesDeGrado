@@ -4,6 +4,7 @@ import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import pg from 'pg'
 import webpush from 'web-push'
+import { databaseConnectionOptions } from './database-config.mjs'
 import { deliverPendingPush, PUSH_TTL } from './push-delivery.mjs'
 
 // Real database and HTTP sessions, isolated accounts. No actual push is sent by QA.
@@ -17,7 +18,7 @@ await initializeServerless()
 const server = app.listen(0, '127.0.0.1')
 await new Promise((resolve) => server.once('listening', resolve))
 const base = `http://127.0.0.1:${server.address().port}`
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, options: '-c search_path=titulacion,public' })
+const pool = new pg.Pool(databaseConnectionOptions())
 const ids = []
 const suffix = crypto.randomBytes(6).toString('hex')
 const password = crypto.randomBytes(18).toString('base64url')
