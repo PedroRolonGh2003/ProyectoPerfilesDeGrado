@@ -31,7 +31,9 @@ La conexión se toma de `.env`, que está ignorado por Git. Usa `.env.example` c
 La pantalla inicial permite crear cuentas institucionales. El dominio determina el tipo de cuenta:
 
 - `@est.univalle.edu`: crea un perfil de estudiante; tras confirmar el correo puede iniciar sesión.
-- `@univalle.edu`: crea una cuenta docente sin roles; tras confirmar el correo, Administración debe asignarle Tutor y/o Revisor desde el directorio de usuarios.
+- `@univalle.edu`: crea su propio perfil docente con carrera, código y especialidad. Tras confirmar el correo, Administración solo asigna los roles de Tutor, Revisor y, cuando corresponde, Administrador.
+
+Administración también puede crear una cuenta directamente desde **Usuarios**. Las combinaciones permitidas son **Estudiante + Administrador** o cualquier combinación de **Tutor + Revisor + Administrador**; no se pueden mezclar perfiles de estudiante con Tutor o Revisor.
 
 Las cuentas nuevas permanecen inactivas hasta que se consume un enlace de un solo uso enviado por correo. Configura `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD` y `SMTP_FROM`; en producción también define `APP_BASE_URL` si no deseas usar la URL de Vercel detectada automáticamente.
 

@@ -24,6 +24,8 @@ const suffix = `${Date.now()}-${Math.floor(Math.random() * 100000)}`
 const password = 'AdminUsersQA-2026'
 let adminId = ''
 let targetUserId = ''
+let teacherUserId = ''
+let pendingTeacherUserId = ''
 let projectId = ''
 let uploadPath = ''
 let cookie = ''
@@ -68,7 +70,7 @@ async function setup() {
 }
 
 async function cleanup() {
-  const userIds = [adminId, targetUserId].filter(Boolean)
+  const userIds = [adminId, targetUserId, teacherUserId, pendingTeacherUserId].filter(Boolean)
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -123,19 +125,64 @@ try {
   }), 201, 'Alta de estudiante')
   targetUserId = (await created.json()).userId
 
+  await expect(await fetch(`${apiUrl}/api/admin/users/${targetUserId}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({
+      firstName: 'QA', lastName: 'Usuario Integral Editado', email: userEmail, phone: '70000002', password: '', active: true,
+      roles: ['ESTUDIANTE', 'TUTOR'], careerId: catalog.career_id, registration: `QA-USR-${suffix}`,
+    }),
+  }), 422, 'Bloqueo de combinación de estudiante y docente')
+
   const updated = await expect(await fetch(`${apiUrl}/api/admin/users/${targetUserId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({
       firstName: 'QA', lastName: 'Usuario Integral Editado', email: userEmail, phone: '70000002', password: '', active: true,
-      roles: ['ESTUDIANTE', 'TUTOR', 'REVISOR'], careerId: catalog.career_id, registration: `QA-USR-${suffix}`, teacherCode: `QA-DOC-${suffix}`, specialty: 'Gestión académica',
+      roles: ['ESTUDIANTE', 'ADMINISTRADOR'], careerId: catalog.career_id, registration: `QA-USR-${suffix}`,
     }),
   }), 200, 'Edición y roles múltiples')
   assert.match((await updated.json()).message, /actualizado/i)
 
   const reloaded = await expect(await fetch(`${apiUrl}/api/admin/users`, { headers: { Cookie: cookie } }), 200, 'Verificación de usuario editado')
   const target = (await reloaded.json()).users.find((user) => user.id === targetUserId)
-  assert.deepEqual(target.roles, ['ESTUDIANTE', 'TUTOR', 'REVISOR'], 'No se conservaron los roles múltiples')
-  assert.ok(target.studentId && target.teacherId && target.teacherCode === `QA-DOC-${suffix}`, 'No se crearon ambos perfiles académicos')
+  assert.deepEqual(target.roles, ['ESTUDIANTE', 'ADMINISTRADOR'], 'No se conservaron los roles permitidos del estudiante')
+  assert.ok(target.studentId && !target.teacherId, 'El estudiante no debe adquirir un perfil docente')
+
+  const teacherEmail = `qa.docente.integral.${suffix}@univalle.edu`
+  const teacherCreated = await expect(await fetch(`${apiUrl}/api/admin/users`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({
+      firstName: 'QA', lastName: 'Docente Integral', email: teacherEmail, phone: '70000003', password,
+      roles: ['TUTOR', 'REVISOR', 'ADMINISTRADOR'], active: true, careerId: catalog.career_id,
+      teacherCode: `QA-DOC-${suffix}`, specialty: 'Gestión académica',
+    }),
+  }), 201, 'Alta directa de docente con roles múltiples')
+  teacherUserId = (await teacherCreated.json()).userId
+  const directoryWithTeacher = await expect(await fetch(`${apiUrl}/api/admin/users`, { headers: { Cookie: cookie } }), 200, 'Verificación de docente creado')
+  const teacher = (await directoryWithTeacher.json()).users.find((user) => user.id === teacherUserId)
+  assert.deepEqual(teacher.roles, ['TUTOR', 'REVISOR', 'ADMINISTRADOR'], 'No se conservaron los roles docentes múltiples')
+  assert.ok(teacher.teacherId && teacher.teacherCode === `QA-DOC-${suffix}`, 'No se creó el perfil docente directo')
+
+  const pendingTeacher = await pool.query(
+    `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo, email_confirmado_en)
+     VALUES ('QA', 'Docente Pendiente', $1, $2, true, now())
+     RETURNING id`,
+    [`qa.docente.pendiente.${suffix}@univalle.edu`, await bcrypt.hash(password, 10)],
+  )
+  pendingTeacherUserId = pendingTeacher.rows[0].id
+  await pool.query(
+    `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad, activo)
+     VALUES ($1, $2, $3, 'Perfil registrado por el docente', true)`,
+    [pendingTeacherUserId, catalog.career_id, `QA-PEND-${suffix}`],
+  )
+  const assignedRoles = await expect(await fetch(`${apiUrl}/api/admin/pending-teachers/${pendingTeacherUserId}/roles`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ roles: ['TUTOR', 'REVISOR', 'ADMINISTRADOR'] }),
+  }), 200, 'Asignación de roles sin editar el perfil docente')
+  assert.match((await assignedRoles.json()).message, /roles fueron asignados/i)
+  const directoryWithPendingTeacher = await expect(await fetch(`${apiUrl}/api/admin/users`, { headers: { Cookie: cookie } }), 200, 'Verificación de roles del docente pendiente')
+  const assignedTeacher = (await directoryWithPendingTeacher.json()).users.find((user) => user.id === pendingTeacherUserId)
+  assert.deepEqual(assignedTeacher.roles, ['TUTOR', 'REVISOR', 'ADMINISTRADOR'], 'No se asignaron todos los roles docentes pendientes')
+  assert.equal(assignedTeacher.teacherCode, `QA-PEND-${suffix}`, 'La asignación de roles no debe alterar los datos del docente')
 
   const form = new FormData()
   form.append('studentId', target.studentId)
@@ -174,13 +221,13 @@ try {
   assert.match((await deactivated.json()).message, /desactivado/i)
   const afterDeactivationDirectory = await expect(await fetch(`${apiUrl}/api/admin/users`, { headers: { Cookie: cookie } }), 200, 'Consulta de usuario inactivo')
   const inactiveTarget = (await afterDeactivationDirectory.json()).users.find((user) => user.id === targetUserId)
-  assert.deepEqual(inactiveTarget.roles, ['ESTUDIANTE', 'TUTOR', 'REVISOR'], 'Los roles deben conservarse para poder reactivar al usuario')
+  assert.deepEqual(inactiveTarget.roles, ['ESTUDIANTE', 'ADMINISTRADOR'], 'Los roles deben conservarse para poder reactivar al usuario')
   const reactivated = await expect(await fetch(`${apiUrl}/api/admin/users/${targetUserId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', Cookie: cookie },
     body: JSON.stringify({ ...inactiveTarget, password: '', active: true }),
   }), 200, 'Reactivación de usuario')
   assert.match((await reactivated.json()).message, /actualizado/i)
-  console.log('QA de Administración general aprobado: usuarios, roles múltiples, perfiles, proyecto y bajas lógicas verificados.')
+  console.log('QA de Administración general aprobado: combinaciones de roles, altas directas, perfiles, proyecto y bajas lógicas verificados.')
 } finally {
   if (cookie) await fetch(`${apiUrl}/api/auth/logout`, { method: 'POST', headers: { Cookie: cookie } }).catch(() => undefined)
   await cleanup()

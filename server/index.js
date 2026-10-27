@@ -318,6 +318,10 @@ function normalizedRoles(value) {
     .filter((role) => supportedRoles.includes(role)))]
 }
 
+function hasIncompatibleRoleCombination(roles) {
+  return roles.includes('ESTUDIANTE') && roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
+}
+
 function isEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
 }
@@ -1373,6 +1377,8 @@ app.post('/api/auth/register', async (request, response, next) => {
     const password = request.body?.password
     const confirmPassword = request.body?.confirmPassword
     const careerId = text(request.body?.careerId)
+    const teacherCode = text(request.body?.teacherCode)
+    const specialty = text(request.body?.specialty)
     const kind = accountKind(email)
 
     if (firstName.length < 2 || lastName.length < 2) {
@@ -1387,8 +1393,11 @@ app.post('/api/auth/register', async (request, response, next) => {
     if (password !== confirmPassword) {
       return response.status(422).json({ message: 'Las contraseñas no coinciden.' })
     }
-    if (kind === 'ESTUDIANTE' && !isUuid(careerId)) {
-      return response.status(422).json({ message: 'Selecciona tu carrera para crear tu perfil de estudiante.' })
+    if (!isUuid(careerId)) {
+      return response.status(422).json({ message: kind === 'ESTUDIANTE' ? 'Selecciona tu carrera para crear tu perfil de estudiante.' : 'Selecciona tu carrera para crear tu perfil docente.' })
+    }
+    if (kind === 'DOCENTE' && teacherCode.length < 4) {
+      return response.status(422).json({ message: 'Ingresa tu código docente con al menos 4 caracteres.' })
     }
 
     databaseClient = await pool.connect()
@@ -1433,6 +1442,21 @@ app.post('/api/auth/register', async (request, response, next) => {
       studentRoleId = studentRole.rows[0].id
     }
 
+    if (kind === 'DOCENTE') {
+      const [career, duplicateTeacherCode] = await Promise.all([
+        databaseClient.query(`SELECT id FROM titulacion.carreras WHERE id = $1 AND activa`, [careerId]),
+        databaseClient.query(`SELECT id FROM titulacion.docentes WHERE codigo_docente = $1`, [teacherCode]),
+      ])
+      if (!career.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(422).json({ message: 'La carrera seleccionada no está disponible.' })
+      }
+      if (duplicateTeacherCode.rows[0]) {
+        await databaseClient.query('ROLLBACK')
+        return response.status(409).json({ message: 'El código docente ya pertenece a otra persona.' })
+      }
+    }
+
     const user = await databaseClient.query(
       `INSERT INTO titulacion.usuarios (nombres, apellidos, correo, password_hash, activo)
        VALUES ($1, $2, $3, $4, false)
@@ -1453,6 +1477,12 @@ app.post('/api/auth/register', async (request, response, next) => {
          VALUES ($1, $2, $3, true)`,
         [userId, careerId, internalRegistration],
       )
+    } else {
+      await databaseClient.query(
+        `INSERT INTO titulacion.docentes (usuario_id, carrera_id, codigo_docente, especialidad, activo)
+         VALUES ($1, $2, $3, $4, true)`,
+        [userId, careerId, teacherCode, specialty || null],
+      )
     }
 
     const confirmationUrl = await issueEmailConfirmation(databaseClient, userId)
@@ -1467,7 +1497,7 @@ app.post('/api/auth/register', async (request, response, next) => {
 
     const message = kind === 'ESTUDIANTE'
       ? 'Revisa tu correo institucional para confirmar tu cuenta. Luego podrás iniciar sesión como estudiante.'
-      : 'Revisa tu correo institucional para confirmar tu cuenta. Después, Administración deberá asignarte los roles correspondientes.'
+      : 'Revisa tu correo institucional para confirmar tu cuenta. Tu perfil docente quedará registrado y Administración deberá asignarte los roles correspondientes.'
     return response.status(201).json({ message })
   } catch (error) {
     if (databaseClient) await databaseClient.query('ROLLBACK').catch(() => undefined)
@@ -2176,6 +2206,9 @@ app.post('/api/admin/users', requireAdministrator, async (request, response, nex
     if (firstName.length < 2 || lastName.length < 2 || !isEmail(email) || typeof password !== 'string' || password.length < 8 || roles.length === 0) {
       return response.status(422).json({ message: 'Completa nombres, apellidos, correo válido, contraseña de al menos 8 caracteres y al menos un rol.' })
     }
+    if (hasIncompatibleRoleCombination(roles)) {
+      return response.status(422).json({ message: 'Un estudiante solo puede combinar su rol con Administrador. Tutor y Revisor se asignan a perfiles docentes.' })
+    }
     if ((needsStudent || needsTeacher) && !isUuid(careerId)) {
       return response.status(422).json({ message: 'Selecciona la carrera para el perfil de estudiante o docente.' })
     }
@@ -2273,6 +2306,9 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
 
     if (!isUuid(userId) || firstName.length < 2 || lastName.length < 2 || !isEmail(email) || roles.length === 0 || active === null) {
       return response.status(422).json({ message: 'Completa los datos básicos, selecciona al menos un rol y define el estado del usuario.' })
+    }
+    if (hasIncompatibleRoleCombination(roles)) {
+      return response.status(422).json({ message: 'Un estudiante solo puede combinar su rol con Administrador. Tutor y Revisor se asignan a perfiles docentes.' })
     }
     if (typeof password !== 'undefined' && typeof password !== 'string') return response.status(422).json({ message: 'La contraseña no es válida.' })
     if (typeof password === 'string' && password.length > 0 && password.length < 8) return response.status(422).json({ message: 'La nueva contraseña debe tener al menos 8 caracteres.' })
@@ -2453,6 +2489,92 @@ app.patch('/api/admin/users/:userId', requireAdministrator, async (request, resp
     })
     await databaseClient.query('COMMIT')
     return response.json({ message: active ? 'El usuario fue actualizado correctamente.' : 'El usuario fue desactivado sin eliminar su historial.' })
+  } catch (error) {
+    await databaseClient.query('ROLLBACK').catch(() => undefined)
+    return next(error)
+  } finally {
+    databaseClient.release()
+  }
+})
+
+app.post('/api/admin/pending-teachers/:userId/roles', requireAdministrator, async (request, response, next) => {
+  const databaseClient = await pool.connect()
+  try {
+    const userId = request.params.userId
+    const roles = normalizedRoles(request.body?.roles)
+    const teacherRoles = ['TUTOR', 'REVISOR']
+
+    if (!isUuid(userId) || roles.length === 0 || roles.some((role) => ![...teacherRoles, 'ADMINISTRADOR'].includes(role)) || !roles.some((role) => teacherRoles.includes(role))) {
+      return response.status(422).json({ message: 'Selecciona Tutor o Revisor, y Administrador solo si también corresponde.' })
+    }
+
+    await databaseClient.query('BEGIN')
+    const teacher = await databaseClient.query(
+      `SELECT u.id, u.nombres, u.apellidos, u.correo
+       FROM titulacion.usuarios u
+       JOIN titulacion.docentes d ON d.usuario_id = u.id AND d.activo
+       WHERE u.id = $1 AND u.activo AND u.email_confirmado_en IS NOT NULL
+       FOR UPDATE OF u, d`,
+      [userId],
+    )
+    if (!teacher.rows[0]) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(404).json({ message: 'No encontramos un perfil docente confirmado para asignarle roles.' })
+    }
+
+    const existingRoles = await databaseClient.query(
+      `SELECT ur.id, ur.activo, r.codigo
+       FROM titulacion.usuario_roles ur
+       JOIN titulacion.roles r ON r.id = ur.rol_id
+       WHERE ur.usuario_id = $1
+       FOR UPDATE OF ur`,
+      [userId],
+    )
+    if (existingRoles.rows.some((item) => item.activo && supportedRoles.includes(item.codigo))) {
+      await databaseClient.query('ROLLBACK')
+      return response.status(409).json({ message: 'Este docente ya tiene roles asignados. Usa el directorio de usuarios para administrarlos.' })
+    }
+
+    const roleRows = await databaseClient.query(
+      `SELECT id, codigo FROM titulacion.roles WHERE activo AND codigo = ANY($1::text[])`,
+      [roles],
+    )
+    if (roleRows.rows.length !== roles.length) throw new Error('No fue posible validar todos los roles seleccionados.')
+    for (const role of roleRows.rows) {
+      const existingRole = existingRoles.rows.find((item) => item.codigo === role.codigo)
+      if (existingRole) {
+        await databaseClient.query(
+          `UPDATE titulacion.usuario_roles
+           SET activo = true, retirado_en = NULL, asignado_por_usuario_id = $2
+           WHERE id = $1`,
+          [existingRole.id, request.session.usuario_id],
+        )
+      } else {
+        await databaseClient.query(
+          `INSERT INTO titulacion.usuario_roles (usuario_id, rol_id, activo, asignado_por_usuario_id)
+           VALUES ($1, $2, true, $3)`,
+          [userId, role.id, request.session.usuario_id],
+        )
+      }
+    }
+
+    await createNotification(databaseClient, {
+      userId,
+      recipientEmail: teacher.rows[0].correo,
+      type: 'ROLES_DOCENTE_ASIGNADOS',
+      title: 'Roles docentes asignados',
+      message: 'Administración asignó tus roles. Ya puedes iniciar sesión en el sistema.',
+      link: roles.includes('TUTOR') ? '/tutor' : roles.includes('REVISOR') ? '/revisor' : '/admin',
+      queueEmail: true,
+    })
+    await recordAudit(databaseClient, request.session, {
+      action: 'ASIGNAR_ROLES_DOCENTE',
+      entity: 'usuarios',
+      entityId: userId,
+      detail: { email: teacher.rows[0].correo, roles },
+    })
+    await databaseClient.query('COMMIT')
+    return response.json({ message: 'Los roles fueron asignados y el acceso docente ya está habilitado.' })
   } catch (error) {
     await databaseClient.query('ROLLBACK').catch(() => undefined)
     return next(error)

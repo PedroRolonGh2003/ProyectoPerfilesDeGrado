@@ -525,6 +525,8 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
   const [newPasswordConfirmation, setNewPasswordConfirmation] = useState('')
   const [passwordResetToken, setPasswordResetToken] = useState('')
   const [careerId, setCareerId] = useState('')
+  const [teacherCode, setTeacherCode] = useState('')
+  const [teacherSpecialty, setTeacherSpecialty] = useState('')
   const [pendingConfirmationEmail, setPendingConfirmationEmail] = useState('')
   const [careers, setCareers] = useState<RegistrationCareer[]>([])
   const [showPassword, setShowPassword] = useState(false)
@@ -534,6 +536,7 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const isStudentRegistration = /^[^\s@]+@est\.univalle\.edu$/i.test(registerEmail.trim())
+  const isTeacherRegistration = /^[^\s@]+@univalle\.edu$/i.test(registerEmail.trim()) && !isStudentRegistration
 
   useEffect(() => {
     const resetToken = new URLSearchParams(window.location.search).get('resetToken')
@@ -615,6 +618,8 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
     setRegisterPassword('')
     setRegisterConfirmPassword('')
     setCareerId('')
+    setTeacherCode('')
+    setTeacherSpecialty('')
   }
 
   async function handleRegister(event: FormEvent<HTMLFormElement>) {
@@ -630,8 +635,12 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
       setMessage('Usa @est.univalle.edu para estudiantes o @univalle.edu para docentes.')
       return
     }
-    if (isStudent && !careerId) {
-      setMessage('Selecciona tu carrera para crear tu perfil de estudiante.')
+    if ((isStudent || isTeacher) && !careerId) {
+      setMessage(isStudent ? 'Selecciona tu carrera para crear tu perfil de estudiante.' : 'Selecciona tu carrera para crear tu perfil docente.')
+      return
+    }
+    if (isTeacher && teacherCode.trim().length < 4) {
+      setMessage('Ingresa tu código docente con al menos 4 caracteres.')
       return
     }
     if (registerPassword.length < 8) {
@@ -655,7 +664,9 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
           email,
           password: registerPassword,
           confirmPassword: registerConfirmPassword,
-          careerId: isStudent ? careerId : undefined,
+          careerId: isStudent || isTeacher ? careerId : undefined,
+          teacherCode: isTeacher ? teacherCode.trim() : undefined,
+          specialty: isTeacher ? teacherSpecialty.trim() : undefined,
         }),
       })
       resetRegistration()
@@ -827,8 +838,9 @@ function LoginView({ onAuthenticated, onPasswordReset }: { onAuthenticated: () =
               <div className="input-shell"><Icon name="user" /><input autoComplete="family-name" disabled={isSubmitting} id="last-name" onChange={(event) => setLastName(event.target.value)} placeholder="Tus apellidos" type="text" value={lastName} /></div>
               <label className="field-label" htmlFor="register-email">Correo institucional</label>
               <div className="input-shell"><Icon name="user" /><input autoComplete="username" disabled={isSubmitting} id="register-email" onChange={(event) => setRegisterEmail(event.target.value)} placeholder="nombre@est.univalle.edu o nombre@univalle.edu" type="email" value={registerEmail} /></div>
-              <p className="registration-note">Estudiantes: <b>@est.univalle.edu</b>. Docentes: <b>@univalle.edu</b>. Los docentes requieren asignación de rol por Administración.</p>
-              {isStudentRegistration && <><label className="field-label" htmlFor="register-career">Carrera</label><div className={careerId ? 'career-select is-selected' : 'career-select'}><span aria-hidden="true" className="career-select-badge">{careerId ? careers.find((career) => career.id === careerId)?.code ?? 'OK' : 'UV'}</span><select disabled={isSubmitting} id="register-career" onChange={(event) => setCareerId(event.target.value)} value={careerId}><option value="">Selecciona tu carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.code} · {career.name}</option>)}</select><Icon name="chevron" /></div></>}
+              <p className="registration-note">Estudiantes: <b>@est.univalle.edu</b>. Docentes: <b>@univalle.edu</b>. Cada persona registra los datos de su propio perfil; Administración asigna los roles necesarios.</p>
+              {(isStudentRegistration || isTeacherRegistration) && <><label className="field-label" htmlFor="register-career">Carrera</label><div className={careerId ? 'career-select is-selected' : 'career-select'}><span aria-hidden="true" className="career-select-badge">{careerId ? careers.find((career) => career.id === careerId)?.code ?? 'OK' : 'UV'}</span><select disabled={isSubmitting} id="register-career" onChange={(event) => setCareerId(event.target.value)} value={careerId}><option value="">Selecciona tu carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.code} · {career.name}</option>)}</select><Icon name="chevron" /></div></>}
+              {isTeacherRegistration && <><label className="field-label" htmlFor="register-teacher-code">Código docente</label><div className="input-shell"><Icon name="user" /><input disabled={isSubmitting} id="register-teacher-code" minLength={4} onChange={(event) => setTeacherCode(event.target.value)} placeholder="Tu código docente" required value={teacherCode} /></div><label className="field-label" htmlFor="register-teacher-specialty">Especialidad</label><div className="input-shell"><Icon name="clipboard" /><input disabled={isSubmitting} id="register-teacher-specialty" onChange={(event) => setTeacherSpecialty(event.target.value)} placeholder="Ej.: Ingeniería de software" value={teacherSpecialty} /></div></>}
               <label className="field-label" htmlFor="register-password">Contraseña</label>
               <div className="input-shell"><Icon name="lock" /><input autoComplete="new-password" disabled={isSubmitting} id="register-password" onChange={(event) => setRegisterPassword(event.target.value)} placeholder="Mínimo 8 caracteres" type={showRegisterPassword ? 'text' : 'password'} value={registerPassword} /><button aria-label={showRegisterPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'} className="icon-button" onClick={() => setShowRegisterPassword((visible) => !visible)} type="button"><Icon name={showRegisterPassword ? 'eyeOff' : 'eye'} /></button></div>
               <label className="field-label" htmlFor="register-confirm-password">Confirmar contraseña</label>
@@ -2051,7 +2063,13 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
   const needsTeacher = form.roles.some((role) => role === 'TUTOR' || role === 'REVISOR')
 
   function toggleRole(role: RoleCode) {
-    setForm((current) => ({ ...current, roles: current.roles.includes(role) ? current.roles.filter((item) => item !== role) : [...current.roles, role] }))
+    setForm((current) => {
+      if (current.roles.includes(role)) return { ...current, roles: current.roles.filter((item) => item !== role) }
+      const roles = [...current.roles, role]
+      if (role === 'ESTUDIANTE') return { ...current, roles: roles.filter((item) => item !== 'TUTOR' && item !== 'REVISOR') }
+      if (role === 'TUTOR' || role === 'REVISOR') return { ...current, roles: roles.filter((item) => item !== 'ESTUDIANTE') }
+      return { ...current, roles }
+    })
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -2078,7 +2096,7 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
       <label className="form-field"><span>{user ? 'Nueva contraseña' : 'Contraseña'} {!user && <b>*</b>}</span><input autoComplete="new-password" disabled={isSubmitting} minLength={user ? undefined : 8} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} placeholder={user ? 'Déjala vacía para conservarla' : 'Mínimo 8 caracteres'} required={!user} type="password" value={form.password} /></label>
       <label className="form-field admin-toggle-field"><span>Estado</span><span className="admin-switch"><input checked={form.active} disabled={isSubmitting || user?.id === undefined} onChange={(event) => setForm((current) => ({ ...current, active: event.target.checked }))} type="checkbox" />{form.active ? 'Activo' : 'Inactivo'}</span></label>
     </div>
-    <fieldset className="admin-role-fields"><legend>Roles <b>*</b></legend><div>{roles.map((role) => <label className={`admin-role-check role-${role.code.toLowerCase()}`} key={role.code}><input checked={form.roles.includes(role.code)} disabled={isSubmitting} onChange={() => toggleRole(role.code)} type="checkbox" /><span>{role.name}</span></label>)}</div></fieldset>
+    <fieldset className="admin-role-fields"><legend>Roles <b>*</b></legend><div>{roles.map((role) => <label className={`admin-role-check role-${role.code.toLowerCase()}`} key={role.code}><input checked={form.roles.includes(role.code)} disabled={isSubmitting} onChange={() => toggleRole(role.code)} type="checkbox" /><span>{role.name}</span></label>)}</div><small>Estudiante puede combinarse con Administrador. Tutor, Revisor y Administrador pueden combinarse entre sí.</small></fieldset>
     {needsCareer && <label className="form-field"><span>Carrera <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, careerId: event.target.value }))} required value={form.careerId}><option value="">Selecciona una carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.name}</option>)}</select></label>}
     {needsStudent && <label className="form-field"><span>Matrícula / registro universitario <b>*</b></span><input disabled={isSubmitting} minLength={4} onChange={(event) => setForm((current) => ({ ...current, registration: event.target.value }))} required value={form.registration} /></label>}
     {needsTeacher && <div className="admin-user-form-grid"><label className="form-field"><span>Código docente <b>*</b></span><input disabled={isSubmitting} minLength={4} onChange={(event) => setForm((current) => ({ ...current, teacherCode: event.target.value }))} required value={form.teacherCode} /></label><label className="form-field"><span>Especialidad</span><input disabled={isSubmitting} onChange={(event) => setForm((current) => ({ ...current, specialty: event.target.value }))} value={form.specialty} /></label></div>}
@@ -2087,28 +2105,25 @@ function AdminUserForm({ user, roles, careers, onCancel, onSave }: { user: Admin
   </form>
 }
 
-function PendingTeacherRoleForm({ teacher, careers, onCancel, onSave }: { teacher: PendingTeacher; careers: { id: string; code: string; name: string }[]; onCancel: () => void; onSave: (payload: { roles: ('TUTOR' | 'REVISOR')[]; careerId: string; teacherCode: string; specialty: string }) => Promise<void> }) {
-  const [roles, setRoles] = useState<('TUTOR' | 'REVISOR')[]>([])
-  const [careerId, setCareerId] = useState('')
-  const [teacherCode, setTeacherCode] = useState('')
-  const [specialty, setSpecialty] = useState('')
+function PendingTeacherRoleForm({ teacher, onCancel, onSave }: { teacher: PendingTeacher; onCancel: () => void; onSave: (payload: { roles: ('TUTOR' | 'REVISOR' | 'ADMINISTRADOR')[] }) => Promise<void> }) {
+  const [roles, setRoles] = useState<('TUTOR' | 'REVISOR' | 'ADMINISTRADOR')[]>([])
   const [message, setMessage] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  function toggleRole(role: 'TUTOR' | 'REVISOR') {
+  function toggleRole(role: 'TUTOR' | 'REVISOR' | 'ADMINISTRADOR') {
     setRoles((current) => current.includes(role) ? current.filter((item) => item !== role) : [...current, role])
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (roles.length === 0 || !careerId || teacherCode.trim().length < 4) {
-      setMessage('Selecciona al menos un rol, la carrera y un código docente de al menos 4 caracteres.')
+    if (!roles.some((role) => role === 'TUTOR' || role === 'REVISOR')) {
+      setMessage('Selecciona al menos Tutor o Revisor.')
       return
     }
     setMessage('')
     setIsSubmitting(true)
     try {
-      await onSave({ roles, careerId, teacherCode: teacherCode.trim(), specialty: specialty.trim() })
+      await onSave({ roles })
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'No fue posible asignar los roles docentes.')
     } finally {
@@ -2118,10 +2133,8 @@ function PendingTeacherRoleForm({ teacher, careers, onCancel, onSave }: { teache
 
   return <form className="admin-operation-card admin-pending-teacher-form" onSubmit={(event) => void submit(event)}>
     <div className="admin-operation-heading"><Icon name="user" /><div><p>ASIGNACIÓN DE DOCENTE</p><h2>{teacher.fullName}</h2></div></div>
-    <p><strong>{teacher.email}</strong> confirmó su correo institucional. Define los roles que habilitarán su acceso.</p>
-    <fieldset className="admin-role-fields"><legend>Roles docentes <b>*</b></legend><div><label className="admin-role-check role-tutor"><input checked={roles.includes('TUTOR')} disabled={isSubmitting} onChange={() => toggleRole('TUTOR')} type="checkbox" /><span>Tutor</span></label><label className="admin-role-check role-revisor"><input checked={roles.includes('REVISOR')} disabled={isSubmitting} onChange={() => toggleRole('REVISOR')} type="checkbox" /><span>Revisor</span></label></div></fieldset>
-    <div className="admin-user-form-grid"><label className="form-field"><span>Carrera <b>*</b></span><select disabled={isSubmitting} onChange={(event) => setCareerId(event.target.value)} required value={careerId}><option value="">Selecciona una carrera</option>{careers.map((career) => <option key={career.id} value={career.id}>{career.name}</option>)}</select></label><label className="form-field"><span>Código docente <b>*</b></span><input disabled={isSubmitting} minLength={4} onChange={(event) => setTeacherCode(event.target.value)} required value={teacherCode} /></label></div>
-    <label className="form-field"><span>Especialidad</span><input disabled={isSubmitting} onChange={(event) => setSpecialty(event.target.value)} placeholder="Ej.: Ingeniería de software" value={specialty} /></label>
+    <p><strong>{teacher.email}</strong> confirmó su correo y ya completó su información docente. Selecciona únicamente los roles que habilitarán su acceso.</p>
+    <fieldset className="admin-role-fields"><legend>Roles <b>*</b></legend><div><label className="admin-role-check role-tutor"><input checked={roles.includes('TUTOR')} disabled={isSubmitting} onChange={() => toggleRole('TUTOR')} type="checkbox" /><span>Tutor</span></label><label className="admin-role-check role-revisor"><input checked={roles.includes('REVISOR')} disabled={isSubmitting} onChange={() => toggleRole('REVISOR')} type="checkbox" /><span>Revisor</span></label><label className="admin-role-check role-administrador"><input checked={roles.includes('ADMINISTRADOR')} disabled={isSubmitting} onChange={() => toggleRole('ADMINISTRADOR')} type="checkbox" /><span>Administrador</span></label></div><small>Puede combinar Tutor, Revisor y Administrador.</small></fieldset>
     {message && <p className="student-message is-visible tutor-message">{message}</p>}
     <div className="tutor-actions"><button className="secondary-button" disabled={isSubmitting} onClick={onCancel} type="button">Cancelar</button><button className="primary-button" disabled={isSubmitting} type="submit">{isSubmitting ? 'Asignando…' : 'Asignar roles y habilitar acceso'}</button></div>
   </form>
@@ -2288,20 +2301,11 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
     setSelectedProjectId(result.project.id)
   }
 
-  async function assignTeacherRoles(teacher: PendingTeacher, payload: { roles: ('TUTOR' | 'REVISOR')[]; careerId: string; teacherCode: string; specialty: string }) {
-    const result = await api<{ message: string }>(`/api/admin/users/${teacher.id}`, {
-      method: 'PATCH',
+  async function assignTeacherRoles(teacher: PendingTeacher, payload: { roles: ('TUTOR' | 'REVISOR' | 'ADMINISTRADOR')[] }) {
+    const result = await api<{ message: string }>(`/api/admin/pending-teachers/${teacher.id}/roles`, {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        firstName: teacher.firstName,
-        lastName: teacher.lastName,
-        email: teacher.email,
-        phone: '',
-        password: '',
-        active: true,
-        registration: '',
-        ...payload,
-      }),
+      body: JSON.stringify(payload),
     })
     setMessage(result.message)
     setAssigningTeacher(null)
@@ -2381,7 +2385,7 @@ function AdminPortal({ data, onLogout, onRefresh, sessionActions, navigationTarg
         {view === 'defenses-public' && <AdminDefensesPanel key="public" kind="PUBLIC" onRefresh={onRefresh} />}
 
         {view === 'new-teachers' && <>
-          {assigningTeacher && <PendingTeacherRoleForm careers={usersData?.careers ?? []} onCancel={() => setAssigningTeacher(null)} onSave={(payload) => assignTeacherRoles(assigningTeacher, payload)} teacher={assigningTeacher} />}
+          {assigningTeacher && <PendingTeacherRoleForm onCancel={() => setAssigningTeacher(null)} onSave={(payload) => assignTeacherRoles(assigningTeacher, payload)} teacher={assigningTeacher} />}
           {data.newTeachers.length > 0 ? <div className="admin-pending-teacher-list">{data.newTeachers.map((teacher) => <article className="admin-pending-teacher" key={teacher.id}><div><span className="admin-status status-observado">Roles pendientes</span><h2>{teacher.fullName}</h2><p>{teacher.email}</p><small>Correo confirmado: {formatDate(teacher.confirmedAt)}</small></div><button className="primary-button" onClick={() => { setMessage(''); setAssigningTeacher(teacher) }} type="button">Asignar roles</button></article>)}</div> : <section className="tutor-empty"><Icon name="check" /><strong>No hay docentes pendientes de roles.</strong><span>Los nuevos docentes aparecerán aquí después de confirmar su correo institucional.</span></section>}
         </>}
 
