@@ -942,11 +942,6 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
   const [contactEmail, setContactEmail] = useState(data.user.email)
   const [mobile, setMobile] = useState('')
   const [scope, setScope] = useState('')
-  const [hasTutor, setHasTutor] = useState(true)
-  const [tutorName, setTutorName] = useState('')
-  const [tutorWorkplace, setTutorWorkplace] = useState('')
-  const [tutorEmail, setTutorEmail] = useState('')
-  const [tutorMobile, setTutorMobile] = useState('')
   const [generalObjective, setGeneralObjective] = useState('')
   const [specificObjectives, setSpecificObjectives] = useState([''])
   const [profileFile, setProfileFile] = useState<File | null>(null)
@@ -972,16 +967,13 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
 
   function selectTutor(value: string) {
     setTutorId(value)
-    const tutor = data.tutors.find((item) => item.id === value)
-    if (tutor) setTutorName(tutor.name)
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const filledObjectives = specificObjectives.filter((objective) => objective.trim())
-    const hasObjectives = filledObjectives.every((objective) => objective.trim().length >= 10)
-    if (!participants.trim() || !program || address.trim().length < 5 || !contactEmail.includes('@') || title.trim().length < 10 || scope.trim().length < 20 || generalObjective.trim().length < 10 || !managementId || !modalityId || !hasObjectives || !profileFile || (hasTutor && (!tutorId || tutorName.trim().length < 3 || tutorWorkplace.trim().length < 3))) {
-      setMessage('Completa los campos obligatorios. Título y objetivos: mínimo 10 caracteres; descripción: mínimo 20 caracteres.')
+    if (!participants.trim() || !program || !address.trim() || !contactEmail.includes('@') || !title.trim() || !scope.trim() || !generalObjective.trim() || !managementId || !modalityId || filledObjectives.length === 0 || !profileFile || !tutorId) {
+      setMessage('Completa los campos obligatorios y selecciona un tutor de la lista.')
       return
     }
 
@@ -1001,12 +993,7 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
     formData.set('contactEmail', contactEmail.trim())
     formData.set('mobile', mobile.trim())
     formData.set('scope', scope.trim())
-    formData.set('hasTutor', String(hasTutor))
     formData.set('tutorId', tutorId)
-    formData.set('tutorName', tutorName.trim())
-    formData.set('tutorWorkplace', tutorWorkplace.trim())
-    formData.set('tutorEmail', tutorEmail.trim())
-    formData.set('tutorMobile', tutorMobile.trim())
     formData.set('title', title.trim())
     formData.set('description', scope.trim())
     formData.set('generalObjective', generalObjective.trim())
@@ -1074,15 +1061,14 @@ function StudentForm({ data, onLogout, onRegistered, onDocuments, onHome, sessio
                     <div className="form-field"><span>Código de seguimiento</span><div className="readonly-field">Se asignará al registrar</div></div>
                   </div>
                   <label className="form-field"><span>Posible título del trabajo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTitle(event.target.value)} placeholder="Ej.: Sistema web para el seguimiento de procesos de titulación" value={title} /></label>
-                  <label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setGeneralObjective(event.target.value)} placeholder="Describe el resultado principal que deseas alcanzar con el proyecto." rows={3} value={generalObjective} /><small>Mínimo: 10 caracteres.</small></label>
-                  <div className="objectives-area"><div className="objective-label"><span>Objetivos específicos</span><small>Incluye las acciones concretas que permitirán alcanzar el objetivo general.</small></div>{specificObjectives.map((objective, index) => <div className="objective-input" key={`objective-${index}`}><span>{index + 1}</span><input aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObjective(index, event.target.value)} placeholder={`Objetivo específico ${index + 1} (mínimo 10 caracteres)`} value={objective} />{specificObjectives.length > 1 && <button aria-label={`Eliminar objetivo específico ${index + 1}`} disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => objectives.filter((_, objectiveIndex) => objectiveIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="add-objective" disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => [...objectives, ''])} type="button"><Icon name="plus" />Añadir objetivo específico</button></div>
-                  <label className="form-field"><span>Alcance del trabajo de grado <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setScope(event.target.value)} placeholder="Delimita qué resolverá el proyecto, sus usuarios, entregables y límites." rows={4} value={scope} /><small>Mínimo: 20 caracteres.</small></label>
+                  <label className="form-field"><span>Objetivo general <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setGeneralObjective(event.target.value)} placeholder="Describe el resultado principal que deseas alcanzar con el proyecto." rows={3} value={generalObjective} /></label>
+                  <div className="objectives-area"><div className="objective-label"><span>Objetivos específicos</span><small>Incluye las acciones concretas que permitirán alcanzar el objetivo general.</small></div>{specificObjectives.map((objective, index) => <div className="objective-input" key={`objective-${index}`}><span>{index + 1}</span><input aria-label={`Objetivo específico ${index + 1}`} disabled={isSubmitting} onChange={(event) => updateObjective(index, event.target.value)} placeholder={`Objetivo específico ${index + 1}`} value={objective} />{specificObjectives.length > 1 && <button aria-label={`Eliminar objetivo específico ${index + 1}`} disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => objectives.filter((_, objectiveIndex) => objectiveIndex !== index))} type="button"><Icon name="trash" /></button>}</div>)}<button className="add-objective" disabled={isSubmitting} onClick={() => setSpecificObjectives((objectives) => [...objectives, ''])} type="button"><Icon name="plus" />Añadir objetivo específico</button></div>
+                  <label className="form-field"><span>Alcance del trabajo de grado <b>*</b></span><textarea disabled={isSubmitting} onChange={(event) => setScope(event.target.value)} placeholder="Delimita qué resolverá el proyecto, sus usuarios, entregables y límites." rows={4} value={scope} /></label>
                 </section>
 
                 <section className="form-section">
-                  <div className="section-heading"><span>03</span><div><h2>Datos de asesoramiento</h2><p>Registra a tu tutor si ya cuentas con uno.</p></div></div>
-                  <fieldset className="tutor-choice" disabled={isSubmitting}><legend>¿Cuenta usted con un tutor?</legend><label><input checked={hasTutor} name="has-tutor" onChange={() => setHasTutor(true)} type="radio" /> Sí</label><label><input checked={!hasTutor} name="has-tutor" onChange={() => setHasTutor(false)} type="radio" /> No</label></fieldset>
-                  {hasTutor && <><label className="form-field"><span>Tutor registrado en el sistema <b>*</b></span><select disabled={isSubmitting || data.tutors.length === 0} onChange={(event) => selectTutor(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{data.tutors.map((tutor) => <option key={tutor.id} value={tutor.id}>{tutor.name}</option>)}</select><small>El docente recibirá una invitación y deberá aceptarla para confirmar la tutoría.</small></label><div className="field-grid field-grid-two"><label className="form-field"><span>Nombre del tutor <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTutorName(event.target.value)} value={tutorName} /></label><label className="form-field"><span>Lugar de trabajo <b>*</b></span><input disabled={isSubmitting} onChange={(event) => setTutorWorkplace(event.target.value)} placeholder="Ej.: Universidad Privada del Valle" value={tutorWorkplace} /></label></div><div className="field-grid field-grid-two"><label className="form-field"><span>Correo electrónico</span><input disabled={isSubmitting} onChange={(event) => setTutorEmail(event.target.value)} type="email" value={tutorEmail} /></label><label className="form-field"><span>Número de celular</span><input disabled={isSubmitting} onChange={(event) => setTutorMobile(event.target.value)} value={tutorMobile} /></label></div></>}
+                  <div className="section-heading"><span>03</span><div><h2>Propuesta de tutor</h2><p>Selecciona al tutor que deseas proponer para tu proyecto.</p></div></div>
+                  <label className="form-field"><span>Tutor registrado en el sistema <b>*</b></span><select disabled={isSubmitting || data.tutors.length === 0} onChange={(event) => selectTutor(event.target.value)} value={tutorId}><option value="">Selecciona un tutor</option>{data.tutors.map((tutor) => <option key={tutor.id} value={tutor.id}>{tutor.name}</option>)}</select><small>El docente recibirá una invitación y deberá aceptarla para confirmar la tutoría.</small></label>
                   <div className="form-field"><span>Perfil del proyecto en Word <b>*</b></span><label className={profileFile ? 'upload-box has-file' : 'upload-box'} htmlFor="profile"><input accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" disabled={isSubmitting} id="profile" onChange={selectProfile} type="file" /><Icon name={profileFile ? 'check' : 'upload'} /><div><strong>{profileFile?.name || 'Adjunta tu perfil de proyecto'}</strong><small>{profileFile ? 'Archivo listo para registrarse en el sistema.' : 'Formato permitido: .doc o .docx · máximo 10 MB'}</small></div><span>{profileFile ? 'Cambiar archivo' : 'Seleccionar archivo'}</span></label></div>
                   <div className="form-field"><span>Documento complementario (si es necesario o solicitado)</span><label className={supportingFiles.length ? 'upload-box has-file' : 'upload-box'} htmlFor="supporting-documents"><input accept=".doc,.docx,.xls,.xlsx,.ppt,.pptx,.pdf,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.avi,.mp3,.wav,.m4a" disabled={isSubmitting} id="supporting-documents" multiple onChange={selectSupportingDocuments} type="file" /><Icon name={supportingFiles.length ? 'check' : 'upload'} /><div><strong>{supportingFiles.length ? `${supportingFiles.length} documento(s) listo(s)` : 'Carga hasta 5 documentos complementarios'}</strong><small>Word, Excel, PowerPoint, PDF, imágenes, video o audio · máximo 10 MB por archivo.</small></div><span>{supportingFiles.length ? 'Cambiar archivos' : 'Seleccionar archivos'}</span></label></div>
                 </section>

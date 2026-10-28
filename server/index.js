@@ -5575,11 +5575,6 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
     const contactEmail = text(request.body?.contactEmail).toLowerCase()
     const mobile = text(request.body?.mobile)
     const scope = text(request.body?.scope)
-    const hasTutor = request.body?.hasTutor === 'true'
-    const tutorName = text(request.body?.tutorName)
-    const tutorWorkplace = text(request.body?.tutorWorkplace)
-    const tutorEmail = text(request.body?.tutorEmail).toLowerCase()
-    const tutorMobile = text(request.body?.tutorMobile)
     const title = text(request.body?.title)
     const description = text(request.body?.description)
     const generalObjective = text(request.body?.generalObjective)
@@ -5596,8 +5591,8 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       : []
 
     const validPrograms = ['Ingenieria de Sistemas Informaticos', 'Tecnico Superior en Desarrollo de Video Juegos']
-    if (participants.length === 0 || !validPrograms.includes(program) || address.length < 5 || !contactEmail.includes('@') || title.length < 10 || description.length < 20 || scope.length < 20 || generalObjective.length < 10 || !managementId || !modalityId || (hasTutor && (!isUuid(tutorId) || tutorName.length < 3 || tutorWorkplace.length < 3)) || cleanObjectives.some((item) => item.length < 10)) {
-      return response.status(422).json({ message: 'Revisa los campos: título (10), descripción (20) y cada objetivo (10) requieren la longitud mínima indicada.' })
+    if (participants.length === 0 || !validPrograms.includes(program) || !address || !contactEmail.includes('@') || !title || !description || !scope || !generalObjective || !managementId || !modalityId || !isUuid(tutorId) || cleanObjectives.length === 0) {
+      return response.status(422).json({ message: 'Completa los campos obligatorios y selecciona un tutor disponible de la lista.' })
     }
 
     if (!isWordDocument(profileFile)) {
@@ -5649,8 +5644,8 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       return response.status(422).json({ message: 'La gestión o modalidad elegida ya no está disponible.' })
     }
 
-    const tutor = hasTutor ? await databaseClient.query(
-      `SELECT d.id, u.id AS usuario_id, u.correo
+    const tutor = await databaseClient.query(
+      `SELECT d.id, u.id AS usuario_id, u.correo, trim(concat(u.nombres, ' ', u.apellidos)) AS nombre
        FROM titulacion.docentes d
        JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
        JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
@@ -5658,8 +5653,8 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
        WHERE d.id = $1 AND d.carrera_id = $2 AND d.activo
        LIMIT 1`,
       [tutorId, student.rows[0].carrera_id],
-    ) : { rows: [] }
-    if (hasTutor && !tutor.rows[0]) {
+    )
+    if (!tutor.rows[0]) {
       await databaseClient.query('ROLLBACK')
       return response.status(422).json({ message: 'Selecciona un tutor disponible de la lista.' })
     }
@@ -5689,11 +5684,11 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
         contactEmail,
         mobile || null,
         scope,
-        hasTutor,
-        tutorName || null,
-        tutorWorkplace || null,
-        tutorEmail || null,
-        tutorMobile || null,
+        true,
+        tutor.rows[0].nombre,
+        null,
+        tutor.rows[0].correo,
+        null,
       ],
     )
     const createdProject = project.rows[0]
@@ -5713,7 +5708,7 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       )
     }
 
-    if (hasTutor) await databaseClient.query(
+    await databaseClient.query(
       `INSERT INTO titulacion.asignaciones_proyecto
         (proyecto_id, docente_id, tipo, asignado_por_usuario_id, activo, motivo_cambio)
        VALUES ($1, $2, 'TUTOR', $3, false, $4)`,
@@ -5725,7 +5720,7 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
       ],
     )
 
-    if (hasTutor) await createNotification(databaseClient, {
+    await createNotification(databaseClient, {
       userId: tutor.rows[0].usuario_id,
       recipientEmail: tutor.rows[0].correo,
       projectId: createdProject.id,
