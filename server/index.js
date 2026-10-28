@@ -1172,15 +1172,15 @@ function projectClosurePayload(project, readiness) {
   return { eligible: readiness.ready, roundNumber: readiness.roundNumber, reason: readiness.reason }
 }
 
-async function staffWithRole(databaseClient, { teacherId, careerId, roleCode }) {
+async function staffWithRole(databaseClient, { teacherId, roleCode }) {
   const staff = await databaseClient.query(
     `SELECT d.id, d.usuario_id, trim(concat(u.nombres, ' ', u.apellidos)) AS name, u.correo
      FROM titulacion.docentes d
      JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
      JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
-     JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = $3
-     WHERE d.id = $1 AND d.carrera_id = $2 AND d.activo`,
-    [teacherId, careerId, roleCode],
+     JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo AND r.codigo = $2
+     WHERE d.id = $1 AND d.activo`,
+    [teacherId, roleCode],
   )
   return staff.rows[0] ?? null
 }
@@ -2671,7 +2671,7 @@ app.post('/api/admin/projects', requireAdministrator, upload.single('profile'), 
     const catalog = await databaseClient.query(
       `SELECT
          (SELECT id FROM titulacion.gestiones WHERE id = $1 AND carrera_id = $3 AND activa) AS gestion_id,
-         (SELECT id FROM titulacion.modalidades_titulacion WHERE id = $2 AND carrera_id = $3 AND activa) AS modalidad_id,
+         (SELECT id FROM titulacion.modalidades_titulacion WHERE id = $2 AND activa) AS modalidad_id,
          (SELECT id FROM titulacion.fases WHERE codigo = 'REGISTRO' AND activa) AS fase_id,
          (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'REGISTRADO') AS estado_id`,
       [managementId, modalityId, student.rows[0].carrera_id],
@@ -3031,10 +3031,9 @@ app.get('/api/admin/projects/:projectId', requireAdministrator, async (request, 
          JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
          JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
          JOIN titulacion.roles r ON r.id = ur.rol_id AND r.activo
-         WHERE d.carrera_id = $1 AND d.activo AND r.codigo IN ('TUTOR', 'REVISOR')
+         WHERE d.activo AND r.codigo IN ('TUTOR', 'REVISOR')
          GROUP BY d.id, u.id
          ORDER BY u.apellidos, u.nombres`,
-        [project.carrera_id],
       ),
       pool.query(
         `SELECT a.id, a.tipo, a.activo, a.fecha_asignacion, a.fecha_fin, a.respondida_en, a.motivo_cambio,
@@ -3177,10 +3176,10 @@ app.put('/api/admin/projects/:projectId/assignments', requireAdministrator, asyn
       return response.status(409).json({ message: 'No puedes cambiar responsables en un proyecto cerrado.' })
     }
 
-    const tutor = await staffWithRole(databaseClient, { teacherId: tutorId, careerId: project.carrera_id, roleCode: 'TUTOR' })
+    const tutor = await staffWithRole(databaseClient, { teacherId: tutorId, roleCode: 'TUTOR' })
     if (!tutor) {
       await databaseClient.query('ROLLBACK')
-      return response.status(422).json({ message: 'El tutor debe estar activo y habilitado en la carrera del proyecto.' })
+      return response.status(422).json({ message: 'El tutor debe estar activo y tener el rol de Tutor.' })
     }
 
     const change = await replaceProjectAssignment(databaseClient, { project, type: 'TUTOR', staff: tutor, assignedByUserId: request.session.usuario_id })
@@ -3258,12 +3257,12 @@ app.put('/api/admin/projects/:projectId/reviewers', requireAdministrator, async 
     }
 
     const [reviewer1, reviewer2] = await Promise.all([
-      staffWithRole(databaseClient, { teacherId: reviewer1Id, careerId: project.carrera_id, roleCode: 'REVISOR' }),
-      staffWithRole(databaseClient, { teacherId: reviewer2Id, careerId: project.carrera_id, roleCode: 'REVISOR' }),
+      staffWithRole(databaseClient, { teacherId: reviewer1Id, roleCode: 'REVISOR' }),
+      staffWithRole(databaseClient, { teacherId: reviewer2Id, roleCode: 'REVISOR' }),
     ])
     if (!reviewer1 || !reviewer2) {
       await databaseClient.query('ROLLBACK')
-      return response.status(422).json({ message: 'Los revisores deben estar activos y habilitados en la carrera del proyecto.' })
+      return response.status(422).json({ message: 'Los revisores deben estar activos y tener el rol de Revisor.' })
     }
 
     const changes = await Promise.all([
@@ -4732,10 +4731,13 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
       ),
       pool.query(
         `SELECT id, codigo, nombre
-         FROM titulacion.modalidades_titulacion
-         WHERE activa AND carrera_id = $1
+         FROM (
+           SELECT DISTINCT ON (codigo) id, codigo, nombre
+           FROM titulacion.modalidades_titulacion
+           WHERE activa
+           ORDER BY codigo, id
+         ) modalidades_compartidas
          ORDER BY nombre`,
-        [session.carrera_id],
       ),
       pool.query(
         `SELECT DISTINCT d.id, u.nombres, u.apellidos
@@ -4743,12 +4745,12 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
          JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
          JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
          JOIN titulacion.roles r ON r.id = ur.rol_id AND r.codigo = 'TUTOR' AND r.activo
-         WHERE d.activo AND d.carrera_id = $1
+         WHERE d.activo
            AND NOT EXISTS (
              SELECT 1
              FROM titulacion.proyecto_estudiantes student_project
              JOIN titulacion.asignaciones_proyecto declined_tutor ON declined_tutor.proyecto_id = student_project.proyecto_id
-             WHERE student_project.estudiante_id = $2
+             WHERE student_project.estudiante_id = $1
                AND student_project.activo
                AND declined_tutor.docente_id = d.id
                AND declined_tutor.tipo = 'TUTOR'
@@ -4757,7 +4759,7 @@ app.get('/api/student/bootstrap', requireStudent, async (request, response, next
                AND declined_tutor.motivo_cambio ILIKE '%declin%'
            )
          ORDER BY u.apellidos, u.nombres`,
-        [session.carrera_id, session.estudiante_id],
+        [session.estudiante_id],
       ),
       pool.query(
         `SELECT p.id, p.codigo_seguimiento, p.titulo_tentativo, p.descripcion,
@@ -5088,7 +5090,6 @@ app.post('/api/student/projects/:projectId/tutor-proposal', requireStudent, asyn
 
     const tutor = await staffWithRole(databaseClient, {
       teacherId: tutorId,
-      careerId: student.rows[0].carrera_id,
       roleCode: 'TUTOR',
     })
     if (!tutor) {
@@ -5633,10 +5634,10 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
     const catalog = await databaseClient.query(
       `SELECT
          (SELECT id FROM titulacion.gestiones WHERE id = $1 AND activa) AS gestion_id,
-         (SELECT id FROM titulacion.modalidades_titulacion WHERE id = $2 AND carrera_id = $3 AND activa) AS modalidad_id,
+         (SELECT id FROM titulacion.modalidades_titulacion WHERE id = $2 AND activa) AS modalidad_id,
          (SELECT id FROM titulacion.fases WHERE codigo = 'REGISTRO' AND activa) AS fase_id,
          (SELECT id FROM titulacion.estados_proyecto WHERE codigo = 'REGISTRADO') AS estado_id`,
-      [managementId, modalityId, student.rows[0].carrera_id],
+      [managementId, modalityId],
     )
     const values = catalog.rows[0]
     if (!values?.gestion_id || !values?.modalidad_id || !values?.fase_id || !values?.estado_id) {
@@ -5650,9 +5651,9 @@ app.post('/api/projects', requireStudent, upload.fields([{ name: 'profile', maxC
        JOIN titulacion.usuarios u ON u.id = d.usuario_id AND u.activo
        JOIN titulacion.usuario_roles ur ON ur.usuario_id = u.id AND ur.activo
        JOIN titulacion.roles r ON r.id = ur.rol_id AND r.codigo = 'TUTOR' AND r.activo
-       WHERE d.id = $1 AND d.carrera_id = $2 AND d.activo
+       WHERE d.id = $1 AND d.activo
        LIMIT 1`,
-      [tutorId, student.rows[0].carrera_id],
+      [tutorId],
     )
     if (!tutor.rows[0]) {
       await databaseClient.query('ROLLBACK')
